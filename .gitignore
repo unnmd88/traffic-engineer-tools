@@ -1,0 +1,45 @@
+# Rust
+/target
+**/*.rs.bk
+*.wasm
+
+# Cargo
+.cargo/
+**/.cargo/
+
+# Build
+target/
+**/target/
+
+# Директории с документацией
+/doc/
+
+# Файлы редакторов и IDE
+/.idea/
+/.vscode/
+/*.iml
+/*.swp
+/*.swo
+*~
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+/logs/
+
+# Локальные конфиги Cargo
+.cargo/config.toml
+.cargo/credentials
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
