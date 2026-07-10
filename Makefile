@@ -48,6 +48,10 @@ cbr-win7:
 cbr-net-monitor:
 	cargo build --release -p net-monitor --target x86_64-unknown-linux-gnu
 
+.PHONY: cbr-tctl
+cbr-tctl:
+	cargo build --release -p tctl --target x86_64-unknown-linux-gnu
+
 .PHONY: cbr-win10-net-monitor
 cbr-win10-net-monitor:
 	cargo build --release -p net-monitor --target x86_64-pc-windows-gnu
