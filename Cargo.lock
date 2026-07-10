@@ -1220,6 +1220,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tools-core",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1382,7 +1394,13 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 name = "tools-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
