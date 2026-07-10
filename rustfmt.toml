@@ -1,8 +1,57 @@
-# Переносить аргументы функций на новые строки
-fn_args_layout = "Tall"
+# rustfmt.toml
+# Базовые настройки
+edition = "2024"
 
-# Максимальная ширина строки (чтобы раньше переносило)
-max_width = 80
+# Ширина строки (комфортная для чтения)
+max_width = 100
 
-# Переносить цепочки методов
-chain_width = 40
+# Отступы
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+
+# Перенос аргументов функций
+fn_args_layout = "Tall"  # Каждый аргумент на новой строке
+
+# Перенос цепочек методов
+chain_width = 60
+
+# Эвристики для переноса
+use_small_heuristics = "Default"
+
+# Ширина для вызовов функций
+fn_call_width = 80
+
+# Ширина для атрибутов и макросов
+attr_fn_like_width = 70
+
+# Выравнивание полей структур
+struct_field_align_threshold = 20
+
+# Настройки match выражений
+match_arm_blocks = false
+match_arm_leading_pipes = "Never"
+
+# Настройки блоков
+force_multiline_blocks = false
+fn_single_line = false
+where_single_line = false
+
+# Форматирование макросов
+format_macro_matchers = true
+
+# Форматирование документации
+format_code_in_doc_comments = true
+
+# Импорты
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+
+# Комментарии
+wrap_comments = true
+normalize_comments = true
+
+# Дополнительные настройки
+reorder_impl_items = true
+reorder_imports = true
+reorder_modules = true

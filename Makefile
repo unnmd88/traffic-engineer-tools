@@ -11,9 +11,16 @@
 
 ENV_FILE ?= .env.dev
 
+
+# TEST SECTION
+
 .PHONY: test
 test:
 	cargo test --target x86_64-unknown-linux-gnu -- --nocapture
+
+.PHONY: test-core
+test-core:
+	cargo test --target x86_64-unknown-linux-gnu -p tools-core -- --nocapture
 
 .PHONY: check
 check:
@@ -22,6 +29,8 @@ check:
 .PHONY: run
 run:
 	ENV_FILE=$(ENV_FILE) cargo run --target x86_64-unknown-linux-gnu
+
+# BUILD RELEASE SECTION
 
 .PHONY: cbr
 cbr:
@@ -51,8 +60,14 @@ cbr-win7-net-monitor:
 objdump:
 	objdump -p target/x86_64-win7-windows-msvc/release/traffic-api.exe | grep "DLL Name"
 
+# EXAMPLES SECTION
+
 .PHONY: example-traceroute
 example-traceroute:
 	cargo build --target x86_64-unknown-linux-gnu --example test_traceroute
 	sudo setcap cap_net_raw+ep target/x86_64-unknown-linux-gnu/debug/examples/test_traceroute
 	./target/x86_64-unknown-linux-gnu/debug/examples/test_traceroute
+
+.PHONY: snmp-example
+snmp-example:
+	cargo run --target x86_64-unknown-linux-gnu --example snmp-example
