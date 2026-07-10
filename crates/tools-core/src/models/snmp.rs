@@ -2,6 +2,7 @@ use std::net::IpAddr;
 
 use serde_json::json;
 
+/*
 use crate::{
     presentation::Presentable,
     values::{ControllerValue, Name, SnmpRawValue},
@@ -42,3 +43,4 @@ impl Presentable for SnmpResponse {
         json!({})
     }
 }
+*/
