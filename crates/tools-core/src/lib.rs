@@ -1,23 +1,27 @@
-pub mod error;
-pub mod messages;
+/*
+pub mod dtos;
+mod error;
 pub mod models;
-pub mod presentation;
+pub mod monitoring;
+pub mod parsers;
 pub mod primitives;
+pub mod protocols;
+mod traits;
+pub mod workers;
+*/
 mod utils;
 
-pub use utils::get_timestamp_fmt;
+mod payload;
+pub mod polling;
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod monitor;
+mod pollable;
+pub mod worker;
+pub use payload::Payload;
+pub use pollable::Pollable;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod domain;
+pub mod error;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod snmp;
+pub use error::{AsciiError, Error, PollErrorContext, SnmpError};
