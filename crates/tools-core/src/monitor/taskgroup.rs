@@ -99,7 +99,7 @@ pub struct TaskData {
 pub struct TaskState {
     pub meta: TaskMeta,
     pub data: TaskData,
-    pub worker_state: WorkerState,
+    //pub worker_state: WorkerState,
     pub history: TaskHistory,
 }
 
@@ -109,6 +109,12 @@ pub struct TaskGroup {
     name: TaskGroupName,
     tasks: Vec<TaskState>,
     last_update: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskDataUpdateMessage {
+    pub task_result: TaskResult,
+    pub metrics: Metrics,
 }
 
 impl TaskGroup {
@@ -121,7 +127,11 @@ impl TaskGroup {
         }
     }
 
-    pub fn update(&mut self, task_position: TaskPosition, event: TaskEvent) -> Result<(), Error> {
+    pub fn update(
+        &mut self,
+        task_position: TaskPosition,
+        payload: TaskDataUpdateMessage,
+    ) -> Result<(), Error> {
         let idx = task_position.as_usize();
 
         let mut task_state = self
@@ -132,12 +142,12 @@ impl TaskGroup {
         task_state.history.push(old_task);
 
         task_state.data = TaskData {
-            result: event.task_result,
-            metrics: event.metrics,
+            result: payload.task_result,
+            metrics: payload.metrics,
             last_update: Utc::now(),
         };
 
-        task_state.worker_state = event.worker_state;
+        //task_state.worker_state = event.worker_state;
 
         Ok(())
     }
