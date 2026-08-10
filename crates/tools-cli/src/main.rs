@@ -18,7 +18,7 @@ mod scn;
 
 use crate::{
     cli::{OutputFormat, print_output},
-    monior::snapshot_builder::SnapshotBuilder,
+    monior::app_builder::AppBuilder,
 };
 
 #[tokio::main]
@@ -27,12 +27,12 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         cli::Commands::Poll { config } => {
-            println!(" --> 1");
             let content = std::fs::read_to_string(config)?;
-            println!(" --> 2");
-
-            let _ = SnapshotBuilder::from_yaml(&content)?;
-            println!(" --> 3");
+            let mut app = AppBuilder::from_yaml(&content).await?;
+            println!("State: {}", app.current_state());
+            app.start().await;
+            println!("{}", app.current_state());
+            println!("SNAPSHOT:\n\n{:#?}", app.get_snapshot().await?);
         }
 
         cli::Commands::ToScn { input, output } => {

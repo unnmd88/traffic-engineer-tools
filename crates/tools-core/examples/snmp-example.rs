@@ -3,9 +3,9 @@ use std::any;
 use std::net::{IpAddr, Ipv4Addr};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Duration;
-use tools_core::monitor::application::app::{
-    Application, GroupConfigDto, PollTimings, Query, RawConfig, SnmpOidItem, TaskDto,
-    TaskSnmpGetDto,
+use tools_core::monitor::application::app::Application;
+use tools_core::monitor::application::config::{
+    AppConfig, Query, QuerySnmpGet, SnmpOidItemDto, TaskConfig, TaskGroupConfig, TaskPollTimings,
 };
 
 use tools_core::polling::PollConfig;
@@ -188,16 +188,16 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
 }
 
 async fn test_monitor_application() -> anyhow::Result<()> {
-    let task_snmp_get_dto = TaskSnmpGetDto {
+    let task_snmp_get_dto = QuerySnmpGet {
         host: "127.0.0.1".to_string(),
         port: 1161,
         community: "public".to_string(),
         oids: vec![
-            SnmpOidItem {
+            SnmpOidItemDto {
                 name: Some("Stage-Фаза".to_string()),
                 oid: "1.3.6.1.4.1.1618.3.7.2.11.2".to_string(),
             },
-            SnmpOidItem {
+            SnmpOidItemDto {
                 name: Some("Plan-План".to_string()),
                 oid: "1.3.6.1.4.1.1618.3.6.2.1.2".to_string(),
             },
@@ -205,9 +205,9 @@ async fn test_monitor_application() -> anyhow::Result<()> {
     };
 
     let snmp_get_query = Query::SnmpGet(task_snmp_get_dto);
-    let task = TaskDto {
+    let task = TaskConfig {
         name: "T-1".to_string(),
-        poll_timings: PollTimings {
+        poll_timings: TaskPollTimings {
             timeout_ms: 1000,
             retries: 2,
             retry_delay_ms: 200,
@@ -218,11 +218,11 @@ async fn test_monitor_application() -> anyhow::Result<()> {
     };
     println!("{:#?}", task);
 
-    let group1 = GroupConfigDto {
+    let group1 = TaskGroupConfig {
         name: "Group-Группа 1".to_string(),
         tasks: vec![task],
     };
-    let config = RawConfig {
+    let config = AppConfig {
         groups: vec![group1],
     };
     let mut app = Application::new(config).await?;
@@ -230,6 +230,8 @@ async fn test_monitor_application() -> anyhow::Result<()> {
     println!("Application State: {app_state}");
 
     println!("{}", app.id());
+    println!("Is running: {}", app.is_running());
+    println!("Current state: {}", app.current_state());
     println!("Mapping:\n{:#?}", app.tasks_mapping());
 
     return Ok(());
