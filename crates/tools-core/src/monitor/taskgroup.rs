@@ -4,7 +4,7 @@ use derive_more::{Constructor, Deref, Display, Eq};
 use crate::{
     Error,
     error::ParseError,
-    monitor::task::{TaskData, TaskState},
+    monitor::task::{TaskData, UseCase},
     worker::{Metrics, TaskEvent, TaskResult, WorkerId, WorkerState},
 };
 
@@ -64,7 +64,7 @@ impl TaskGroupName {
 #[derive(Clone, Debug)]
 pub struct TaskGroup {
     name: TaskGroupName,
-    tasks: Vec<TaskState>,
+    tasks: Vec<UseCase>,
     last_update: DateTime<Utc>,
 }
 
@@ -75,7 +75,7 @@ pub struct TaskDataUpdateMessage {
 }
 
 impl TaskGroup {
-    pub fn new(name: TaskGroupName, tasks: Vec<TaskState>) -> Self {
+    pub fn new(name: TaskGroupName, tasks: Vec<UseCase>) -> Self {
         Self {
             name,
             tasks,
@@ -91,7 +91,7 @@ impl TaskGroup {
         }
     }
 
-    pub fn add_taskstate(&mut self, value: TaskState) -> TaskPosition {
+    pub fn add_taskstate(&mut self, value: UseCase) -> TaskPosition {
         self.tasks.push(value);
         TaskPosition::new(self.tasks.len() - 1)
     }
@@ -127,7 +127,7 @@ impl TaskGroup {
         self.name.clone()
     }
 
-    pub fn tasks(&self) -> &[TaskState] {
+    pub fn tasks(&self) -> &[UseCase] {
         &self.tasks
     }
 

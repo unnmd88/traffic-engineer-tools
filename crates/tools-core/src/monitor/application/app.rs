@@ -15,12 +15,16 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    Error, SnmpError,
-    error::{CreateMonitorError, ParseError},
+    error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
         Snapshot, Uid,
-        application::{SnapshotCommand, SnapshotManager, worker_brige::WorkerBridge},
-        task::{Protocol, TaskData, TaskHistory, TaskMeta, TaskState, TypeQuery},
+        application::{
+            SnapshotCommand, SnapshotManager,
+            config::{AppConfig, Query, SnmpOidItem},
+            task_mapping::{GroupMapping, Mapping, TaskMapping},
+            worker_brige::WorkerBridge,
+        },
+        task::{Protocol, TaskData, TaskHistory, TaskMeta, TypeQuery, UseCase},
         taskgroup::{TaskGroup, TaskGroupId, TaskGroupName, TaskPosition},
     },
     polling::PollConfig,
@@ -31,75 +35,7 @@ use crate::{
     worker::{Metrics, PollerFactory, TaskEvent, TaskResult, Worker, WorkerCommand, WorkerId},
 };
 
-#[derive(Debug, Deserialize)]
-pub struct SnmpOidItem {
-    pub name: Option<String>,
-    pub oid: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TaskSnmpGetDto {
-    //pub name: String,
-    pub host: String,
-    pub port: u16,
-    pub community: String,
-    pub oids: Vec<SnmpOidItem>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TaskSnmpGet {
-    pub host: IpAddr,
-    pub port: u16,
-    pub community: Community,
-    pub timeout_ms: u64,
-    pub retries: u32,
-    pub retry_delay_ms: u64,
-    pub oids: Vec<SnmpQueryItem>,
-}
-
-#[derive(Debug, Deserialize)]
-pub enum Query {
-    SnmpGet(TaskSnmpGetDto),
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PollTimings {
-    pub timeout_ms: u64,
-    pub retries: u8,
-    pub retry_delay_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TaskDto {
-    pub name: String,
-    pub poll_timings: PollTimings,
-    pub interval: u64,
-    pub deep_history: u8,
-    pub query: Query,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GroupConfigDto {
-    pub name: String,
-    pub tasks: Vec<TaskDto>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RawConfig {
-    pub groups: Vec<GroupConfigDto>,
-}
-
-struct WorkerTaskMapping {
-    group_id: TaskGroupId,
-    position: TaskPosition,
-}
-
-struct WorkerControl {
-    cmd_tx: mpsc::Sender<WorkerCommand>,
-    join_handle: JoinHandle<()>,
-}
-
-pub struct IdGenerator {
+struct IdGenerator {
     uid: u64,
     worker_id: u64,
 }
@@ -125,6 +61,16 @@ impl IdGenerator {
     }
 }
 
+struct WorkerTaskMapping {
+    group_id: TaskGroupId,
+    position: TaskPosition,
+}
+
+struct WorkerControl {
+    cmd_tx: mpsc::Sender<WorkerCommand>,
+    join_handle: JoinHandle<()>,
+}
+
 #[derive(Clone, Display)]
 pub struct ApplicationId(Uuid);
 
@@ -138,23 +84,6 @@ impl ApplicationId {
 pub enum ApplicationState {
     Idle,
     Runnig,
-}
-
-#[derive(Debug, Clone)]
-pub struct Mapping {
-    pub groups: Vec<GroupMapping>,
-}
-
-#[derive(Debug, Clone)]
-pub struct GroupMapping {
-    pub name: String,
-    pub tasks: Vec<TaskMapping>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TaskMapping {
-    pub name: Option<String>,
-    pub uid: Uid,
 }
 
 pub struct Application {
@@ -172,7 +101,7 @@ pub struct Application {
 }
 
 impl Application {
-    pub async fn new(config: RawConfig) -> Result<Self, Error> {
+    pub async fn new(config: AppConfig) -> Result<Self, Error> {
         let app_uid = ApplicationId::generate();
         let mut mapping_groups = Vec::new();
 
@@ -217,7 +146,7 @@ impl Application {
 
                 let poller_factory = PollerFactory::new(poll_config);
                 let deep_history = task.deep_history;
-                let name = Some(task.name.clone());
+                let name = task.name.clone();
 
                 let worker_id = id_generator.next_worker_id();
                 let task_uid = id_generator.next_uid();
@@ -259,15 +188,15 @@ impl Application {
                                 .join("\n")
                         );
                         let meta = TaskMeta {
-                            protocol: Some(Protocol::Snmp),
-                            type_query: Some(TypeQuery::SnmpGet),
+                            protocol: Protocol::Snmp,
+                            type_query: TypeQuery::SnmpGet,
                             name,
-                            subject: Some(subject),
-                            target: Some(format!("{target}:{port}")),
+                            subject: subject,
+                            target: format!("{target}:{port}"),
                         };
                         let history = TaskHistory::new(deep_history);
-                        let task_state = TaskState {
-                            meta: Some(meta),
+                        let task_state = UseCase {
+                            meta: meta,
                             data: TaskData {
                                 result: TaskResult::Empty,
                                 metrics: Metrics::default(),
@@ -345,6 +274,14 @@ impl Application {
             self.state = ApplicationState::Runnig;
         }
         self.state
+    }
+
+    pub fn current_state(&self) -> ApplicationState {
+        self.state
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(self.state, ApplicationState::Runnig)
     }
 
     pub fn tasks_mapping(&self) -> &Mapping {

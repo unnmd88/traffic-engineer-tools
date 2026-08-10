@@ -42,11 +42,11 @@ impl TaskHistory {
 
 #[derive(Clone, Debug)]
 pub struct TaskMeta {
-    pub protocol: Option<Protocol>,
-    pub type_query: Option<TypeQuery>,
-    pub name: Option<String>,
-    pub target: Option<String>,
-    pub subject: Option<String>,
+    pub protocol: Protocol,
+    pub type_query: TypeQuery,
+    pub name: String,
+    pub target: String,
+    pub subject: String,
 }
 
 #[derive(Clone, Debug)]
@@ -58,7 +58,13 @@ pub struct TaskData {
 
 #[derive(Clone, Debug)]
 pub struct TaskState {
-    pub meta: Option<TaskMeta>,
+    pub data: TaskData,
+    pub history: TaskHistory,
+}
+
+#[derive(Clone, Debug)]
+pub struct UseCase {
+    pub meta: TaskMeta,
     pub data: TaskData,
     pub history: TaskHistory,
 }
