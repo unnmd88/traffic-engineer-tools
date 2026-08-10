@@ -1,3 +1,4 @@
+use core::task;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
@@ -139,8 +140,26 @@ pub enum ApplicationState {
     Runnig,
 }
 
+#[derive(Debug, Clone)]
+pub struct Mapping {
+    pub groups: Vec<GroupMapping>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GroupMapping {
+    pub name: String,
+    pub tasks: Vec<TaskMapping>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskMapping {
+    pub name: Option<String>,
+    pub uid: Uid,
+}
+
 pub struct Application {
     app_uid: ApplicationId,
+    mapping: Mapping,
     //snapshot: Snapshot,
     //uid_to_task: HashMap<Uid, (TaskGroupId, TaskPosition)>,
     uid_to_worker_control: HashMap<Uid, WorkerControl>,
@@ -155,6 +174,8 @@ pub struct Application {
 impl Application {
     pub async fn new(config: RawConfig) -> Result<Self, Error> {
         let app_uid = ApplicationId::generate();
+        let mut mapping_groups = Vec::new();
+
         let mut snapshot = Snapshot::new_empty();
         let mut id_generator = IdGenerator::new();
         let mut uid_to_task: HashMap<Uid, (TaskGroupId, TaskPosition)> = HashMap::new();
@@ -185,6 +206,7 @@ impl Application {
                 }
             })?;
             let task_group_id = snapshot.add_group(TaskGroup::new_empty(task_group_name.clone()));
+            let mut task_mapping = Vec::new();
 
             for (task_idx, task) in group.tasks.iter().enumerate() {
                 let poll_config = PollConfig {
@@ -199,6 +221,11 @@ impl Application {
 
                 let worker_id = id_generator.next_worker_id();
                 let task_uid = id_generator.next_uid();
+
+                task_mapping.push(TaskMapping {
+                    uid: task_uid.clone(),
+                    name: name.clone(),
+                });
 
                 let (worker_cmd_tx, worker_cmd_rx) = mpsc::channel(32);
 
@@ -274,7 +301,16 @@ impl Application {
                     }
                 }
             }
+
+            mapping_groups.push(GroupMapping {
+                tasks: task_mapping,
+                name: group.name.clone(),
+            });
         }
+
+        let mapping = Mapping {
+            groups: mapping_groups,
+        };
 
         // tx - для воркеров(они шлют в snapshot-менеджер уже)
         // rx - для самого snapshot-менеджера(он принимает от воркеров, обновляет snapshot и т.д.)
@@ -291,6 +327,7 @@ impl Application {
         Ok(Self {
             app_uid,
             //uid_to_task,
+            mapping,
             state: ApplicationState::Idle,
             uid_to_worker_control,
             snapgot_manager_tx: snapshot_tx,
@@ -308,6 +345,10 @@ impl Application {
             self.state = ApplicationState::Runnig;
         }
         self.state
+    }
+
+    pub fn tasks_mapping(&self) -> &Mapping {
+        &self.mapping
     }
 
     pub async fn get_snapshot(&self) -> Result<Snapshot, Error> {

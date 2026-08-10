@@ -230,6 +230,9 @@ async fn test_monitor_application() -> anyhow::Result<()> {
     println!("Application State: {app_state}");
 
     println!("{}", app.id());
+    println!("Mapping:\n{:#?}", app.tasks_mapping());
+
+    return Ok(());
 
     loop {
         let snaphot = app.get_snapshot().await?;
