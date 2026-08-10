@@ -1,13 +1,19 @@
 use anyhow::{Context, Result};
+use std::any;
 use std::net::{IpAddr, Ipv4Addr};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::Duration;
+use tools_core::monitor::application::app::{
+    Application, GroupConfigDto, PollTimings, Query, RawConfig, SnmpOidItem, TaskDto,
+    TaskSnmpGetDto,
+};
+
 use tools_core::polling::PollConfig;
 use tools_core::snmp::adapters::GenericCustomReader;
 use tools_core::snmp::parsers::parse_oids;
 use tools_core::snmp::primitives::{Community, Port, SnmpOid};
 use tools_core::snmp::{SnmpQueryItem, SnmpReadClient, create_client, primitives};
-use tools_core::worker::{PollerFactory, TaskResult, Worker, WorkerId};
+use tools_core::worker::{PollerFactory, TaskEvent, TaskResult, Worker, WorkerId};
 use tools_core::{Pollable, SnmpError};
 
 #[tokio::main]
@@ -15,7 +21,7 @@ async fn main() -> Result<()> {
     let client = create_client(
         "127.0.0.1".parse::<IpAddr>().expect("Не Ip-адрес"),
         1161,
-        Community::parse("public".to_string()),
+        Community::parse("public".to_string())?,
         Duration::from_millis(4000),
         0,
         Duration::from_millis(200),
@@ -39,7 +45,10 @@ async fn main() -> Result<()> {
     println!("{}", "══".repeat(40));
     println!("{}", "══".repeat(40));
 
-    test_worker(&snmp_client).await?;
+    //test_worker(&snmp_client).await?;
+    println!("{}", "\\\\\\\\".repeat(40));
+
+    test_monitor_application().await;
 
     Ok(())
 }
@@ -118,14 +127,15 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
         .snmp_get_use_case(
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             1161,
-            Community::parse("public".to_string()),
+            Community::parse("public".to_string())?,
             items,
         )
         .await?;
 
     let worker = Worker::new(WorkerId(888), poller, Duration::from_millis(4000));
 
-    let (tx, mut rx) = mpsc::channel(100);
+    let (tx, mut rx) = mpsc::channel::<TaskEvent>(100);
+
     let (tx_cmd, mut cmd_rx) = mpsc::channel(100);
 
     let worker2 = {
@@ -151,7 +161,7 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
             .snmp_get_use_case(
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
                 1164,
-                Community::parse("public".to_string()),
+                Community::parse("public".to_string())?,
                 items,
             )
             .await?;
@@ -167,17 +177,68 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
 
     while let Some(message) = rx.recv().await {
         println!("Получил WorkerMessage");
-        println!("WorkerID: {}", message.worker_id);
-
-        println!("WorkerState: {:#?}", message.worker_state);
+        println!("WorkerID: {:#?}", message.task_result);
 
         match message.task_result {
             TaskResult::SnmpGet(r) => println!("{r}"),
             _ => println!("NotImplemented"),
         }
-
-        println!("WorkerState: {:#?}", message.worker_state);
-        println!("WorkerMetrics: {:#?}", message.metrics);
     }
+    Ok(())
+}
+
+async fn test_monitor_application() -> anyhow::Result<()> {
+    let task_snmp_get_dto = TaskSnmpGetDto {
+        host: "127.0.0.1".to_string(),
+        port: 1161,
+        community: "public".to_string(),
+        oids: vec![
+            SnmpOidItem {
+                name: Some("Stage-Фаза".to_string()),
+                oid: "1.3.6.1.4.1.1618.3.7.2.11.2".to_string(),
+            },
+            SnmpOidItem {
+                name: Some("Plan-План".to_string()),
+                oid: "1.3.6.1.4.1.1618.3.6.2.1.2".to_string(),
+            },
+        ],
+    };
+
+    let snmp_get_query = Query::SnmpGet(task_snmp_get_dto);
+    let task = TaskDto {
+        name: "T-1".to_string(),
+        poll_timings: PollTimings {
+            timeout_ms: 1000,
+            retries: 2,
+            retry_delay_ms: 200,
+        },
+        interval: 4000,
+        deep_history: 2,
+        query: snmp_get_query,
+    };
+    println!("{:#?}", task);
+
+    let group1 = GroupConfigDto {
+        name: "Group-Группа 1".to_string(),
+        tasks: vec![task],
+    };
+    let config = RawConfig {
+        groups: vec![group1],
+    };
+    let mut app = Application::new(config).await?;
+    let app_state = app.start().await;
+    println!("Application State: {app_state}");
+
+    println!("{}", app.id());
+
+    loop {
+        let snaphot = app.get_snapshot().await?;
+        println!("Получил:\n{:#?}", snaphot);
+
+        tokio::time::sleep(Duration::from_secs(4)).await;
+    }
+
+    tokio::signal::ctrl_c().await?;
+    println!("Ctrl-C нажат");
     Ok(())
 }

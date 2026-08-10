@@ -41,12 +41,74 @@ pub enum Error {
     //Io(#[from] std::io::Error),
     #[error("Not found: {0}")]
     NotFound(String),
+    #[error("No response: {0}")]
+    NoResponse(String),
     #[error("ParseError error. Reason: {0}")]
     Parse(#[from] ParseError),
     #[error("SnapShot error: {0}")]
     SnapShot(#[from] SnapShotError),
     #[error("Internal error: {0}")]
     Internal(String),
+    #[error("Create `Monitor` error: {0}")]
+    CreateMonitorError(#[from] CreateMonitorError),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum CreateMonitorError {
+    #[error(
+        "Invalid ip-address: {ip}. TaskGroup: id: {group_id} name: {group_name}. Task id: {task_id}"
+    )]
+    InvalidIpAddress {
+        group_id: usize,
+        group_name: String,
+        task_id: usize,
+        ip: String,
+    },
+    #[error(
+        "Community string can`t be empty. TaskGroup: id: {group_idx} name: {group_name} task index: {task_idx}"
+    )]
+    SnmpCommunityIsEmpty {
+        task_idx: usize,
+        group_idx: usize,
+        group_name: String,
+    },
+    #[error(
+        "Invalid length for community string. TaskGroup: id: {group_id} name: {group_name}. Task id: {task_id}"
+    )]
+    SnmpCommunityInvalidLength {
+        group_id: usize,
+        group_name: String,
+        task_id: usize,
+        min: usize,
+        max: usize,
+        provide: usize,
+    },
+    #[error(
+        "Invalid snmp-oid(pos: {pos}): {oid}. TaskGroup: id: {group_id} name: {group_name}. Task id: {task_id}"
+    )]
+    InvalidSnmpOid {
+        group_id: usize,
+        group_name: String,
+        task_id: usize,
+        oid: String,
+        pos: usize,
+    },
+
+    #[error("GroupName with id={id} can`t be empty")]
+    GroupNameCantBeEmpty { id: usize },
+    #[error(
+        "Invalid length for `GroupName`: id: {group_id} name: {group_name} (min: {min}, max: {max}, got: {provide})"
+    )]
+    GroupNameInvalidLength {
+        group_id: usize,
+        group_name: String,
+        min: usize,
+        max: usize,
+        provide: usize,
+    },
+
+    #[error("{0}")]
+    Other(String),
 }
 
 #[derive(Error, Debug, Clone)]
@@ -60,14 +122,14 @@ pub enum SnapShotError {
 
 #[derive(Error, Debug, Clone)]
 pub enum ParseError {
-    #[error("Invalid length: {message} (min: {min}, max: {max}, got: {provided})")]
+    #[error("Invalid length: {message} (min: {min}, max: {max}, got: {provide})")]
     InvalidLength {
         message: String,
         min: usize,
         max: usize,
-        provided: usize,
+        provide: usize,
     },
-    #[error("value {name} can`t be empty")]
+    #[error("{name} can`t be empty")]
     CantBeEmpty { name: String },
 }
 

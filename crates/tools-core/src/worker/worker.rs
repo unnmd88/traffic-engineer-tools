@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{Duration, Instant, sleep};
 
 use crate::error::PollError;
@@ -24,7 +24,7 @@ pub enum WorkerState {
     Finished,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum WorkerCommand {
     Start,
     Stop,
@@ -37,6 +37,7 @@ pub enum WorkerResponse {
 
 #[derive(Clone, Debug)]
 pub enum TaskResult {
+    Empty,
     Test(String),
     SnmpGet(Response<SnmpGetResponse>),
     NoResponseError(Vec<PollErrorContext>),
@@ -49,6 +50,7 @@ impl From<Response<SnmpGetResponse>> for TaskResult {
     }
 }
 
+#[derive(Clone)]
 pub struct TaskEvent {
     pub worker_id: WorkerId,
     pub task_result: TaskResult,
@@ -58,7 +60,7 @@ pub struct TaskEvent {
 
 pub struct Worker<P: Pollable> {
     id: WorkerId,
-    state: WorkerState,
+    //state: WorkerState,
     poller: Poller<P>,
     interval: Duration,
 }
@@ -74,7 +76,7 @@ where
         //repeat_config: WorkRimingConfig,
     ) -> Self {
         Self {
-            state: WorkerState::Idle,
+            //state: WorkerState::Idle,
             id,
             poller,
             interval,
@@ -82,14 +84,18 @@ where
     }
 
     pub async fn run(self, tx: mpsc::Sender<TaskEvent>, mut cmd_rx: mpsc::Receiver<WorkerCommand>) {
-        let mut state = WorkerState::Running;
+        let mut state = WorkerState::Idle;
         //let mut attempts = 0u64;
         let mut metrics = Metrics::default();
+        println!("Worker {} state: {:#?}", self.id, state);
+        //println!("interval: {:?}", self.interval);
 
         loop {
             //let start = Instant::now();
             tokio::select! {
                 cmd = cmd_rx.recv() => {
+                    println!("Worker {} accept command: {:?}", self.id, cmd);
+
                     match cmd {
                         Some(WorkerCommand::Stop) => {
                             state = WorkerState::Stopped;
@@ -103,6 +109,8 @@ where
                     }
                 }
                 _ = sleep(self.interval) => {
+                    //println!("select! sleep. Worker {} state {state}", self.id);
+
                     if state == WorkerState::Running {
 
                     let raw_result = self.poller.poll().await;
@@ -115,6 +123,8 @@ where
                         }
                     };
                     metrics = updated_metrics;
+                        //println!("Выполнена работа #{:#?}", &res);
+
 
                        if  tx.send(TaskEvent {
                             worker_id: self.id,
@@ -124,9 +134,9 @@ where
                                 })
                             .await.is_err() {
                                 eprintln!("Worker {}: receiver dropped", self.id);
-                                return;                            };
-                    //println!("Выполнена работа #{}", attempts);
-                    }
+                                return;
+                            };
+                                        }
 
                 }
             }

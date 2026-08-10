@@ -11,6 +11,8 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.89"
+derive_more = { version = "2.1.1", features = ["full"] }
+async-snmp = "0.13.0"
 async-fd-lock = "0.2.0"
 chrono = "0.4.44"
 clap = { version = "4.6.1", features = ["derive"] }

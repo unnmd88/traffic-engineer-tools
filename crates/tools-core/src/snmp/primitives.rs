@@ -81,7 +81,7 @@ impl Community {
                 message: "community string too long.".to_string(),
                 min: 1,
                 max: 32,
-                provided: value.len(),
+                provide: value.len(),
             });
         }
         Ok(Self(value))

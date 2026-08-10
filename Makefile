@@ -26,6 +26,10 @@ test-core:
 check:
 	cargo check --target x86_64-unknown-linux-gnu
 
+.PHONY: check-core
+check-core:
+	cargo check -p tools-core --target x86_64-unknown-linux-gnu
+
 .PHONY: run
 run:
 	ENV_FILE=$(ENV_FILE) cargo run --target x86_64-unknown-linux-gnu

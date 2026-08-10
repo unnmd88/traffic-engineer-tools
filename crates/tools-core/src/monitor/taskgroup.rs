@@ -1,15 +1,14 @@
-use std::collections::VecDeque;
-
 use chrono::{DateTime, Utc};
-use derive_more::{Deref, Display, Eq};
+use derive_more::{Constructor, Deref, Display, Eq};
 
 use crate::{
     Error,
     error::ParseError,
+    monitor::task::{TaskData, TaskState},
     worker::{Metrics, TaskEvent, TaskResult, WorkerId, WorkerState},
 };
 
-#[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor)]
 pub struct TaskGroupId(usize);
 
 impl TaskGroupId {
@@ -18,7 +17,7 @@ impl TaskGroupId {
     }
 }
 
-#[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor)]
 pub struct TaskPosition(usize);
 
 impl TaskPosition {
@@ -34,24 +33,28 @@ impl TaskGroupName {
     const MIN_LEN: usize = 1;
     const MAX_LEN: usize = 64;
 
-    pub fn from_string(name: &str) -> Result<Self, Error> {
+    pub fn parse(name: &str) -> Result<Self, ParseError> {
         let len = name.len();
 
         if !(Self::MIN_LEN..=Self::MAX_LEN).contains(&len) {
             let message = match len {
-                0 => "value is empty".to_string(),
+                0 => {
+                    return Err(ParseError::CantBeEmpty {
+                        name: "GroupName".to_string(),
+                    });
+                }
                 l if l < Self::MIN_LEN => {
                     format!("too short (got {l}, need at least {})", Self::MIN_LEN)
                 }
                 _ => format!("too long (got {len}, max {})", Self::MAX_LEN),
             };
 
-            return Err(Error::Parse(ParseError::InvalidLength {
+            return Err(ParseError::InvalidLength {
                 message,
                 min: Self::MIN_LEN,
                 max: Self::MAX_LEN,
-                provided: len,
-            }));
+                provide: len,
+            });
         }
 
         Ok(Self(name.to_string()))
@@ -59,53 +62,7 @@ impl TaskGroupName {
 }
 
 #[derive(Clone, Debug)]
-pub struct TaskMeta {
-    pub name: String,
-    pub target: String,
-    pub subject: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskHistory {
-    max: usize,
-    history: VecDeque<TaskData>,
-}
-
-impl TaskHistory {
-    pub fn new(max_history: u8) -> Self {
-        let max_as_usize = max_history as usize;
-        Self {
-            max: max_as_usize,
-            history: VecDeque::with_capacity(max_as_usize),
-        }
-    }
-
-    pub fn push(&mut self, task_data: TaskData) {
-        if self.history.len() >= self.max {
-            self.history.pop_back();
-        }
-        self.history.push_front(task_data);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskData {
-    pub result: TaskResult,
-    pub metrics: Metrics,
-    pub last_update: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskState {
-    pub meta: TaskMeta,
-    pub data: TaskData,
-    //pub worker_state: WorkerState,
-    pub history: TaskHistory,
-}
-
-#[derive(Clone, Debug)]
 pub struct TaskGroup {
-    id: TaskGroupId,
     name: TaskGroupName,
     tasks: Vec<TaskState>,
     last_update: DateTime<Utc>,
@@ -118,18 +75,30 @@ pub struct TaskDataUpdateMessage {
 }
 
 impl TaskGroup {
-    pub fn new(id: TaskGroupId, name: TaskGroupName, tasks: Vec<TaskState>) -> Self {
+    pub fn new(name: TaskGroupName, tasks: Vec<TaskState>) -> Self {
         Self {
-            id,
             name,
             tasks,
             last_update: Utc::now(),
         }
     }
 
+    pub fn new_empty(name: TaskGroupName) -> Self {
+        Self {
+            name,
+            tasks: Vec::new(),
+            last_update: Utc::now(),
+        }
+    }
+
+    pub fn add_taskstate(&mut self, value: TaskState) -> TaskPosition {
+        self.tasks.push(value);
+        TaskPosition::new(self.tasks.len() - 1)
+    }
+
     pub fn update(
         &mut self,
-        task_position: TaskPosition,
+        task_position: &TaskPosition,
         payload: TaskDataUpdateMessage,
     ) -> Result<(), Error> {
         let idx = task_position.as_usize();
@@ -147,13 +116,11 @@ impl TaskGroup {
             last_update: Utc::now(),
         };
 
-        //task_state.worker_state = event.worker_state;
-
         Ok(())
     }
 
-    pub fn id(&self) -> TaskGroupId {
-        self.id.clone()
+    pub fn len(&self) -> usize {
+        self.tasks.len()
     }
 
     pub fn name(&self) -> TaskGroupName {

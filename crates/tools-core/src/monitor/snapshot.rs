@@ -11,11 +11,6 @@ use crate::{
     worker::{TaskEvent, TaskResult, WorkerId},
 };
 
-struct WorkerPosition {
-    group_id: TaskGroupId,
-    position: TaskPosition,
-}
-
 #[derive(Clone, Display)]
 pub struct SnapShotId(Uuid);
 
@@ -26,43 +21,52 @@ impl SnapShotId {
 }
 
 #[derive(Clone, Debug)]
-pub struct UpdateMessage {
+pub struct UpdateTaskState {
     pub payload: TaskDataUpdateMessage,
     pub group_id: TaskGroupId,
     pub task_position: TaskPosition,
 }
 
+#[derive(Clone, Debug)]
 pub struct Snapshot {
-    id: SnapShotId,
     groups: Vec<TaskGroup>,
-    //worker_mapping: HashMap<WorkerId, WorkerPosition>,
     last_update: DateTime<Utc>,
 }
 
 impl Snapshot {
     pub fn new(groups: Vec<TaskGroup>) -> Self {
         Self {
-            id: SnapShotId::generate(),
             groups,
             last_update: Utc::now(),
         }
     }
 
-    pub fn update(&mut self, message: UpdateMessage) -> Result<(), Error> {
-        /*
-                let location = self.worker_mapping.get(&event.worker_id).ok_or(
-                    SnapShotError::UpdateWorkerNotFound {
-                        snapshot_id: self.id.to_string(),
-                        worker_id: event.worker_id.to_string(),
-                    },
-                )?;
-        */
+    pub fn new_empty() -> Self {
+        Self {
+            groups: Vec::new(),
+            last_update: Utc::now(),
+        }
+    }
 
+    pub fn add_group(&mut self, group: TaskGroup) -> TaskGroupId {
+        self.groups.push(group);
+        TaskGroupId::new(self.groups.len() - 1)
+    }
+
+    pub fn get_mut_taskgroup(&mut self, id: &TaskGroupId) -> Option<&mut TaskGroup> {
+        self.groups.get_mut(id.as_usize())
+    }
+
+    pub fn update_taskstate(
+        &mut self,
+        group_id: &TaskGroupId,
+        task_position_id: &TaskPosition,
+        data: TaskDataUpdateMessage,
+    ) -> Result<(), Error> {
         let target = self
-            .groups
-            .get_mut(message.group_id.as_usize())
-            .ok_or(Error::NotFound(format!("Group {} not found", message.group_id)))?
-            .update(message.task_position, message.payload)?;
+            .get_mut_taskgroup(group_id)
+            .ok_or(Error::NotFound(format!("Group {} not found", group_id)))?
+            .update(task_position_id, data)?;
 
         Ok(())
     }
