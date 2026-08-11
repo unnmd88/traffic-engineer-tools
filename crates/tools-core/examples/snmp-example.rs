@@ -212,7 +212,7 @@ async fn test_monitor_application() -> anyhow::Result<()> {
             retries: 2,
             retry_delay_ms: 200,
         },
-        interval: 4000,
+        interval_ms: 4000,
         deep_history: 2,
         query: snmp_get_query,
     };

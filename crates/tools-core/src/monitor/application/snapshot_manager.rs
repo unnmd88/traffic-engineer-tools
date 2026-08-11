@@ -11,6 +11,7 @@ use crate::{
     worker::{Metrics, TaskEvent, TaskResult},
 };
 
+#[derive(Debug)]
 pub enum SnapshotCommand {
     Update {
         uid: Uid,
@@ -42,7 +43,7 @@ impl SnapshotManager {
 
     pub async fn run(mut self, mut cmd_rx: mpsc::Receiver<SnapshotCommand>) {
         while let Some(cmd) = cmd_rx.recv().await {
-            println!("SnapshotManager: SnapshotCommand accepted");
+            //println!("SnapshotManager: SnapshotCommand accepted");
 
             match cmd {
                 SnapshotCommand::Update { uid, data } => {

@@ -22,7 +22,7 @@ pub struct TaskPollTimings {
 pub struct TaskConfig {
     pub name: String,
     pub poll_timings: TaskPollTimings,
-    pub interval: u64,
+    pub interval_ms: u64,
     pub deep_history: u8,
     pub query: Query,
 }

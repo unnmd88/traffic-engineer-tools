@@ -38,6 +38,18 @@ impl TaskHistory {
         }
         self.history.push_front(task_data);
     }
+
+    pub fn deep(&self) -> usize {
+        self.max
+    }
+
+    pub fn history(&self) -> &VecDeque<TaskData> {
+        &self.history
+    }
+
+    pub fn len(&self) -> usize {
+        self.history.len()
+    }
 }
 
 #[derive(Clone, Debug)]

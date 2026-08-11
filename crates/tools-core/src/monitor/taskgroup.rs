@@ -91,6 +91,18 @@ impl TaskGroup {
         }
     }
 
+    pub fn name(&self) -> &TaskGroupName {
+        &self.name
+    }
+
+    pub fn tasks(&self) -> &[UseCase] {
+        &self.tasks
+    }
+
+    pub fn last_update(&self) -> DateTime<Utc> {
+        self.last_update
+    }
+
     pub fn add_taskstate(&mut self, value: UseCase) -> TaskPosition {
         self.tasks.push(value);
         TaskPosition::new(self.tasks.len() - 1)
@@ -121,17 +133,5 @@ impl TaskGroup {
 
     pub fn len(&self) -> usize {
         self.tasks.len()
-    }
-
-    pub fn name(&self) -> TaskGroupName {
-        self.name.clone()
-    }
-
-    pub fn tasks(&self) -> &[UseCase] {
-        &self.tasks
-    }
-
-    pub fn last_update(&self) -> DateTime<Utc> {
-        self.last_update.clone()
     }
 }

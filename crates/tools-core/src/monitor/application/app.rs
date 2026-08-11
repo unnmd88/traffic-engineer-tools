@@ -216,7 +216,7 @@ impl Application {
                             .snmp_get_use_case(target, port, community, oids)
                             .await?;
                         let worker =
-                            Worker::new(worker_id, poller, Duration::from_millis(task.interval));
+                            Worker::new(worker_id, poller, Duration::from_millis(task.interval_ms));
                         let join_handle =
                             tokio::spawn(worker.run(worker_tx.clone(), worker_cmd_rx));
                         let worker_control = WorkerControl {

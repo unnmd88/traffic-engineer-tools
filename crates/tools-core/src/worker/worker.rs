@@ -87,14 +87,14 @@ where
         let mut state = WorkerState::Idle;
         //let mut attempts = 0u64;
         let mut metrics = Metrics::default();
-        println!("Worker {} state: {:#?}", self.id, state);
+        //println!("Worker {} state: {:#?}", self.id, state);
         //println!("interval: {:?}", self.interval);
 
         loop {
             //let start = Instant::now();
             tokio::select! {
                 cmd = cmd_rx.recv() => {
-                    println!("Worker {} accept command: {:?}", self.id, cmd);
+                    //println!("Worker {} accept command: {:?}", self.id, cmd);
 
                     match cmd {
                         Some(WorkerCommand::Stop) => {
