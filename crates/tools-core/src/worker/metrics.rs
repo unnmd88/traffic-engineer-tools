@@ -9,6 +9,7 @@ pub struct Metrics {
     pub avg_latency_ms: u64,
     pub min_latency_ms: u64,
     pub max_latency_ms: u64,
+    total_latency_ms: u64,
 }
 
 impl Metrics {
@@ -21,23 +22,24 @@ impl Metrics {
             avg_latency_ms: 0,
             min_latency_ms: u64::MAX,
             max_latency_ms: 0,
+            total_latency_ms: 0,
         }
     }
 
     pub fn with_success(self, latency: Duration) -> Self {
         let current_latency_ms = latency.as_millis() as u64;
-        let total = self.total_attempts + 1;
-        let successful = self.successful + 1;
-        let avg = (self.avg_latency_ms * self.successful + current_latency_ms) / successful;
+        let new_successful = self.successful + 1;
+        let new_total_latency = self.total_latency_ms + current_latency_ms;
 
         Self {
-            total_attempts: total,
-            successful,
+            total_attempts: self.total_attempts + 1,
+            successful: new_successful,
             errors: self.errors,
             current_latency_ms,
-            avg_latency_ms: avg,
+            avg_latency_ms: new_total_latency / new_successful, // точное среднее
             min_latency_ms: self.min_latency_ms.min(current_latency_ms),
             max_latency_ms: self.max_latency_ms.max(current_latency_ms),
+            total_latency_ms: new_total_latency,
         }
     }
 
