@@ -4,7 +4,7 @@ use crate::{
     polling::Response,
     utils::get_elapsed_as_u64,
 };
-use chrono::Utc;
+use chrono::{Local, Utc};
 use tokio::time::{Duration, Instant, error::Elapsed, sleep, timeout};
 
 #[derive(Clone, Copy, Debug)]
@@ -24,7 +24,7 @@ impl<A: Pollable> Poller<A> {
         Self { adapter, config }
     }
 
-    pub async fn poll(&self) -> Result<Response<A::Output>, Error> {
+    pub async fn poll(&self) -> Result<Response<A::Output>, PollError> {
         let mut errors: Vec<PollErrorContext> = Vec::with_capacity(self.config.retries as usize);
         let start = Instant::now();
 
@@ -40,7 +40,7 @@ impl<A: Pollable> Poller<A> {
                         //target,
                         //name,
                         elapsed,
-                        timestamp: Utc::now(),
+                        timestamp: Local::now(),
                         errors,
                         attempts: attempt,
                         payload,
@@ -66,6 +66,6 @@ impl<A: Pollable> Poller<A> {
                 sleep(self.config.retry_delay).await;
             }
         }
-        Err(Error::Poll(PollError::NoResponse { errors }))
+        Err(PollError::NoResponse { errors })
     }
 }

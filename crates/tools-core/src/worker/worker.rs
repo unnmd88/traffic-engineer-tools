@@ -37,11 +37,11 @@ pub enum WorkerResponse {
 
 #[derive(Clone, Debug)]
 pub enum TaskResult {
-    Empty,
-    Test(String),
+    Idle,
+    //Test(String),
     SnmpGet(Response<SnmpGetResponse>),
-    NoResponseError(Vec<PollErrorContext>),
-    OtherError { message: String },
+    NoResponse(Vec<PollErrorContext>),
+    Fail { message: String },
 }
 
 impl From<Response<SnmpGetResponse>> for TaskResult {
@@ -113,30 +113,30 @@ where
 
                     if state == WorkerState::Running {
 
-                    let raw_result = self.poller.poll().await;
-                    let (updated_metrics,  res) = match raw_result {
-                        Ok(response) => {
-                            (metrics.with_success(response.elapsed), response.into())
-                        }
-                        Err(e) => {
-                            (metrics.with_error(), task_result_from_error(e))
-                        }
-                    };
-                    metrics = updated_metrics;
+                        let raw_result = self.poller.poll().await;
+                        let (updated_metrics,  res) = match raw_result {
+                            Ok(response) => {
+                                (metrics.with_success(response.elapsed), response.into())
+                            }
+                            Err(e) => {
+                                (metrics.with_error(), convert_error(e))
+                            }
+                        };
+                        metrics = updated_metrics;
                         //println!("Выполнена работа #{:#?}", &res);
 
 
                        if  tx.send(TaskEvent {
-                            worker_id: self.id,
-                            task_result: res,
-                            metrics: metrics.clone(),
-                            worker_state: state,
-                                })
+                              worker_id: self.id,
+                              task_result: res,
+                              metrics: metrics.clone(),
+                              worker_state: state,
+                            })
                             .await.is_err() {
                                 eprintln!("Worker {}: receiver dropped", self.id);
                                 return;
-                            };
-                                        }
+                        };
+                    }
 
                 }
             }
@@ -144,14 +144,9 @@ where
     }
 }
 
-fn task_result_from_error(e: Error) -> TaskResult {
+fn convert_error(e: PollError) -> TaskResult {
     match e {
-        Error::Poll(PollError::NoResponse { errors }) => {
-            println!("{:#?}", errors);
-            TaskResult::NoResponseError(errors)
-        }
-        _ => TaskResult::OtherError {
-            message: "OtherError".to_string(),
-        },
+        PollError::NoResponse { errors } => TaskResult::NoResponse(errors),
+        PollError::Other { message } => TaskResult::Fail { message },
     }
 }

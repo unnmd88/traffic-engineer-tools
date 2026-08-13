@@ -1,8 +1,6 @@
 use core::fmt;
 use std::fmt::{Display, Formatter};
 
-pub const DELIMITER: &str = "══════════════════════════════════════════════════"; //50
-
 #[derive(Debug, Clone)]
 pub struct SnmpGetSample {
     pub oid_name: Option<String>,
@@ -32,7 +30,7 @@ pub struct SnmpGetResponse {
 
 impl Display for SnmpGetResponse {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Количетво опрошенных OID: {}", self.samples.len())?;
+        writeln!(f, "OIDs({}):", self.samples.len())?;
         for sample in self.samples.iter() {
             write!(f, " - {sample}")?
         }

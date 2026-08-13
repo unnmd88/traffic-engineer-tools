@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    Error, Payload, Pollable, SnmpError,
+    Payload, Pollable, SnmpError,
     error::PollError,
     snmp::{
         SnmpQueryItem, SnmpReadClient,
@@ -58,11 +58,14 @@ impl Pollable for GenericCustomReader {
     }
     */
 
-    async fn poll(&self) -> Result<Self::Output, Error> {
+    async fn poll(&self) -> Result<Self::Output, PollError> {
         let payload = self
             .client
             .get_many(&self.oids_to_request)
-            .await?
+            .await
+            .map_err(|e| PollError::Other {
+                message: e.to_string(),
+            })?
             .into_iter()
             .zip(self.oid_names.iter())
             .map(|(varbind, name)| SnmpGetSample {

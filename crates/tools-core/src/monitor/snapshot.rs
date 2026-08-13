@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use derive_more::Display;
 use uuid::Uuid;
 
 use crate::{
     Error,
+    constants::HUMAN_DT_FMT,
     error::SnapShotError,
     monitor::taskgroup::{TaskDataUpdateMessage, TaskGroup, TaskGroupId, TaskPosition},
     utils::format_moscow_human,
-    worker::{TaskEvent, TaskResult, WorkerId},
+    worker::{Metrics, TaskEvent, TaskResult, WorkerId},
 };
+use constcat::concat;
 
 #[derive(Clone, Display)]
 pub struct SnapShotId(Uuid);
@@ -31,14 +33,14 @@ pub struct UpdateTaskState {
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     groups: Vec<TaskGroup>,
-    last_update: DateTime<Utc>,
+    last_update: DateTime<Local>,
 }
 
 impl Snapshot {
     pub fn new(groups: Vec<TaskGroup>) -> Self {
         Self {
             groups,
-            last_update: Utc::now(),
+            last_update: Local::now(),
         }
     }
 
@@ -53,7 +55,7 @@ impl Snapshot {
     pub fn new_empty() -> Self {
         Self {
             groups: Vec::new(),
-            last_update: Utc::now(),
+            last_update: Local::now(),
         }
     }
 
@@ -76,7 +78,7 @@ impl Snapshot {
             .get_mut_taskgroup(group_id)
             .ok_or(Error::NotFound(format!("Group {} not found", group_id)))?
             .update(task_position_id, data)?;
-        self.last_update = Utc::now();
+        self.last_update = Local::now();
 
         Ok(())
     }
@@ -84,66 +86,62 @@ impl Snapshot {
 
 use std::fmt::{self, Display, Formatter};
 
+const LINE_THIN: &str =
+    "────────────────────────────────────────────────────────────────────────────────";
+const LINE_DOUBLE: &str =
+    "════════════════════════════════════════════════════════════════════════════";
+const LINE_DOTTED: &str =
+    "················································································";
+const TITLE: &str = "SNAPSHOT";
+const SPACES: &str = "                                      ";
+const SNAPSHOT_HEADER: &str = concat!(LINE_DOUBLE, "\n", SPACES, TITLE, "\n", LINE_DOUBLE);
+
 impl Display for Snapshot {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // ============================================================
         // Заголовок
         // ============================================================
-        writeln!(f, "{}", "═".repeat(60))?;
-        writeln!(f, " SNAPSHOT")?;
-        writeln!(f, "{}", "═".repeat(60))?;
-        writeln!(f, "Last update: {}", format_moscow_human(&self.last_update))?;
-        //let total_tasks: usize = self.groups.iter().map(|g| g.len()).sum();
-        writeln!(f, "Total groups: {} Total tasks: {}", self.groups.len(), self.total_tasks())?;
-        writeln!(f, "{}", "─".repeat(60))?;
+
+        writeln!(f, "{SNAPSHOT_HEADER}")?;
+        writeln!(f, "Last update: {}", &self.last_update)?;
+        writeln!(f, "Total groups: {} Total tasks: {}\n", self.groups.len(), self.total_tasks())?;
+        //writeln!(f, "{LINE_THIN}")?;
 
         // ============================================================
         // Группы
         // ============================================================
         for (group_idx, group) in self.groups.iter().enumerate() {
-            writeln!(f, " Group {} ({} tasks)", group.name(), group.len())?;
-            writeln!(f, "{}", "─".repeat(60))?;
+            writeln!(f, "Task group name: {} ({} tasks)", group.name(), group.len())?;
+            //writeln!(f, "{}", "─".repeat(80))?;
 
             for (task_idx, task) in group.tasks().iter().enumerate() {
                 // ============================================================
                 // Шапка задачи
                 // ============================================================
 
-                writeln!(f, "\n Task  '{}'", task.meta.name)?;
+                writeln!(f, "\nTask name: '{}'", task.meta.name)?;
                 //writeln!(f, "  {}", "·".repeat(50))?;
 
                 // ============================================================
                 // Метаданные
                 // ============================================================
-                writeln!(f, " Target: {}", task.meta.target)?;
-                writeln!(f, " Protocol: {:?}", task.meta.protocol)?;
-                writeln!(f, " Type: {:?}", task.meta.type_query)?;
-                writeln!(f, " Subject:")?;
-                for line in task.meta.subject.lines() {
-                    writeln!(f, "     {}", line)?;
-                }
-
-                let status = match &task.data.result {
-                    TaskResult::NoResponseError(_) => "Error: timeout",
-                    _ => "Success",
-                };
+                writeln!(f, "Target: {}", task.meta.target)?;
+                //writeln!(f, " Protocol: {:?}", task.meta.protocol)?;
+                //writeln!(f, " Type: {:?}", task.meta.type_query)?;
+                writeln!(f, "Subject: {}", task.meta.subject)?;
 
                 // ============================================================
                 // Статус и данные
                 // ============================================================
-                writeln!(f, "   Status: {}", status)?;
 
                 match &task.data.result {
                     TaskResult::SnmpGet(response) => {
-                        writeln!(f, "   Response:")?;
-                        for line in response.to_string().lines() {
-                            writeln!(f, "     {}", line)?;
-                        }
+                        writeln!(f, "Snmp-get response:\n{response}")?;
                     }
-                    TaskResult::NoResponseError(errors) => {
-                        writeln!(f, "   Errors ({}):", errors.len())?;
-                        for (i, err) in errors.iter().enumerate() {
-                            writeln!(f, "     {}. {}", i + 1, err)?;
+                    TaskResult::NoResponse(errors) => {
+                        writeln!(f, "Timeout error after {} attempts:", errors.len())?;
+                        for err in errors.iter() {
+                            writeln!(f, "{err}")?;
                         }
                     }
                     _ => {}
@@ -153,61 +151,31 @@ impl Display for Snapshot {
                 // Метрики
                 // ============================================================
                 let m = &task.data.metrics;
-                writeln!(f, "  📈 Metrics:")?;
-                writeln!(f, "     • Total attempts: {}", m.total_attempts)?;
-                writeln!(f, "     • Successful: {} ✅", m.successful)?;
-                writeln!(f, "     • Errors: {} ❌", m.errors)?;
-                writeln!(f, "     • Current latency: {} ms", m.current_latency_ms)?;
-
                 if m.total_attempts > 0 {
-                    writeln!(f, "     • Average latency: {} ms", m.avg_latency_ms)?;
-                    if m.min_latency_ms != u64::MAX {
-                        writeln!(f, "     • Min latency: {} ms", m.min_latency_ms)?;
-                    } else {
-                        writeln!(f, "     • Min latency: —")?;
-                    }
-                    writeln!(f, "     • Max latency: {} ms", m.max_latency_ms)?;
-                } else {
-                    writeln!(f, "     • Average latency: —")?;
-                    writeln!(f, "     • Min latency: —")?;
-                    writeln!(f, "     • Max latency: —")?;
+                    //writeln!(f, "\nMetrics:")?;
+                    writeln!(
+                        f,
+                        "Requests| Total: {} Successfull: {} Errors: {}",
+                        m.total_attempts, m.successful, m.errors
+                    )?;
+                    writeln!(
+                        f,
+                        "Latency ms| Current: {} Avg: {} Min: {} Max: {}",
+                        m.current_latency_ms,
+                        m.avg_latency_ms,
+                        if m.min_latency_ms == u64::MAX {
+                            0
+                        } else {
+                            m.min_latency_ms
+                        },
+                        m.max_latency_ms
+                    )?;
                 }
 
-                // ============================================================
-                // История
-                // ============================================================
-                if !task.history.history().is_empty() {
-                    writeln!(f, "  📜 History ({} entries):", task.history.len())?;
-                    for (i, entry) in task.history.history().iter().enumerate().take(5) {
-                        writeln!(
-                            f,
-                            "     {}. {} ({} ms)",
-                            i + 1,
-                            match entry.result {
-                                TaskResult::SnmpGet(_) => "✅ Success",
-                                TaskResult::NoResponseError(_) => "❌ No response",
-                                _ => "❓ Other",
-                            },
-                            entry.metrics.current_latency_ms
-                        )?;
-                    }
-                    if task.history.len() > 5 {
-                        writeln!(f, "     ... and {} more entries", task.history.len() - 5)?;
-                    }
-                } else {
-                    writeln!(f, "  📜 History: (empty)")?;
-                }
-
-                writeln!(f, "  ⏱️  Last update: {}", task.data.last_update.format("%H:%M:%S%.3f"))?;
+                writeln!(f, "Last update: {}", task.data.last_update.format(HUMAN_DT_FMT))?;
             }
+            writeln!(f, "{LINE_DOTTED}")?;
         }
-
-        // ============================================================
-        // Футер
-        // ============================================================
-        writeln!(f, "\n{}", "═".repeat(80))?;
-        writeln!(f, "📊 Summary: {} groups, {} tasks", self.groups.len(), self.total_tasks())?;
-        writeln!(f, "{}", "═".repeat(80))?;
 
         Ok(())
     }

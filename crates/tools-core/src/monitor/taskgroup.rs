@@ -1,10 +1,10 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use derive_more::{Constructor, Deref, Display, Eq};
 
 use crate::{
     Error,
     error::ParseError,
-    monitor::task::{TaskData, UseCase},
+    monitor::task::{Task, TaskData},
     worker::{Metrics, TaskEvent, TaskResult, WorkerId, WorkerState},
 };
 
@@ -64,8 +64,8 @@ impl TaskGroupName {
 #[derive(Clone, Debug)]
 pub struct TaskGroup {
     name: TaskGroupName,
-    tasks: Vec<UseCase>,
-    last_update: DateTime<Utc>,
+    tasks: Vec<Task>,
+    last_update: DateTime<Local>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,11 +75,11 @@ pub struct TaskDataUpdateMessage {
 }
 
 impl TaskGroup {
-    pub fn new(name: TaskGroupName, tasks: Vec<UseCase>) -> Self {
+    pub fn new(name: TaskGroupName, tasks: Vec<Task>) -> Self {
         Self {
             name,
             tasks,
-            last_update: Utc::now(),
+            last_update: Local::now(),
         }
     }
 
@@ -87,7 +87,7 @@ impl TaskGroup {
         Self {
             name,
             tasks: Vec::new(),
-            last_update: Utc::now(),
+            last_update: Local::now(),
         }
     }
 
@@ -95,15 +95,15 @@ impl TaskGroup {
         &self.name
     }
 
-    pub fn tasks(&self) -> &[UseCase] {
+    pub fn tasks(&self) -> &[Task] {
         &self.tasks
     }
 
-    pub fn last_update(&self) -> DateTime<Utc> {
+    pub fn last_update(&self) -> DateTime<Local> {
         self.last_update
     }
 
-    pub fn add_taskstate(&mut self, value: UseCase) -> TaskPosition {
+    pub fn add_taskstate(&mut self, value: Task) -> TaskPosition {
         self.tasks.push(value);
         TaskPosition::new(self.tasks.len() - 1)
     }
@@ -125,7 +125,7 @@ impl TaskGroup {
         task_state.data = TaskData {
             result: payload.task_result,
             metrics: payload.metrics,
-            last_update: Utc::now(),
+            last_update: Local::now(),
         };
 
         Ok(())

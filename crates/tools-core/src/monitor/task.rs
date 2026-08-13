@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use derive_more::Display;
 
 use crate::worker::{Metrics, TaskResult};
@@ -65,7 +65,7 @@ pub struct TaskMeta {
 pub struct TaskData {
     pub result: TaskResult,
     pub metrics: Metrics,
-    pub last_update: DateTime<Utc>,
+    pub last_update: DateTime<Local>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,7 +75,7 @@ pub struct TaskState {
 }
 
 #[derive(Clone, Debug)]
-pub struct UseCase {
+pub struct Task {
     pub meta: TaskMeta,
     pub data: TaskData,
     pub history: TaskHistory,

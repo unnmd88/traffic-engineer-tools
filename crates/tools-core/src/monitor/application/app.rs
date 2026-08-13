@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
 };
 
-use chrono::Utc;
+use chrono::Local;
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -24,7 +24,7 @@ use crate::{
             task_mapping::{GroupMapping, Mapping, TaskMapping},
             worker_brige::WorkerBridge,
         },
-        task::{Protocol, TaskData, TaskHistory, TaskMeta, TypeQuery, UseCase},
+        task::{Protocol, Task, TaskData, TaskHistory, TaskMeta, TypeQuery},
         taskgroup::{TaskGroup, TaskGroupId, TaskGroupName, TaskPosition},
     },
     polling::PollConfig,
@@ -192,15 +192,15 @@ impl Application {
                             type_query: TypeQuery::SnmpGet,
                             name,
                             subject: subject,
-                            target: format!("{target}:{port}"),
+                            target: format!("{target} port: {port}"),
                         };
                         let history = TaskHistory::new(deep_history);
-                        let task_state = UseCase {
+                        let task_state = Task {
                             meta: meta,
                             data: TaskData {
-                                result: TaskResult::Empty,
+                                result: TaskResult::Idle,
                                 metrics: Metrics::default(),
-                                last_update: Utc::now(),
+                                last_update: Local::now(),
                             },
                             history,
                         };
