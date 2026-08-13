@@ -36,7 +36,7 @@ impl Metrics {
             successful: new_successful,
             errors: self.errors,
             current_latency_ms,
-            avg_latency_ms: new_total_latency / new_successful, // точное среднее
+            avg_latency_ms: new_total_latency / new_successful,
             min_latency_ms: self.min_latency_ms.min(current_latency_ms),
             max_latency_ms: self.max_latency_ms.max(current_latency_ms),
             total_latency_ms: new_total_latency,

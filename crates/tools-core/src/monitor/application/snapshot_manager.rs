@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
     monitor::{
@@ -10,6 +10,15 @@ use crate::{
     },
     worker::{Metrics, TaskEvent, TaskResult},
 };
+
+#[derive(Debug, Clone)]
+pub enum SnapshotEvent {
+    Update {
+        snapshot: Arc<Snapshot>,
+        group_id: TaskGroupId,
+        task_position: TaskPosition,
+    },
+}
 
 #[derive(Debug)]
 pub enum SnapshotCommand {
@@ -41,23 +50,36 @@ impl SnapshotManager {
         }
     }
 
-    pub async fn run(mut self, mut cmd_rx: mpsc::Receiver<SnapshotCommand>) {
+    pub async fn run(
+        mut self,
+        mut cmd_rx: mpsc::Receiver<SnapshotCommand>,
+        tx: broadcast::Sender<SnapshotEvent>,
+    ) {
         while let Some(cmd) = cmd_rx.recv().await {
-            //println!("SnapshotManager: SnapshotCommand accepted");
-
             match cmd {
                 SnapshotCommand::Update { uid, data } => {
-                    let (group, task_position) = self.task_mapping.get(&uid).unwrap();
+                    let (group_id, task_position) =
+                        self.task_mapping.get(&uid).copied().expect("UID not found");
+
                     self.snapshot
-                        .update_taskstate(group, task_position, data)
+                        .update_taskstate(&group_id, &task_position, data)
                         .unwrap();
+
+                    if tx.receiver_count() > 0 {
+                        let event = SnapshotEvent::Update {
+                            snapshot: Arc::new(self.snapshot.clone()),
+                            group_id,
+                            task_position,
+                        };
+                        if let Err(e) = tx.send(event) {
+                            eprintln!("Failed to send event: {}", e);
+                        }
+                    }
                 }
                 SnapshotCommand::GetSnapShot { response } => {
                     let _ = response.send(self.snapshot.clone());
                 }
             }
         }
-
-        ()
     }
 }

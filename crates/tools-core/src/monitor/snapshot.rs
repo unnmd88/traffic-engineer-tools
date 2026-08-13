@@ -112,7 +112,6 @@ impl Display for Snapshot {
         // ============================================================
         for (group_idx, group) in self.groups.iter().enumerate() {
             writeln!(f, "Task group name: {} ({} tasks)", group.name(), group.len())?;
-            //writeln!(f, "{}", "─".repeat(80))?;
 
             for (task_idx, task) in group.tasks().iter().enumerate() {
                 // ============================================================
@@ -120,14 +119,11 @@ impl Display for Snapshot {
                 // ============================================================
 
                 writeln!(f, "\nTask name: '{}'", task.meta.name)?;
-                //writeln!(f, "  {}", "·".repeat(50))?;
 
                 // ============================================================
                 // Метаданные
                 // ============================================================
                 writeln!(f, "Target: {}", task.meta.target)?;
-                //writeln!(f, " Protocol: {:?}", task.meta.protocol)?;
-                //writeln!(f, " Type: {:?}", task.meta.type_query)?;
                 writeln!(f, "Subject: {}", task.meta.subject)?;
 
                 // ============================================================

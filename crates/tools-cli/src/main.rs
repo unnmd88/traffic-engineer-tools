@@ -16,7 +16,7 @@ use crossterm::{
 use serde::Serialize;
 use std::io::stdout;
 use tokio::time::Duration;
-use tools_core::snmp::SnmpQueryItem;
+use tools_core::{monitor::application::SnapshotEvent, snmp::SnmpQueryItem};
 mod monior;
 mod scn;
 
@@ -36,26 +36,20 @@ async fn main() -> anyhow::Result<()> {
 
             tokio::spawn(async move {
                 app.start().await;
-                loop {
-                    tokio::time::sleep(Duration::from_secs(4)).await;
-                    let mut stdout = stdout();
-
-                    if let Ok(snapshot) = app.get_snapshot().await {
-                        #[cfg(target_os = "windows")]
-                        let _ = std::process::Command::new("cmd")
-                            .args(&["/c", "cls"])
-                            .status();
-
-                        #[cfg(not(target_os = "windows"))]
-                        let _ = std::process::Command::new("clear").status();
-                        println!("{}", snapshot);
-                        /*
-                                                let _ = execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0));
-                                                let _ = writeln!(stdout, "{}", snapshot);
-                                                let _ = stdout.flush();
-                        */
-                    } else {
-                        eprintln!("Can't update Snapshot");
+                let mut rx = app.subscribe();
+                while let Ok(update) = rx.recv().await {
+                    clear_screen();
+                    //execute!(stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0))
+                    //    .unwrap_or_default();
+                    match update {
+                        SnapshotEvent::Update {
+                            snapshot,
+                            group_id,
+                            task_position,
+                        } => {
+                            println!("{snapshot}");
+                        }
+                        _ => {}
                     }
                 }
             });
@@ -76,4 +70,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn clear_screen() {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(&["/c", "cls"])
+            .status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("clear").status();
+    }
 }

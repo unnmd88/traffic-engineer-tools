@@ -21,6 +21,7 @@ use crate::{
         application::{
             SnapshotCommand, SnapshotManager,
             config::{AppConfig, Query, SnmpOidItem},
+            snapshot_manager::SnapshotEvent,
             task_mapping::{GroupMapping, Mapping, TaskMapping},
             worker_brige::WorkerBridge,
         },
@@ -94,6 +95,7 @@ pub struct Application {
     uid_to_worker_control: HashMap<Uid, WorkerControl>,
     snapgot_manager_tx: mpsc::Sender<SnapshotCommand>,
     state: ApplicationState,
+    subscriber_broadcast_tx: broadcast::Sender<SnapshotEvent>,
     //worker_mapping: HashMap<WorkerId, WorkerTaskMapping>,
     //worker_to_uid: HashMap<WorkerId, Uid>,
     //tx: mpsc::Sender<TaskEvent>,
@@ -251,7 +253,10 @@ impl Application {
         tokio::spawn(workers_bridge.run(snapshot_tx.clone(), worker_rx));
         let mut snapshot_manager = SnapshotManager::new(snapshot, uid_to_task);
 
-        tokio::spawn(snapshot_manager.run(snapshot_rx));
+        // Броадкаст для подписки пользователя на обновления снепшота.
+        let (subscriber_broadcast_tx, _) = broadcast::channel(16);
+
+        tokio::spawn(snapshot_manager.run(snapshot_rx, subscriber_broadcast_tx.clone()));
 
         Ok(Self {
             app_uid,
@@ -260,9 +265,7 @@ impl Application {
             state: ApplicationState::Idle,
             uid_to_worker_control,
             snapgot_manager_tx: snapshot_tx,
-            //worker_to_uid,
-            //tx: worker_tx,
-            //rx: worker_rx,
+            subscriber_broadcast_tx,
         })
     }
 
@@ -302,6 +305,10 @@ impl Application {
 
     pub fn id(&self) -> &ApplicationId {
         &self.app_uid
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<SnapshotEvent> {
+        self.subscriber_broadcast_tx.subscribe()
     }
 }
 
