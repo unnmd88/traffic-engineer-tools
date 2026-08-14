@@ -21,7 +21,7 @@ use crate::{
         application::{
             SnapshotCommand, SnapshotManager,
             config::{AppConfig, Query, SnmpOidItem},
-            snapshot_manager::SnapshotEvent,
+            event_manager::SnapshotEvent,
             task_mapping::{GroupMapping, Mapping, TaskMapping},
             worker_brige::WorkerBridge,
         },

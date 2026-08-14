@@ -108,6 +108,14 @@ impl TaskGroup {
         TaskPosition::new(self.tasks.len() - 1)
     }
 
+    pub fn get_task(&self, task_position: &TaskPosition) -> Option<&Task> {
+        self.tasks.get(task_position_to_idx(task_position))
+    }
+
+    pub fn get_mut_task(&mut self, task_position: &TaskPosition) -> Option<&mut Task> {
+        self.tasks.get_mut(task_position_to_idx(task_position))
+    }
+
     pub fn update(
         &mut self,
         task_position: &TaskPosition,
@@ -134,4 +142,8 @@ impl TaskGroup {
     pub fn len(&self) -> usize {
         self.tasks.len()
     }
+}
+
+fn task_position_to_idx(task_position: &TaskPosition) -> usize {
+    task_position.as_usize()
 }

@@ -1,6 +1,6 @@
 pub mod app;
 pub mod config;
-mod snapshot_manager;
+mod event_manager;
 pub mod task_mapping;
 mod worker_brige;
-pub use snapshot_manager::{SnapshotCommand, SnapshotEvent, SnapshotManager};
+pub use event_manager::{SnapshotCommand, SnapshotEvent, SnapshotManager};

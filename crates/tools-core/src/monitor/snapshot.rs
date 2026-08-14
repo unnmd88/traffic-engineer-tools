@@ -8,7 +8,10 @@ use crate::{
     Error,
     constants::HUMAN_DT_FMT,
     error::SnapShotError,
-    monitor::taskgroup::{TaskDataUpdateMessage, TaskGroup, TaskGroupId, TaskPosition},
+    monitor::{
+        task::Task,
+        taskgroup::{TaskDataUpdateMessage, TaskGroup, TaskGroupId, TaskPosition},
+    },
     utils::format_moscow_human,
     worker::{Metrics, TaskEvent, TaskResult, WorkerId},
 };
@@ -64,8 +67,30 @@ impl Snapshot {
         TaskGroupId::new(self.groups.len() - 1)
     }
 
+    pub fn get_task_group(&self, tg_id: &TaskGroupId) -> Option<&TaskGroup> {
+        self.groups.get(tg_id_to_usize(tg_id))
+    }
+
     pub fn get_mut_taskgroup(&mut self, id: &TaskGroupId) -> Option<&mut TaskGroup> {
-        self.groups.get_mut(id.as_usize())
+        self.groups.get_mut(tg_id_to_usize(id))
+    }
+
+    pub fn get_task(
+        &self,
+        group_id: &TaskGroupId,
+        task_position_id: &TaskPosition,
+    ) -> Option<&Task> {
+        self.get_task_group(group_id)
+            .and_then(|g| g.get_task(task_position_id))
+    }
+
+    pub fn get_mut_task(
+        &mut self,
+        group_id: &TaskGroupId,
+        task_position_id: &TaskPosition,
+    ) -> Option<&mut Task> {
+        self.get_mut_taskgroup(group_id)
+            .and_then(|tg| tg.get_mut_task(task_position_id))
     }
 
     pub fn update_taskstate(
@@ -82,6 +107,10 @@ impl Snapshot {
 
         Ok(())
     }
+}
+
+fn tg_id_to_usize(taskgroup_id: &TaskGroupId) -> usize {
+    taskgroup_id.as_usize()
 }
 
 use std::fmt::{self, Display, Formatter};
