@@ -17,16 +17,15 @@ use uuid::Uuid;
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
-        Snapshot, Uid,
+        TaskRepository, Uid,
         application::{
-            SnapshotCommand, SnapshotManager,
+            TasksRepoCommand, TasksRepoManager,
             config::{AppConfig, Query, SnmpOidItem},
-            snapshot_manager::SnapshotEvent,
             task_mapping::{GroupMapping, Mapping, TaskMapping},
+            tasksrepo_manager::TasksRepoEvent,
             worker_brige::WorkerBridge,
         },
-        task::{Protocol, Task, TaskData, TaskHistory, TaskMeta, TypeQuery},
-        taskgroup::{TaskGroup, TaskGroupId, TaskGroupName, TaskPosition},
+        task::{Protocol, Task, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta, TypeQuery},
     },
     polling::PollConfig,
     snmp::{
@@ -36,6 +35,42 @@ use crate::{
     worker::{Metrics, PollerFactory, TaskEvent, TaskResult, Worker, WorkerCommand, WorkerId},
 };
 
+#[derive(Clone, Debug, Display)]
+pub struct TaskGroupName(String);
+
+impl TaskGroupName {
+    const MIN_LEN: usize = 1;
+    const MAX_LEN: usize = 64;
+
+    pub fn parse(name: &str) -> Result<Self, ParseError> {
+        let len = name.len();
+
+        if !(Self::MIN_LEN..=Self::MAX_LEN).contains(&len) {
+            let message = match len {
+                0 => {
+                    return Err(ParseError::CantBeEmpty {
+                        name: "GroupName".to_string(),
+                    });
+                }
+                l if l < Self::MIN_LEN => {
+                    format!("too short (got {l}, need at least {})", Self::MIN_LEN)
+                }
+                _ => format!("too long (got {len}, max {})", Self::MAX_LEN),
+            };
+
+            return Err(ParseError::InvalidLength {
+                message,
+                min: Self::MIN_LEN,
+                max: Self::MAX_LEN,
+                provide: len,
+            });
+        }
+
+        Ok(Self(name.to_string()))
+    }
+}
+
+#[derive(Debug)]
 struct IdGenerator {
     uid: u64,
     worker_id: u64,
@@ -62,16 +97,6 @@ impl IdGenerator {
     }
 }
 
-struct WorkerTaskMapping {
-    group_id: TaskGroupId,
-    position: TaskPosition,
-}
-
-struct WorkerControl {
-    cmd_tx: mpsc::Sender<WorkerCommand>,
-    join_handle: JoinHandle<()>,
-}
-
 #[derive(Clone, Display)]
 pub struct ApplicationId(Uuid);
 
@@ -87,15 +112,35 @@ pub enum ApplicationState {
     Runnig,
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskGroup {
+    name: TaskGroupName,
+    groups: Vec<TaskId>,
+}
+
+#[derive(Debug)]
+struct WorkerControl {
+    cmd_tx: mpsc::Sender<WorkerCommand>,
+    join_handle: JoinHandle<()>,
+}
+
+#[derive(Debug)]
+pub struct UidBinding {
+    task_id: TaskId,
+    worker_id: WorkerId,
+    worker_control: WorkerControl,
+}
+
 pub struct Application {
     app_uid: ApplicationId,
-    mapping: Mapping,
+    taskgroup_mapping: Mapping,
+    uid_mapping: HashMap<Uid, UidBinding>,
     //snapshot: Snapshot,
     //uid_to_task: HashMap<Uid, (TaskGroupId, TaskPosition)>,
-    uid_to_worker_control: HashMap<Uid, WorkerControl>,
-    snapgot_manager_tx: mpsc::Sender<SnapshotCommand>,
+    //uid_to_worker_control: HashMap<Uid, WorkerControl>,
+    tasksrepo_manager_tx: mpsc::Sender<TasksRepoCommand>,
     state: ApplicationState,
-    subscriber_broadcast_tx: broadcast::Sender<SnapshotEvent>,
+    subscriber_broadcast_tx: broadcast::Sender<TasksRepoEvent>,
     //worker_mapping: HashMap<WorkerId, WorkerTaskMapping>,
     //worker_to_uid: HashMap<WorkerId, Uid>,
     //tx: mpsc::Sender<TaskEvent>,
@@ -107,11 +152,11 @@ impl Application {
         let app_uid = ApplicationId::generate();
         let mut mapping_groups = Vec::new();
 
-        let mut snapshot = Snapshot::new_empty();
+        let mut tasks_repo = TaskRepository::new_empty();
         let mut id_generator = IdGenerator::new();
-        let mut uid_to_task: HashMap<Uid, (TaskGroupId, TaskPosition)> = HashMap::new();
-        let mut uid_to_worker_control: HashMap<Uid, WorkerControl> = HashMap::new();
-        let mut worker_to_uid: HashMap<WorkerId, Uid> = HashMap::new();
+        //let mut uid_to_worker_control: HashMap<Uid, WorkerControl> = HashMap::new();
+
+        let mut uid_mapping: HashMap<Uid, UidBinding> = HashMap::new();
 
         let (worker_tx, worker_rx) = mpsc::channel::<TaskEvent>(32);
 
@@ -136,8 +181,8 @@ impl Application {
                     }
                 }
             })?;
-            let task_group_id = snapshot.add_group(TaskGroup::new_empty(task_group_name.clone()));
-            let mut task_mapping = Vec::new();
+            //let task_group_id = snapshot.add_group(TaskGroup::new_empty(task_group_name.clone()));
+            let mut taskgroup_mapping = Vec::new();
 
             for (task_idx, task) in group.tasks.iter().enumerate() {
                 let poll_config = PollConfig {
@@ -153,7 +198,7 @@ impl Application {
                 let worker_id = id_generator.next_worker_id();
                 let task_uid = id_generator.next_uid();
 
-                task_mapping.push(TaskMapping {
+                taskgroup_mapping.push(TaskMapping {
                     uid: task_uid.clone(),
                     name: name.clone(),
                 });
@@ -189,30 +234,6 @@ impl Application {
                                 .collect::<Vec<String>>()
                                 .join("\n")
                         );
-                        let meta = TaskMeta {
-                            protocol: Protocol::Snmp,
-                            type_query: TypeQuery::SnmpGet,
-                            name,
-                            subject: subject,
-                            target: format!("{target} port: {port}"),
-                        };
-                        let history = TaskHistory::new(deep_history);
-                        let task_state = Task {
-                            meta: meta,
-                            data: TaskData {
-                                result: TaskResult::Idle,
-                                metrics: Metrics::default(),
-                                last_update: Local::now(),
-                            },
-                            history,
-                        };
-
-                        let task_position = snapshot
-                            .get_mut_taskgroup(&task_group_id)
-                            .ok_or(CreateMonitorError::Other(format!(
-                                "Snapshot is corrupted: taskgroup id out of range."
-                            )))?
-                            .add_taskstate(task_state);
 
                         let poller = poller_factory
                             .snmp_get_use_case(target, port, community, oids)
@@ -226,20 +247,39 @@ impl Application {
                             join_handle,
                         };
 
-                        uid_to_worker_control.insert(task_uid, worker_control);
-                        uid_to_task.insert(task_uid, (task_group_id, task_position));
-                        worker_to_uid.insert(worker_id, task_uid);
+                        let meta = TaskMeta {
+                            protocol: Protocol::Snmp,
+                            type_query: TypeQuery::SnmpGet,
+                            name,
+                            subject: subject,
+                            target: format!("{target} port: {port}"),
+                        };
+
+                        let task_history = TaskHistory::new(deep_history);
+                        let task_id = tasks_repo.add_task(meta, None, Some(task_history));
+                        uid_mapping.insert(
+                            task_uid,
+                            UidBinding {
+                                task_id: task_id.clone(),
+                                worker_id: worker_id.clone(),
+                                worker_control,
+                            },
+                        );
+
+                        //uid_to_worker_control.insert(task_uid, worker_control);
+                        //uid_to_task.insert(task_uid, (task_group_id, task_position));
+                        //worker_to_uid.insert(worker_id, task_uid);
                     }
                 }
             }
 
             mapping_groups.push(GroupMapping {
-                tasks: task_mapping,
+                tasks: taskgroup_mapping,
                 name: group.name.clone(),
             });
         }
 
-        let mapping = Mapping {
+        let taskgroup_mapping = Mapping {
             groups: mapping_groups,
         };
 
@@ -249,9 +289,21 @@ impl Application {
         // Воркер-Бридж - это прокси, куда шлют результаты воркеры. Разбирает сообщение, маппит
         // id воркера на uid, оборачивает в enum SnapshotCommand и отправляет дальше
         // в SnapshotManager.
+        //let mut worker_to_uid: HashMap<WorkerId, Uid> = HashMap::new();
+        let worker_to_uid: HashMap<WorkerId, Uid> = uid_mapping
+            .iter()
+            .map(|(k, v)| (v.worker_id.clone(), k.clone()))
+            .collect();
+
+        //let mut uid_to_task: HashMap<Uid, TaskId> = HashMap::new();
+        let uid_to_task: HashMap<Uid, TaskId> = uid_mapping
+            .iter()
+            .map(|(k, v)| (k.clone(), v.task_id.clone()))
+            .collect();
+
         let workers_bridge = WorkerBridge::new(worker_to_uid);
         tokio::spawn(workers_bridge.run(snapshot_tx.clone(), worker_rx));
-        let mut snapshot_manager = SnapshotManager::new(snapshot, uid_to_task);
+        let mut snapshot_manager = TasksRepoManager::new(tasks_repo, uid_to_task);
 
         // Броадкаст для подписки пользователя на обновления снепшота.
         let (subscriber_broadcast_tx, _) = broadcast::channel(16);
@@ -260,19 +312,22 @@ impl Application {
 
         Ok(Self {
             app_uid,
-            //uid_to_task,
-            mapping,
+            uid_mapping,
+            taskgroup_mapping,
             state: ApplicationState::Idle,
-            uid_to_worker_control,
-            snapgot_manager_tx: snapshot_tx,
+            tasksrepo_manager_tx: snapshot_tx,
             subscriber_broadcast_tx,
         })
     }
 
     pub async fn start(&mut self) -> ApplicationState {
         if matches!(self.state, ApplicationState::Idle) {
-            for w in self.uid_to_worker_control.values() {
-                w.cmd_tx.send(WorkerCommand::Start).await;
+            for bindidng in self.uid_mapping.values() {
+                bindidng
+                    .worker_control
+                    .cmd_tx
+                    .send(WorkerCommand::Start)
+                    .await;
             }
             self.state = ApplicationState::Runnig;
         }
@@ -288,14 +343,14 @@ impl Application {
     }
 
     pub fn tasks_mapping(&self) -> &Mapping {
-        &self.mapping
+        &self.taskgroup_mapping
     }
 
-    pub async fn get_snapshot(&self) -> Result<Snapshot, Error> {
+    pub async fn get_snapshot(&self) -> Result<TaskRepository, Error> {
         let (resp_tx, resp_rx) = oneshot::channel();
 
-        self.snapgot_manager_tx
-            .send(SnapshotCommand::GetSnapShot { response: resp_tx })
+        self.tasksrepo_manager_tx
+            .send(TasksRepoCommand::GetSnapShot { response: resp_tx })
             .await
             .map_err(|_| Error::NoResponse("Can`t get Snapshot".to_string()));
         resp_rx
@@ -307,7 +362,7 @@ impl Application {
         &self.app_uid
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<SnapshotEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<TasksRepoEvent> {
         self.subscriber_broadcast_tx.subscribe()
     }
 }

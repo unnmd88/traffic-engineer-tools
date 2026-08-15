@@ -4,14 +4,11 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use tools_core::{
     Error,
-    monitor::{
-        Snapshot,
-        application::{
-            app::Application,
-            config::{
-                AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskGroupConfig,
-                TaskPollTimings,
-            },
+    monitor::application::{
+        app::Application,
+        config::{
+            AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskGroupConfig,
+            TaskPollTimings,
         },
     },
     snmp::{SnmpQueryItem, primitives::Community},

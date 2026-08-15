@@ -16,7 +16,7 @@ use crossterm::{
 use serde::Serialize;
 use std::io::stdout;
 use tokio::time::Duration;
-use tools_core::{monitor::application::SnapshotEvent, snmp::SnmpQueryItem};
+use tools_core::{monitor::application::TasksRepoEvent, snmp::SnmpQueryItem};
 mod monior;
 mod scn;
 
@@ -42,12 +42,18 @@ async fn main() -> anyhow::Result<()> {
                     //execute!(stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0))
                     //    .unwrap_or_default();
                     match update {
-                        SnapshotEvent::Update {
-                            snapshot,
-                            group_id,
-                            task_position,
-                        } => {
-                            println!("{snapshot}");
+                        TasksRepoEvent::Update { snapshot, task_id } => {
+                            println!("{:#?}", snapshot);
+                            /*
+                                                        match snapshot.get_task(&task_id) {
+                                                            Some(t) => {
+                                                                println!("{:#?}", t.data);
+                                                            }
+                                                            None => eprintln!("Not found"),
+                                                        }
+                            */
+
+                            //println!("{snapshot}");
                         }
                         _ => {}
                     }

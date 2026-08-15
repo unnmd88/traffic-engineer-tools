@@ -1,9 +1,10 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, mem};
 
 use chrono::{DateTime, Local};
-use derive_more::Display;
+use derive_more::{Constructor, Display};
 
 use crate::worker::{Metrics, TaskResult};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug, Copy, Display)]
 pub enum Protocol {
@@ -33,22 +34,32 @@ impl TaskHistory {
     }
 
     pub fn push(&mut self, task_data: TaskData) {
+        if self.max == 0 {
+            return;
+        }
+
         if self.history.len() >= self.max {
             self.history.pop_back();
         }
         self.history.push_front(task_data);
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &TaskData> {
+        self.history.iter()
+    }
+
     pub fn deep(&self) -> usize {
         self.max
     }
 
-    pub fn history(&self) -> &VecDeque<TaskData> {
-        &self.history
-    }
-
     pub fn len(&self) -> usize {
         self.history.len()
+    }
+}
+
+impl Default for TaskHistory {
+    fn default() -> Self {
+        Self::new(3)
     }
 }
 
@@ -63,9 +74,37 @@ pub struct TaskMeta {
 
 #[derive(Clone, Debug)]
 pub struct TaskData {
-    pub result: TaskResult,
-    pub metrics: Metrics,
+    result: TaskResult,
+    metrics: Metrics,
     pub last_update: DateTime<Local>,
+}
+
+impl TaskData {
+    pub fn new(result: Option<TaskResult>, metrics: Option<Metrics>) -> Self {
+        Self {
+            result: result.unwrap_or_else(|| TaskResult::Initial),
+            metrics: metrics.unwrap_or_default(),
+            last_update: Local::now(),
+        }
+    }
+
+    pub fn result(&self) -> &TaskResult {
+        &self.result
+    }
+
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+}
+
+impl Default for TaskData {
+    fn default() -> Self {
+        Self {
+            result: TaskResult::Initial,
+            metrics: Metrics::default(),
+            last_update: Local::now(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -79,4 +118,63 @@ pub struct Task {
     pub meta: TaskMeta,
     pub data: TaskData,
     pub history: TaskHistory,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskDataUpdateMessage {
+    pub task_result: TaskResult,
+    pub metrics: Metrics,
+}
+
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
+pub struct TaskId(usize);
+
+impl TaskId {
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskEntity {
+    id: TaskId,
+    meta: TaskMeta,
+    data: TaskData,
+    history: TaskHistory,
+}
+
+impl TaskEntity {
+    pub fn new(id: TaskId, meta: TaskMeta, data: TaskData, history: TaskHistory) -> Self {
+        Self {
+            id,
+            meta,
+            data,
+            history,
+        }
+    }
+
+    pub fn meta(&self) -> &TaskMeta {
+        &self.meta
+    }
+
+    pub fn data(&self) -> &TaskData {
+        &self.data
+    }
+
+    pub fn id(&self) -> &TaskId {
+        &self.id
+    }
+
+    pub fn update_meta(&mut self, meta: TaskMeta) {
+        self.meta = meta;
+    }
+
+    pub fn update_data(&mut self, data: TaskData) {
+        let old_data = mem::replace(&mut self.data, data);
+        self.history.push(old_data);
+    }
+
+    pub fn history(&self) -> &TaskHistory {
+        &self.history
+    }
 }

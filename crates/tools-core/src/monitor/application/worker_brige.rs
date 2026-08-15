@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::{
-    monitor::{Uid, application::SnapshotCommand, taskgroup::TaskDataUpdateMessage},
+    monitor::{Uid, application::TasksRepoCommand, task::TaskDataUpdateMessage},
     worker::{TaskEvent, WorkerId},
 };
 
@@ -18,7 +18,7 @@ impl WorkerBridge {
 
     pub async fn run(
         self,
-        tx: mpsc::Sender<SnapshotCommand>,
+        tx: mpsc::Sender<TasksRepoCommand>,
         mut cmd_rx: mpsc::Receiver<TaskEvent>,
     ) {
         while let Some(result) = cmd_rx.recv().await {
@@ -28,7 +28,7 @@ impl WorkerBridge {
                 metrics: result.metrics,
                 task_result: result.task_result,
             };
-            let cmd = SnapshotCommand::Update {
+            let cmd = TasksRepoCommand::Update {
                 uid,
                 data: update_msg,
             };

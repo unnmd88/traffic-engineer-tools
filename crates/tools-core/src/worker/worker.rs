@@ -13,7 +13,7 @@ use crate::{Error, PollErrorContext, Pollable};
 
 use derive_more::{Display, Eq, Into};
 
-#[derive(Display, Into, Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Debug, Display, Into, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct WorkerId(pub u64);
 
 #[derive(Display, Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +37,7 @@ pub enum WorkerResponse {
 
 #[derive(Clone, Debug)]
 pub enum TaskResult {
-    Idle,
-    //Test(String),
+    Initial,
     SnmpGet(Response<SnmpGetResponse>),
     NoResponse(Vec<PollErrorContext>),
     Fail { message: String },
