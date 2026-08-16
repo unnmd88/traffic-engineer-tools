@@ -6,10 +6,7 @@ use tools_core::{
     Error,
     monitor::application::{
         app::Application,
-        config::{
-            AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskGroupConfig,
-            TaskPollTimings,
-        },
+        config::{AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskPollTimings},
     },
     snmp::{SnmpQueryItem, primitives::Community},
 };
@@ -39,14 +36,8 @@ struct TaskConfigDto {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GroupConfigDto {
-    name: String,
-    tasks: Vec<TaskConfigDto>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct MonitorConfigDto {
-    groups: Vec<GroupConfigDto>,
+    tasks: Vec<TaskConfigDto>,
 }
 
 pub struct AppBuilder;
@@ -54,56 +45,49 @@ pub struct AppBuilder;
 impl AppBuilder {
     pub async fn from_yaml(content: &str) -> anyhow::Result<Application> {
         let dto_config: MonitorConfigDto = serde_yaml::from_str(content)?;
+
+        let mut tasks = Vec::new();
         //println!("{:#?}", dto_config);
-        let mut groups = Vec::new();
 
-        for g in dto_config.groups.iter() {
-            let mut tasks: Vec<TaskConfig> = Vec::new();
+        for t in dto_config.tasks.iter() {
+            let poll_timings = TaskPollTimings {
+                retries: t.poll_timings.retries,
+                retry_delay_ms: t.poll_timings.retry_delay_ms,
+                timeout_ms: t.poll_timings.timeout_ms,
+            };
 
-            for t in g.tasks.iter() {
-                let poll_timings = TaskPollTimings {
-                    retries: t.poll_timings.retries,
-                    retry_delay_ms: t.poll_timings.retry_delay_ms,
-                    timeout_ms: t.poll_timings.timeout_ms,
-                };
+            let to_query = match &t.query {
+                TaskDto::SnmpGet(q) => {
+                    let query = QuerySnmpGet {
+                        host: q.host.clone(),
+                        port: q.port,
+                        community: q.community.clone(),
+                        oids: q
+                            .oids
+                            .iter()
+                            .map(|item| SnmpOidItem {
+                                name: item.name.clone(),
+                                oid: item.oid.clone(),
+                            })
+                            .collect(),
+                    };
+                    Query::SnmpGet(query)
+                }
+            };
 
-                let to_query = match &t.query {
-                    TaskDto::SnmpGet(q) => {
-                        let query = QuerySnmpGet {
-                            host: q.host.clone(),
-                            port: q.port,
-                            community: q.community.clone(),
-                            oids: q
-                                .oids
-                                .iter()
-                                .map(|item| SnmpOidItem {
-                                    name: item.name.clone(),
-                                    oid: item.oid.clone(),
-                                })
-                                .collect(),
-                        };
-                        Query::SnmpGet(query)
-                    }
-                };
+            let task_config = TaskConfig {
+                name: t.name.clone(),
+                poll_timings,
+                query: to_query,
+                interval_ms: t.interval_seconds * 1000,
+                deep_history: t.deep_history,
+            };
 
-                let task_config = TaskConfig {
-                    name: t.name.clone(),
-                    poll_timings,
-                    query: to_query,
-                    interval_ms: t.interval_seconds * 1000,
-                    deep_history: t.deep_history,
-                };
-                tasks.push(task_config);
-            }
-
-            groups.push(TaskGroupConfig {
-                name: g.name.clone(),
-                tasks,
-            });
+            tasks.push(task_config);
         }
-        let app_config = AppConfig { groups };
 
-        let app = Application::new(app_config).await?;
+        let app_cfg = AppConfig { tasks };
+        let app = Application::new(app_cfg).await?;
 
         Ok(app)
 

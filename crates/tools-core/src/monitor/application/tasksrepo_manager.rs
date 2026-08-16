@@ -4,6 +4,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::error;
 
 use crate::{
+    Error,
     monitor::{
         TaskRepository, Uid,
         task::{TaskDataUpdateMessage, TaskId},
@@ -22,7 +23,7 @@ pub enum TasksRepoEvent {
 #[derive(Debug)]
 pub enum TasksRepoCommand {
     Update {
-        uid: Uid,
+        task_id: TaskId,
         data: TaskDataUpdateMessage,
     },
     GetSnapShot {
@@ -33,19 +34,19 @@ pub enum TasksRepoCommand {
 pub struct TasksRepoManager {
     snapshot: TaskRepository,
     //group_mapping: HashMap<Uid, TaskGroupId>,
-    task_mapping: HashMap<Uid, TaskId>,
+    //task_mapping: HashMap<Uid, TaskId>,
 }
 
 impl TasksRepoManager {
     pub fn new(
         snapshot: TaskRepository,
         //group_mapping: HashMap<Uid, TaskGroupId>,
-        task_mapping: HashMap<Uid, TaskId>,
+        //task_mapping: HashMap<Uid, TaskId>,
     ) -> Self {
         Self {
             snapshot,
             //group_mapping,
-            task_mapping,
+            //task_mapping,
         }
     }
 
@@ -56,16 +57,10 @@ impl TasksRepoManager {
     ) {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
-                TasksRepoCommand::Update { uid, data } => {
-                    let task_id = match self.task_mapping.get(&uid) {
-                        Some(task_id) => task_id,
-                        None => {
-                            error!(target: "TaskRepository Manager", uid=%&uid, "TaskId not found.");
-                            continue;
-                        }
-                    };
-
-                    self.snapshot.update_taskstate(task_id, data);
+                TasksRepoCommand::Update { task_id, data } => {
+                    if let Err(e) = self.snapshot.update_taskstate(&task_id, data) {
+                        error!(target: "TaskRepository Manager", task_id=?task_id, error = %e.to_string());
+                    }
 
                     if tx.receiver_count() > 0 {
                         let event = TasksRepoEvent::Update {

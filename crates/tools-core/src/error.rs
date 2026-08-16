@@ -55,58 +55,23 @@ pub enum Error {
 
 #[derive(Error, Debug, Clone)]
 pub enum CreateMonitorError {
-    #[error(
-        "Invalid ip-address: {ip}. TaskGroup: id: {group_id} name: {group_name}. Task id: {task_id}"
-    )]
-    InvalidIpAddress {
-        group_id: usize,
-        group_name: String,
-        task_id: usize,
-        ip: String,
-    },
-    #[error(
-        "Community string can`t be empty. TaskGroup: id: {group_idx} name: {group_name} task index: {task_idx}"
-    )]
-    SnmpCommunityIsEmpty {
-        task_idx: usize,
-        group_idx: usize,
-        group_name: String,
-    },
-    #[error(
-        "Invalid length for community string. TaskGroup: id: {group_id} name: {group_name}. Task id: {task_id}"
-    )]
+    #[error("Invalid ip-address: {ip}. Task position: {task_idx}")]
+    InvalidIpAddress { task_idx: usize, ip: String },
+    #[error("Community string can`t be empty. Task position: {task_idx}")]
+    SnmpCommunityIsEmpty { task_idx: usize },
+    #[error("Invalid length for community string. Task position: {task_idx}")]
     SnmpCommunityInvalidLength {
-        group_id: usize,
-        group_name: String,
-        task_id: usize,
+        task_idx: usize,
         min: usize,
         max: usize,
         provide: usize,
     },
-    #[error(
-        "Invalid snmp-oid(pos: {pos}): {oid}. TaskGroup: id: {group_id} name: {group_name}. Task id: {task_id}"
-    )]
+    #[error("Invalid snmp-oid(pos: {pos}): {oid}. Task position: {task_idx}")]
     InvalidSnmpOid {
-        group_id: usize,
-        group_name: String,
-        task_id: usize,
+        task_idx: usize,
         oid: String,
         pos: usize,
     },
-
-    #[error("GroupName with id={id} can`t be empty")]
-    GroupNameCantBeEmpty { id: usize },
-    #[error(
-        "Invalid length for `GroupName`: id: {group_id} name: {group_name} (min: {min}, max: {max}, got: {provide})"
-    )]
-    GroupNameInvalidLength {
-        group_id: usize,
-        group_name: String,
-        min: usize,
-        max: usize,
-        provide: usize,
-    },
-
     #[error("{0}")]
     Other(String),
 }

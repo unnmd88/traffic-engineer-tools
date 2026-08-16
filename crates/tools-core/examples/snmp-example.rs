@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::Duration;
 use tools_core::monitor::application::app::Application;
 use tools_core::monitor::application::config::{
-    AppConfig, Query, QuerySnmpGet, SnmpOidItemDto, TaskConfig, TaskGroupConfig, TaskPollTimings,
+    AppConfig, Query, QuerySnmpGet, TaskConfig, TaskPollTimings,
 };
 
 use tools_core::polling::PollConfig;
@@ -223,7 +223,7 @@ async fn test_monitor_application() -> anyhow::Result<()> {
         tasks: vec![task],
     };
     let config = AppConfig {
-        groups: vec![group1],
+        tasks: vec![group1],
     };
     let mut app = Application::new(config).await?;
     let app_state = app.start().await;
@@ -232,7 +232,7 @@ async fn test_monitor_application() -> anyhow::Result<()> {
     println!("{}", app.id());
     println!("Is running: {}", app.is_running());
     println!("Current state: {}", app.current_state());
-    println!("Mapping:\n{:#?}", app.tasks_mapping());
+    println!("Mapping:\n{:#?}", app.tasks());
 
     return Ok(());
 

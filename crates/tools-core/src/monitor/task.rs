@@ -127,13 +127,7 @@ pub struct TaskDataUpdateMessage {
 }
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
-pub struct TaskId(usize);
-
-impl TaskId {
-    pub fn as_usize(&self) -> usize {
-        self.0
-    }
-}
+pub struct TaskId(pub u64);
 
 #[derive(Clone, Debug)]
 pub struct TaskEntity {

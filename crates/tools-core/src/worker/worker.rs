@@ -11,9 +11,9 @@ use crate::utils::get_elapsed_as_u64;
 use crate::worker::Metrics;
 use crate::{Error, PollErrorContext, Pollable};
 
-use derive_more::{Display, Eq, Into};
+use derive_more::{Constructor, Display, Eq, Into};
 
-#[derive(Debug, Display, Into, Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Debug, Display, Into, Clone, Copy, Hash, Eq, PartialEq, Constructor)]
 pub struct WorkerId(pub u64);
 
 #[derive(Display, Debug, Clone, Copy, PartialEq, Eq)]

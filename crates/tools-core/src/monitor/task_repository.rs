@@ -19,11 +19,11 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct TaskIdGenerator {
-    current: usize,
+    current: u64,
 }
 
 impl TaskIdGenerator {
-    pub fn new(start_id: usize) -> Self {
+    pub fn new(start_id: u64) -> Self {
         Self { current: start_id }
     }
 
@@ -36,29 +36,22 @@ impl TaskIdGenerator {
 #[derive(Clone, Debug)]
 pub struct TaskRepository {
     tasks: HashMap<TaskId, TaskEntity>,
-    order: Vec<TaskId>,
     id_gen: TaskIdGenerator,
     last_update: DateTime<Local>,
 }
 
 impl TaskRepository {
     pub fn new(tasks: Vec<TaskEntity>) -> Self {
-        let mut order = Vec::new();
-        let mut _tasks = HashMap::new();
+        let tasks: HashMap<TaskId, TaskEntity> =
+            tasks.into_iter().map(|t| (t.id().clone(), t)).collect();
 
-        for task in tasks {
-            order.push(task.id().clone());
-            _tasks.insert(task.id().clone(), task);
-        }
-
-        let max_id = match order.iter().max() {
-            Some(id) => id.as_usize() + 1,
+        let max_id = match tasks.keys().max() {
+            Some(id) => id.0 + 1,
             None => 1,
         };
 
         Self {
-            tasks: _tasks,
-            order,
+            tasks,
             id_gen: TaskIdGenerator::new(max_id),
             last_update: Local::now(),
         }
@@ -67,7 +60,6 @@ impl TaskRepository {
     pub fn new_empty() -> Self {
         Self {
             tasks: HashMap::new(),
-            order: Vec::new(),
             id_gen: TaskIdGenerator::new(0),
             last_update: Local::now(),
         }
@@ -88,7 +80,6 @@ impl TaskRepository {
             history.unwrap_or_default(),
         );
         self.tasks.insert(id.clone(), task);
-        self.order.push(id.clone());
 
         info!(
             target: "TaskRepository",

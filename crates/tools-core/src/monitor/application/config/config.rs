@@ -2,12 +2,6 @@ use crate::monitor::application::config::QuerySnmpGet;
 
 #[derive(Debug)]
 pub struct AppConfig {
-    pub groups: Vec<TaskGroupConfig>,
-}
-
-#[derive(Debug)]
-pub struct TaskGroupConfig {
-    pub name: String,
     pub tasks: Vec<TaskConfig>,
 }
 
