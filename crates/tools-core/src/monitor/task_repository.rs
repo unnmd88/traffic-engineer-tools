@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::{
     Error,
-    constants::HUMAN_DT_FMT,
+    constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
     error::SnapShotError,
     monitor::task::{
         Task, TaskData, TaskDataUpdateMessage, TaskEntity, TaskHistory, TaskId, TaskMeta,
@@ -39,7 +39,9 @@ pub struct TaskRepository {
     tasks: HashMap<TaskId, TaskEntity>,
     id_gen: TaskIdGenerator,
     order_ids: Vec<TaskId>,
-    last_update: DateTime<Local>,
+    created_at: DateTime<Local>,
+    updated_at: DateTime<Local>,
+    //last_update: DateTime<Local>,
 }
 
 impl TaskRepository {
@@ -54,20 +56,26 @@ impl TaskRepository {
 
         let order_ids: Vec<TaskId> = tasks.keys().copied().sorted().collect();
 
+        let dt = Local::now();
+
         Self {
             tasks,
             order_ids,
             id_gen: TaskIdGenerator::new(max_id),
-            last_update: Local::now(),
+            created_at: dt.clone(),
+            updated_at: dt,
         }
     }
 
     pub fn new_empty() -> Self {
+        let dt = Local::now();
+
         Self {
             tasks: HashMap::new(),
             order_ids: Vec::new(),
             id_gen: TaskIdGenerator::new(0),
-            last_update: Local::now(),
+            created_at: dt.clone(),
+            updated_at: dt,
         }
     }
 
@@ -85,8 +93,10 @@ impl TaskRepository {
             data.unwrap_or_default(),
             history.unwrap_or_default(),
         );
+
         self.tasks.insert(id.clone(), task);
         self.order_ids.push(id.clone());
+        self.updated_at = Local::now();
 
         info!(
             target: "TaskRepository",
@@ -102,7 +112,7 @@ impl TaskRepository {
         self.tasks.get(&id)
     }
 
-    pub fn get_mut_task(&mut self, id: &TaskId) -> Option<&mut TaskEntity> {
+    fn get_mut_task(&mut self, id: &TaskId) -> Option<&mut TaskEntity> {
         self.tasks.get_mut(&id)
     }
 
@@ -121,6 +131,8 @@ impl TaskRepository {
         })?;
 
         target.update_data(TaskData::new(Some(data.task_result), Some(data.metrics)));
+        self.updated_at = Local::now();
+
         Ok(())
     }
 
@@ -163,16 +175,30 @@ const SNAPSHOT_HEADER: &str = concat!(LINE_DOUBLE, "\n", SPACES, TITLE, "\n", LI
 
 impl Display for TaskRepository {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{LINE_DOUBLE}")?;
+        writeln!(
+            f,
+            "{TITLE} Last update: {} Created: {}",
+            self.updated_at.format(DT_FMT_WITH_MICROSECONDS),
+            self.created_at.format(DT_FMT)
+        )?;
+        writeln!(f, "{LINE_DOUBLE}")?;
+
         for task in self.tasks_sorted_by_id() {
             let meta = task.meta();
             let data = task.data();
 
-            writeln!(f, "Name: '{}' Target: {}", meta.name, meta.target)?;
+            writeln!(f, "Name: '{}' Target: {} Id: {}", meta.name, meta.target, task.id())?;
             writeln!(f, "Subject: {}\n", meta.subject)?;
+            writeln!(
+                f,
+                "Last update: {} Created: {}",
+                task.updated_at().format(DT_FMT_WITH_MICROSECONDS),
+                task.created_at().format(DT_FMT),
+            )?;
 
             let m = data.metrics();
             if m.total_attempts > 0 {
-                //writeln!(f, "\nMetrics:")?;
                 writeln!(
                     f,
                     "Requests: Total={} Successfull={} Errors={}",

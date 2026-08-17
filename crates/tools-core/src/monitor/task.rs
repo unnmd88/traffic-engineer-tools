@@ -1,9 +1,16 @@
-use std::{collections::VecDeque, mem};
+use std::{
+    collections::VecDeque,
+    fmt::{self, Formatter},
+    mem,
+};
 
 use chrono::{DateTime, Local};
 use derive_more::{Constructor, Display};
 
-use crate::worker::{Metrics, TaskResult};
+use crate::{
+    constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
+    worker::{Metrics, TaskResult},
+};
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug, Copy, Display)]
@@ -76,7 +83,7 @@ pub struct TaskMeta {
 pub struct TaskData {
     result: TaskResult,
     metrics: Metrics,
-    pub last_update: DateTime<Local>,
+    //pub last_update: DateTime<Local>,
 }
 
 impl TaskData {
@@ -84,7 +91,7 @@ impl TaskData {
         Self {
             result: result.unwrap_or_else(|| TaskResult::Initial),
             metrics: metrics.unwrap_or_default(),
-            last_update: Local::now(),
+            //last_update: Local::now(),
         }
     }
 
@@ -102,7 +109,7 @@ impl Default for TaskData {
         Self {
             result: TaskResult::Initial,
             metrics: Metrics::default(),
-            last_update: Local::now(),
+            //last_update: Local::now(),
         }
     }
 }
@@ -135,16 +142,29 @@ pub struct TaskEntity {
     meta: TaskMeta,
     data: TaskData,
     history: TaskHistory,
+    created_at: DateTime<Local>,
+    updated_at: DateTime<Local>,
 }
 
 impl TaskEntity {
     pub fn new(id: TaskId, meta: TaskMeta, data: TaskData, history: TaskHistory) -> Self {
+        let dt = Local::now();
         Self {
             id,
             meta,
             data,
             history,
+            created_at: dt.clone(),
+            updated_at: dt,
         }
+    }
+
+    pub fn created_at(&self) -> &DateTime<Local> {
+        &self.created_at
+    }
+
+    pub fn updated_at(&self) -> &DateTime<Local> {
+        &self.updated_at
     }
 
     pub fn meta(&self) -> &TaskMeta {
@@ -161,14 +181,69 @@ impl TaskEntity {
 
     pub fn update_meta(&mut self, meta: TaskMeta) {
         self.meta = meta;
+        self.updated_at = Local::now();
     }
 
     pub fn update_data(&mut self, data: TaskData) {
         let old_data = mem::replace(&mut self.data, data);
         self.history.push(old_data);
+        self.updated_at = Local::now();
     }
 
     pub fn history(&self) -> &TaskHistory {
         &self.history
+    }
+}
+
+impl std::fmt::Display for TaskEntity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let meta = &self.meta;
+        writeln!(
+            f,
+            "Last update: {} Created: {}",
+            self.updated_at.format(DT_FMT_WITH_MICROSECONDS),
+            self.created_at.format(DT_FMT)
+        )?;
+        writeln!(f, "Target: {} Name: '{}' Id: {}", meta.target, meta.target, self.id)?;
+        writeln!(f, "Subject: {}\n", meta.subject)?;
+
+        let data = &self.data;
+
+        let m = &data.metrics;
+        if m.total_attempts > 0 {
+            //writeln!(f, "\nMetrics:")?;
+            writeln!(
+                f,
+                "Requests: Total={} Successfull={} Errors={}",
+                m.total_attempts, m.successful, m.errors
+            )?;
+            writeln!(
+                f,
+                "Latency ms: Current={} Avg={} Min={} Max={}",
+                m.current_latency_ms,
+                m.avg_latency_ms,
+                if m.min_latency_ms == u64::MAX {
+                    0
+                } else {
+                    m.min_latency_ms
+                },
+                m.max_latency_ms
+            )?;
+        }
+
+        match &data.result {
+            TaskResult::SnmpGet(response) => {
+                writeln!(f, "Snmp-get response:\n{response}")?;
+            }
+            TaskResult::NoResponse(errors) => {
+                writeln!(f, "Timeout error after {} attempts:", errors.len())?;
+                for err in errors.iter() {
+                    writeln!(f, "{err}")?;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
     }
 }

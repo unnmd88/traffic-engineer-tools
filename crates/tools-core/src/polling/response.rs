@@ -3,7 +3,7 @@ use tokio::time::Duration;
 
 use chrono::{DateTime, Local};
 
-use crate::error::PollErrorContext;
+use crate::{constants::DT_FMT_WITH_MICROSECONDS, error::PollErrorContext};
 
 #[derive(Debug, Clone)]
 pub struct Response<T> {
@@ -16,8 +16,8 @@ pub struct Response<T> {
 
 impl<T: Display> Display for Response<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Время ответа: {}", self.timestamp)?;
-        writeln!(f, "Время на запрос составило: {}ms", self.elapsed.as_millis())?;
+        writeln!(f, "Timestamp: {}", self.timestamp.format(DT_FMT_WITH_MICROSECONDS))?;
+        writeln!(f, "Duration: {}ms", self.elapsed.as_millis())?;
         for err in self.errors.iter() {
             writeln!(f, "{err}")?;
         }
