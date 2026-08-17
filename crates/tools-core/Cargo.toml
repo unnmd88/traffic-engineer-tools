@@ -18,7 +18,16 @@ uuid = { workspace = true }
 derive_more = { workspace = true }
 constcat = { workspace = true } 
 tracing = { workspace = true }
+itertools = { workspace = true }
 
 [[example]]
 name = "snmp-example"
 path = "examples/snmp-example.rs"
+
+[lints.clippy]
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"

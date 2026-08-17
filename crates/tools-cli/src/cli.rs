@@ -1,7 +1,7 @@
 use std::{net::IpAddr, path::PathBuf};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum, builder::Str};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use tools_core::snmp::primitives::{Community, SnmpOid};
 

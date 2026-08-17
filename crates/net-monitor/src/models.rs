@@ -1,6 +1,5 @@
 use std::{fmt, net::IpAddr};
 
-use clap::builder::Str;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]

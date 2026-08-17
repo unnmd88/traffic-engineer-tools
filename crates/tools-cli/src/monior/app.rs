@@ -1,15 +1,9 @@
-use std::net::IpAddr;
 
-use anyhow::Context;
-use serde::{Deserialize, Serialize};
-use tools_core::{
-    Error,
-    monitor::application::{
+use serde::Deserialize;
+use tools_core::monitor::application::{
         app::Application,
         config::{AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskPollTimings},
-    },
-    snmp::{SnmpQueryItem, primitives::Community},
-};
+    };
 
 use crate::monior::queries::snmpget::SnmpGetQueryDto;
 
@@ -97,7 +91,7 @@ impl AppBuilder {
 
     //fn build(config: MonitorConfig) -> anyhow::Result<Snapshot> {}
     fn build_tasks(raw_tasks: Vec<TaskDto>, group_id: usize) -> anyhow::Result<Vec<TaskDto>> {
-        let mut task_states = Vec::with_capacity(raw_tasks.len());
+        let task_states = Vec::with_capacity(raw_tasks.len());
 
         for (i, task) in raw_tasks.into_iter().enumerate() {}
 

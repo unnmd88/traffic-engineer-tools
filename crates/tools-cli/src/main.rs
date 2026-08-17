@@ -1,27 +1,13 @@
-use std::{
-    fs,
-    io::Write,
-    net::{IpAddr, Ipv4Addr},
-};
 
-use anyhow::Context;
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use crossterm::{
-    cursor, execute,
-    style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal::{Clear, ClearType},
-};
-use serde::Serialize;
-use std::io::stdout;
-use tokio::time::Duration;
-use tools_core::{monitor::application::TasksRepoEvent, snmp::SnmpQueryItem};
+use tools_core::monitor::application::TasksRepoEvent;
 mod monior;
 mod scn;
 
 use crate::{
-    cli::{OutputFormat, print_output},
+    cli::print_output,
     monior::app::AppBuilder,
 };
 

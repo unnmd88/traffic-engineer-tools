@@ -10,6 +10,7 @@
 #	${DC} -f ${APP_FILE} ${ENV} up --build -d
 
 ENV_FILE ?= .env.dev
+TARGET := x86_64-unknown-linux-gnu
 
 
 # TEST SECTION
@@ -25,6 +26,21 @@ test-core:
 .PHONY: check
 check:
 	cargo check --target x86_64-unknown-linux-gnu
+
+.PHONY: cargo-fix
+cargo-fix:
+	cargo fix --allow-dirty --target $(TARGET)
+
+.PHONY: clippy
+clippy:
+	cargo clippy --target $(TARGET)
+
+.PHONY: clippy-fix
+clippy-fix:
+	cargo clippy --fix --allow-dirty --target $(TARGET)
+
+
+
 
 .PHONY: check-core
 check-core:

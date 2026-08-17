@@ -28,3 +28,6 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fmt"] }
 uuid = { version = "1.23.3", features = ["v4", "serde"] }
 constcat = "0.6.1"
+itertools = "0.15.0"
+
+

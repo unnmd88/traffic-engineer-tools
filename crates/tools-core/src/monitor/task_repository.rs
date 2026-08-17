@@ -116,6 +116,14 @@ impl TaskRepository {
         target.update_data(TaskData::new(Some(data.task_result), Some(data.metrics)));
         Ok(())
     }
+
+    pub fn sorted_task_ids(&self) -> impl Iterator<Item = &Task> + '_ {
+        self.tasks.values()
+    }
+
+    pub fn tasks(&self) -> impl Iterator<Item = &Task> + '_ {
+        self.tasks.values()
+    }
 }
 
 use std::fmt::{self, Display, Formatter};

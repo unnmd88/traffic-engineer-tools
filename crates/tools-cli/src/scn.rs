@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::Serialize;
-use tools_core::{Error, domain::ascii::Ascii};
+use tools_core::domain::ascii::Ascii;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ScnResult {
