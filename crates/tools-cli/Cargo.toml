@@ -16,3 +16,4 @@ serde_yaml = "0.9.34"
 futures = "0.3.33"
 chrono = { workspace = true }
 crossterm = "0.29.0"
+tracing = { workspace = true }

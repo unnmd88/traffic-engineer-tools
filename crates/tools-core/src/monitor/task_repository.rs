@@ -14,6 +14,7 @@ use crate::{
 use chrono::{DateTime, Local, Utc};
 use constcat::concat;
 use derive_more::Display;
+use itertools::Itertools;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -37,6 +38,7 @@ impl TaskIdGenerator {
 pub struct TaskRepository {
     tasks: HashMap<TaskId, TaskEntity>,
     id_gen: TaskIdGenerator,
+    order_ids: Vec<TaskId>,
     last_update: DateTime<Local>,
 }
 
@@ -50,8 +52,11 @@ impl TaskRepository {
             None => 1,
         };
 
+        let order_ids: Vec<TaskId> = tasks.keys().copied().sorted().collect();
+
         Self {
             tasks,
+            order_ids,
             id_gen: TaskIdGenerator::new(max_id),
             last_update: Local::now(),
         }
@@ -60,6 +65,7 @@ impl TaskRepository {
     pub fn new_empty() -> Self {
         Self {
             tasks: HashMap::new(),
+            order_ids: Vec::new(),
             id_gen: TaskIdGenerator::new(0),
             last_update: Local::now(),
         }
@@ -80,6 +86,7 @@ impl TaskRepository {
             history.unwrap_or_default(),
         );
         self.tasks.insert(id.clone(), task);
+        self.order_ids.push(id.clone());
 
         info!(
             target: "TaskRepository",
@@ -117,11 +124,27 @@ impl TaskRepository {
         Ok(())
     }
 
-    pub fn sorted_task_ids(&self) -> impl Iterator<Item = &Task> + '_ {
-        self.tasks.values()
+    pub fn sorted_task_ids(&self) -> impl Iterator<Item = TaskId> + '_ {
+        self.order_ids.iter().copied()
     }
 
-    pub fn tasks(&self) -> impl Iterator<Item = &Task> + '_ {
+    pub fn tasks_sorted_by_id(&self) -> impl Iterator<Item = &TaskEntity> + '_ {
+        self.order_ids
+            .iter()
+            .filter_map(|id| match self.tasks.get(id) {
+                Some(task) => Some(task),
+                None => {
+                    error!(
+                        target: "task repository",
+                            task_id = ?id,
+                            "TaskId has in order, but not found in `tasks`"
+                    );
+                    None
+                }
+            })
+    }
+
+    pub fn tasks(&self) -> impl Iterator<Item = &TaskEntity> + '_ {
         self.tasks.values()
     }
 }
@@ -140,7 +163,50 @@ const SNAPSHOT_HEADER: &str = concat!(LINE_DOUBLE, "\n", SPACES, TITLE, "\n", LI
 
 impl Display for TaskRepository {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        "TaskRepository Display".to_string();
+        for task in self.tasks_sorted_by_id() {
+            let meta = task.meta();
+            let data = task.data();
+
+            writeln!(f, "Name: '{}' Target: {}", meta.name, meta.target)?;
+            writeln!(f, "Subject: {}\n", meta.subject)?;
+
+            let m = data.metrics();
+            if m.total_attempts > 0 {
+                //writeln!(f, "\nMetrics:")?;
+                writeln!(
+                    f,
+                    "Requests: Total={} Successfull={} Errors={}",
+                    m.total_attempts, m.successful, m.errors
+                )?;
+                writeln!(
+                    f,
+                    "Latency ms: Current={} Avg={} Min={} Max={}",
+                    m.current_latency_ms,
+                    m.avg_latency_ms,
+                    if m.min_latency_ms == u64::MAX {
+                        0
+                    } else {
+                        m.min_latency_ms
+                    },
+                    m.max_latency_ms
+                )?;
+            }
+
+            match &task.data().result() {
+                TaskResult::SnmpGet(response) => {
+                    writeln!(f, "Snmp-get response:\n{response}")?;
+                }
+                TaskResult::NoResponse(errors) => {
+                    writeln!(f, "Timeout error after {} attempts:", errors.len())?;
+                    for err in errors.iter() {
+                        writeln!(f, "{err}")?;
+                    }
+                }
+                _ => {}
+            }
+            writeln!(f, "{LINE_DOTTED}")?;
+        }
+
         Ok(())
     }
 }

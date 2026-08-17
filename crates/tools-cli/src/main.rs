@@ -1,15 +1,12 @@
-
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use tools_core::monitor::application::TasksRepoEvent;
+use tools_core::monitor::{application::TasksRepoEvent, task::TaskId};
+use tracing::{error, info};
 mod monior;
 mod scn;
 
-use crate::{
-    cli::print_output,
-    monior::app::AppBuilder,
-};
+use crate::{cli::print_output, monior::app::AppBuilder};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,13 +20,26 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(async move {
                 app.start().await;
                 let mut rx = app.subscribe();
+                let ordered_tasks_ids: Vec<TaskId> = app
+                    .get_snapshot()
+                    .await
+                    .expect("Failed to get snapshot") // Паника с сообщением
+                    .sorted_task_ids()
+                    .collect();
+
                 while let Ok(update) = rx.recv().await {
                     clear_screen();
+
                     //execute!(stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0))
                     //    .unwrap_or_default();
                     match update {
                         TasksRepoEvent::Update { snapshot, task_id } => {
-                            println!("{:#?}", snapshot);
+                            println!("{snapshot}");
+                            /*
+                                                        for task_id in ordered_tasks_ids.iter() {
+                                                            println!("Задача 1:\n{:#?}", snapshot.get_task(task_id));
+                                                        }
+                            */
                             /*
                                                         match snapshot.get_task(&task_id) {
                                                             Some(t) => {

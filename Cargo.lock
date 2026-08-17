@@ -1567,6 +1567,7 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tools-core",
+ "tracing",
 ]
 
 [[package]]
