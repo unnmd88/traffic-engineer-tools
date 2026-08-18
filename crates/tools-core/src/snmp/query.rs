@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::snmp::primitives::SnmpOid;
+use crate::snmp::{parsers::SnmpRawValueParserFn, primitives::SnmpOid};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct SnmpQueryItem {
     pub name: Option<String>,
     pub oid: SnmpOid,

@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
                 let ordered_tasks_ids: Vec<TaskId> = app
                     .get_snapshot()
                     .await
-                    .expect("Failed to get snapshot") // Паника с сообщением
+                    .expect("Failed to get snapshot") // TODO tracing
                     .sorted_task_ids()
                     .collect();
 
@@ -40,16 +40,6 @@ async fn main() -> anyhow::Result<()> {
                                                             println!("Задача 1:\n{:#?}", snapshot.get_task(task_id));
                                                         }
                             */
-                            /*
-                                                        match snapshot.get_task(&task_id) {
-                                                            Some(t) => {
-                                                                println!("{:#?}", t.data);
-                                                            }
-                                                            None => eprintln!("Not found"),
-                                                        }
-                            */
-
-                            //println!("{snapshot}");
                         }
                         _ => {}
                     }

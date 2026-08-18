@@ -4,14 +4,20 @@ use crate::{
 };
 use async_snmp::Oid;
 
+pub type SnmpRawValueParserFn = fn(&SnmpRawValue) -> Result<String, SnmpError>;
+
+pub fn default_parse(raw_value: &SnmpRawValue) -> Result<String, SnmpError> {
+    Ok(format!("{:?}", raw_value))
+}
+
 pub trait SnmpRawValueParser: Send + Sync {
-    fn parse(&self, raw_value: SnmpRawValue) -> Result<String, SnmpError>;
+    fn parse(&self, raw_value: &SnmpRawValue) -> Result<String, SnmpError>;
 }
 
 pub struct DefaultSnmpRawValueParser;
 
 impl SnmpRawValueParser for DefaultSnmpRawValueParser {
-    fn parse(&self, raw_value: SnmpRawValue) -> Result<String, SnmpError> {
+    fn parse(&self, raw_value: &SnmpRawValue) -> Result<String, SnmpError> {
         Ok(format!("{:?}", raw_value))
     }
 }

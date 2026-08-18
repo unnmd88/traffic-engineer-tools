@@ -5,19 +5,22 @@ use std::fmt::{Display, Formatter};
 pub struct SnmpGetSample {
     pub oid_name: Option<String>,
     pub oid: String,
+    pub value: Option<String>,
     pub raw_value: String,
 }
 
 impl Display for SnmpGetSample {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let oid = match &self.oid_name {
-            Some(oid_name) => {
-                writeln!(f, "{}[{oid_name}]: {}", &self.oid, &self.raw_value)?;
-            }
-            None => {
-                writeln!(f, "{}: {}", &self.oid, &self.raw_value)?;
-            }
-        };
+        let name = self.oid_name.as_deref().unwrap_or("");
+        let value = self.value.as_deref().unwrap_or("-");
+
+        if name.is_empty() {
+            // Example: OID[Name]: val: X raw: Y
+            write!(f, "{}: {} raw val: {}\n", self.oid, value, self.raw_value)?;
+        } else {
+            // Example: OID: val: X raw: Y
+            write!(f, "{}[{}]: {} raw val: {}\n", self.oid, name, value, self.raw_value)?;
+        }
 
         Ok(())
     }

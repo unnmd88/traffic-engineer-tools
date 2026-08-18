@@ -18,13 +18,13 @@ use chrono::{Utc, naive};
 use serde::de::IntoDeserializer;
 use tokio::time::Instant;
 
-pub struct GenericCustomReader {
+pub struct CustomReader {
     client: SnmpReadClient,
     oids_to_request: Vec<SnmpOid>,
     oid_names: Vec<Option<String>>,
 }
 
-impl GenericCustomReader {
+impl CustomReader {
     pub fn new(client: SnmpReadClient, request: Vec<SnmpQueryItem>) -> Self {
         let mut oids_to_request: Vec<SnmpOid> = Vec::with_capacity(request.len());
         let mut oid_names: Vec<Option<String>> = Vec::with_capacity(request.len());
@@ -43,7 +43,7 @@ impl GenericCustomReader {
 }
 
 #[async_trait]
-impl Pollable for GenericCustomReader {
+impl Pollable for CustomReader {
     type Output = SnmpGetResponse;
 
     async fn poll(&self) -> Result<Self::Output, PollError> {

@@ -3,6 +3,7 @@ mod client;
 pub mod parsers;
 pub mod primitives;
 mod query;
+pub mod registry;
 mod response;
 pub use client::{SnmpReadClient, create_client};
 pub use query::SnmpQueryItem;
