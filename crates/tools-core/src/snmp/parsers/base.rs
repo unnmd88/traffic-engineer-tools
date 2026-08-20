@@ -4,10 +4,14 @@ use crate::{
 };
 use async_snmp::Oid;
 
-pub type SnmpRawValueParserFn = fn(&SnmpRawValue) -> Result<String, SnmpError>;
+pub type OidValueParserFn = fn(&SnmpRawValue) -> Result<String, SnmpError>;
 
-pub fn default_parse(raw_value: &SnmpRawValue) -> Result<String, SnmpError> {
-    Ok(format!("{:?}", raw_value))
+pub fn default_parse(value: &SnmpRawValue) -> Result<String, SnmpError> {
+    Ok(format!("{value}"))
+}
+
+pub fn debug_parse(value: &SnmpRawValue) -> Result<String, SnmpError> {
+    Ok(format!("value: {value}  as bytes: {:?}", value.as_bytes()))
 }
 
 pub trait SnmpRawValueParser: Send + Sync {

@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use crate::snmp::{SnmpQueryItem, primitives::Community};
+use crate::snmp::{SnmpQueryItem, primitives::Community, profiles::SnmpProfile};
 
 #[derive(Debug)]
 pub struct SnmpOidItem {
@@ -10,6 +10,7 @@ pub struct SnmpOidItem {
 
 #[derive(Debug)]
 pub struct QuerySnmpGet {
+    pub profile: Option<String>,
     pub host: String,
     pub port: u16,
     pub community: String,

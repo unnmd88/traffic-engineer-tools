@@ -47,7 +47,7 @@ impl Pollable for GenericCustomReader {
     type Output = SnmpGetResponse;
 
     async fn poll(&self) -> Result<Self::Output, PollError> {
-        let payload = self
+        let samples = self
             .client
             .get_many(&self.oids_to_request)
             .await
@@ -64,6 +64,6 @@ impl Pollable for GenericCustomReader {
             })
             .collect();
 
-        return Ok(SnmpGetResponse { samples: payload });
+        return Ok(SnmpGetResponse { samples });
     }
 }

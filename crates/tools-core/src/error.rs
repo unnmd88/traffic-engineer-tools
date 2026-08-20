@@ -57,6 +57,8 @@ pub enum Error {
 pub enum CreateMonitorError {
     #[error("Invalid ip-address: {ip}. Task position: {task_idx}")]
     InvalidIpAddress { task_idx: usize, ip: String },
+    #[error("{message}")]
+    InvalidSnmpProfile { message: String },
     #[error("Community string can`t be empty. Task position: {task_idx}")]
     SnmpCommunityIsEmpty { task_idx: usize },
     #[error("Invalid length for community string. Task position: {task_idx}")]
@@ -96,6 +98,8 @@ pub enum ParseError {
     },
     #[error("{name} can`t be empty")]
     CantBeEmpty { name: String },
+    #[error("{message}")]
+    Common { message: String },
 }
 
 #[derive(Error, Debug, Clone)]

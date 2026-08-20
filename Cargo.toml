@@ -29,5 +29,4 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fm
 uuid = { version = "1.23.3", features = ["v4", "serde"] }
 constcat = "0.6.1"
 itertools = "0.15.0"
-
-
+strum = { version = "0.28.0", features = ["derive"] }

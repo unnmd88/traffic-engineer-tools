@@ -29,8 +29,10 @@ use crate::{
     },
     polling::PollConfig,
     snmp::{
-        SnmpQueryItem,
+        SnmpQueryItem, SnmpReadClient,
+        parsers::debug_parse,
         primitives::{Community, SnmpOid},
+        profiles::SnmpProfile,
     },
     worker::{Metrics, PollerFactory, TaskEvent, TaskResult, Worker, WorkerCommand, WorkerId},
 };
@@ -179,6 +181,28 @@ impl Application {
                     let target = parse_ip(&dto.host, i)?;
                     let port = dto.port;
                     let community = parse_snmp_community(&dto.community, i)?;
+                    let profile = dto
+                        .profile
+                        .clone()
+                        .map(|p| p.parse::<SnmpProfile>())
+                        .transpose()
+                        .map_err(|e| CreateMonitorError::InvalidSnmpProfile { message: e })?;
+                    /*
+                                        let oids = if &profile.is_some_and() {
+                                            Some(p) => match p {
+                                                SnmpProfile::PotokUg405 => {
+                                                    let snmp_client = SnmpReadClient::new(
+                                                        target,
+                                                        port,
+                                                        community.clone(),
+                                                        Duration::from_secs(1),
+                                                        4,
+                                                        Duration::from_millis(200),
+                                                    );
+                                                }
+                                            },
+                                        };
+                    */
                     let oids = parse_oids(&dto.oids, i)?;
                     let subject = format!(
                         "Snmp-get request. Oids to request({}):\n{}",
@@ -198,7 +222,7 @@ impl Application {
                     );
 
                     let poller = poller_factory
-                        .snmp_get_use_case(target, port, community, oids)
+                        .snmp_get_use_case2(target, port, community, oids)
                         .await?;
                     let worker =
                         Worker::new(worker_id, poller, Duration::from_millis(task.interval_ms));
@@ -334,6 +358,7 @@ fn parse_snmp_community(community: &str, task_idx: usize) -> Result<Community, C
             max,
             provide: provided,
         },
+        ParseError::Common { message } => CreateMonitorError::Other(message),
     })
 }
 
@@ -360,6 +385,7 @@ fn parse_oids(
         query_items.push(SnmpQueryItem {
             oid: parsed_oid,
             name: item.name.clone(),
+            parser: Some(debug_parse),
         });
     }
 

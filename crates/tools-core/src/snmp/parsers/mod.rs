@@ -1,4 +1,8 @@
 mod base;
 
-pub use base::SnmpRawValueParserFn;
-pub use base::{DefaultSnmpRawValueParser, SnmpRawValueParser, parse_oids};
+pub use base::{
+    DefaultSnmpRawValueParser, OidValueParserFn, SnmpRawValueParser, debug_parse, default_parse,
+    parse_oids,
+};
+
+pub mod oid_values;

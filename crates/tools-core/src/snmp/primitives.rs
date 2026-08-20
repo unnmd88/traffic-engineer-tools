@@ -45,8 +45,17 @@ impl fmt::Display for SnmpRawValue {
             async_snmp::Value::Counter32(v) => write!(f, "{} (Counter32)", v),
             async_snmp::Value::Counter64(v) => write!(f, "{} (Counter64)", v),
             async_snmp::Value::OctetString(v) => match String::from_utf8(v.to_vec()) {
-                Ok(s) => write!(f, "\"{}\" (OctetString)", s),
-                Err(_) => write!(f, "{:?} (OctetString)", v),
+                Ok(s) => {
+                    write!(
+                        f,
+                        "\"{}\" (OctetString) LEN: {} BYTES: {:?} AS_BYTES: {:?}",
+                        s,
+                        v.len(),
+                        v,
+                        s.as_bytes()
+                    )
+                }
+                Err(_) => write!(f, "LEN: {} BYTES: {v:?} (OctetString)", v.len()),
             },
             async_snmp::Value::TimeTicks(v) => write!(f, "{} (TimeTicks)", v),
             async_snmp::Value::Null => write!(f, "Null"),

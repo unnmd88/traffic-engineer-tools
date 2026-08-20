@@ -8,36 +8,32 @@ use crate::{
     error::PollError,
     snmp::{
         SnmpQueryItem, SnmpReadClient,
-        primitives::SnmpOid,
+        parsers::OidValueParserFn,
+        primitives::{SnmpOid, SnmpRawValue},
         response::{SnmpGetResponse, SnmpGetSample},
     },
     utils::get_elapsed_as_u64,
 };
+use async_snmp::value;
 use async_trait::async_trait;
 use chrono::{Utc, naive};
 use serde::de::IntoDeserializer;
 use tokio::time::Instant;
+use tracing::warn;
 
 pub struct CustomReader {
     client: SnmpReadClient,
     oids_to_request: Vec<SnmpOid>,
-    oid_names: Vec<Option<String>>,
+    request: Vec<SnmpQueryItem>,
 }
 
 impl CustomReader {
     pub fn new(client: SnmpReadClient, request: Vec<SnmpQueryItem>) -> Self {
-        let mut oids_to_request: Vec<SnmpOid> = Vec::with_capacity(request.len());
-        let mut oid_names: Vec<Option<String>> = Vec::with_capacity(request.len());
-
-        for items in request {
-            oids_to_request.push(items.oid);
-            oid_names.push(items.name);
-        }
-
+        let oids_to_request = request.iter().map(|i| i.oid.clone()).collect();
         Self {
             client,
             oids_to_request,
-            oid_names,
+            request,
         }
     }
 }
@@ -47,7 +43,7 @@ impl Pollable for CustomReader {
     type Output = SnmpGetResponse;
 
     async fn poll(&self) -> Result<Self::Output, PollError> {
-        let payload = self
+        let samples = self
             .client
             .get_many(&self.oids_to_request)
             .await
@@ -55,15 +51,29 @@ impl Pollable for CustomReader {
                 message: e.to_string(),
             })?
             .into_iter()
-            .zip(self.oid_names.iter())
-            .map(|(varbind, name)| SnmpGetSample {
-                oid_name: name.clone(),
-                oid: varbind.oid.to_string(),
-                raw_value: varbind.value.to_string(),
-                value: None,
+            .zip(self.request.iter())
+            .map(|(vb, query_item)| {
+                let parsed_value = match query_item.parser {
+                    Some(parser) => {
+                        match parser(&vb.value) {
+                            Ok(val) => Some(val),
+                            Err(e) => {
+                                tracing::error!(target: "CustomReader", value = ?&vb.value, "{e}");
+                                Some("parse error".to_string()) // 👈 оборачиваем в Some
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                SnmpGetSample {
+                    oid_name: query_item.name.clone(),
+                    oid: vb.oid.to_string(),
+                    raw_value: vb.value.to_string(),
+                    value: parsed_value,
+                }
             })
             .collect();
 
-        return Ok(SnmpGetResponse { samples: payload });
+        return Ok(SnmpGetResponse { samples });
     }
 }

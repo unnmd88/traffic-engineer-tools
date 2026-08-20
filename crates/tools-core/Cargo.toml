@@ -19,6 +19,7 @@ derive_more = { workspace = true }
 constcat = { workspace = true } 
 tracing = { workspace = true }
 itertools = { workspace = true }
+strum = { workspace = true }
 
 [[example]]
 name = "snmp-example"

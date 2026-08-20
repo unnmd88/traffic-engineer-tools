@@ -1,9 +1,8 @@
-
 use serde::Deserialize;
 use tools_core::monitor::application::{
-        app::Application,
-        config::{AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskPollTimings},
-    };
+    app::Application,
+    config::{AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskPollTimings},
+};
 
 use crate::monior::queries::snmpget::SnmpGetQueryDto;
 
@@ -53,6 +52,7 @@ impl AppBuilder {
             let to_query = match &t.query {
                 TaskDto::SnmpGet(q) => {
                     let query = QuerySnmpGet {
+                        profile: None,
                         host: q.host.clone(),
                         port: q.port,
                         community: q.community.clone(),
