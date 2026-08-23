@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::{
     SnmpError,
-    snmp::primitives::{Community, SnmpOid, SnmpRawValue, SnmpVarbind},
+    snmp::{community::Community, oid::SnmpOid, value::SnmpValue, varbind::SnmpVarbind},
 };
 
 pub async fn create_client(
@@ -27,7 +27,10 @@ pub async fn create_client(
         })
         .connect()
         .await
-        .map_err(|e| SnmpError::ConnectionFailed { target, port })?;
+        .map_err(|e| {
+            tracing::warn!(target: "Create snmp client", "{}", e);
+            SnmpError::ConnectionFailed { target, port }
+        })?;
     Ok(client)
 }
 
@@ -75,24 +78,21 @@ impl SnmpReadClient {
     }
 
     pub async fn get_many(&self, oids: &[SnmpOid]) -> Result<Vec<SnmpVarbind>, SnmpError> {
-        let lib_oids: Vec<async_snmp::Oid> = oids
-            .iter()
-            .map(|primitive| primitive.as_ref().clone())
-            .collect();
+        let lib_oids: Vec<async_snmp::Oid> = oids.iter().map(|oid| oid.inner().clone()).collect();
 
-        self.client
+        let varbinds = self
+            .client
             .get_many(&lib_oids)
             .await
-            .map_err(|e| map_snmp_error(*e))
-            .map(|varbinds| {
-                varbinds
-                    .into_iter()
-                    .map(|vb| SnmpVarbind {
-                        oid: SnmpOid::new(vb.oid),
-                        value: SnmpRawValue::new(vb.value),
-                    })
-                    .collect()
+            .map_err(|e| map_snmp_error(*e))?;
+
+        Ok(varbinds
+            .into_iter()
+            .map(|vb| SnmpVarbind {
+                oid: SnmpOid::new(vb.oid),
+                value: SnmpValue::from(&vb.value),
             })
+            .collect())
     }
 
     pub fn socket_addr(&self) -> SocketAddr {
@@ -112,25 +112,3 @@ fn map_snmp_error(e: async_snmp::Error) -> SnmpError {
         _ => SnmpError::Internal(e.to_string()),
     }
 }
-
-fn format_varbinds(var_binds: &Vec<VarBind>) -> String {
-    var_binds
-        .iter()
-        .map(|varbind| format!("{}={:?}", varbind.oid, varbind.value))
-        .collect::<Vec<_>>()
-        .join(" | ")
-}
-
-/*
-impl std::fmt::Debug for SnmpReadClient {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SnmpClient")
-            .field("target", &self.target)
-            .field("port", &self.port)
-            .field("timeout_ms", &self.timeout_ms)
-            .field("retries", &self.retries)
-            .field("retry_delay_ms", &self.retry_delay_ms)
-            .finish()
-    }
-}
-*/

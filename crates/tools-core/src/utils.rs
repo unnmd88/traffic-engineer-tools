@@ -32,3 +32,11 @@ pub fn now_moscow_machine() -> String {
 pub fn get_elapsed_as_u64(start: Instant) -> u64 {
     start.elapsed().as_millis() as u64
 }
+
+pub fn encode_to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}

@@ -12,7 +12,7 @@ use tools_core::polling::PollConfig;
 use tools_core::snmp::adapters::GenericCustomReader;
 use tools_core::snmp::parsers::parse_oids;
 use tools_core::snmp::primitives::{Community, Port, SnmpOid};
-use tools_core::snmp::{SnmpQueryItem, SnmpReadClient, create_client, primitives};
+use tools_core::snmp::{SnmpGetQueryItem, SnmpReadClient, create_client, primitives};
 use tools_core::worker::{PollerFactory, TaskEvent, TaskResult, Worker, WorkerId};
 use tools_core::{Pollable, SnmpError};
 
@@ -87,11 +87,11 @@ async fn test_custom_snmp_adapter(client: &SnmpReadClient) -> Result<()> {
     let plan = SnmpOid::parse("1.3.6.1.4.1.1618.3.7.2.1.2").expect("Не Oid");
 
     let items = vec![
-        SnmpQueryItem {
+        SnmpGetQueryItem {
             name: Some("Stage".to_string()),
             oid: stage,
         },
-        SnmpQueryItem {
+        SnmpGetQueryItem {
             name: None,
             oid: plan,
         },
@@ -109,11 +109,11 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
     let plan = SnmpOid::parse("1.3.6.1.4.1.1618.3.7.2.1.2").expect("Не Oid");
 
     let items = vec![
-        SnmpQueryItem {
+        SnmpGetQueryItem {
             name: Some("Stage".to_string()),
             oid: stage,
         },
-        SnmpQueryItem {
+        SnmpGetQueryItem {
             name: None,
             oid: plan,
         },
@@ -143,11 +143,11 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
         let plan = SnmpOid::parse("1.3.6.1.4.1.1618.3.7.2.1").expect("Не Oid");
 
         let items = vec![
-            SnmpQueryItem {
+            SnmpGetQueryItem {
                 name: Some("Stage2".to_string()),
                 oid: stage,
             },
-            SnmpQueryItem {
+            SnmpGetQueryItem {
                 name: Some("Plan".to_string()),
                 oid: plan,
             },

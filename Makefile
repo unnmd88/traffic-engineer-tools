@@ -95,3 +95,7 @@ example-traceroute:
 .PHONY: snmp-example
 snmp-example:
 	cargo run --target x86_64-unknown-linux-gnu --example snmp-example
+
+.PHONY: scn-example
+scn-example:
+	cargo run --target x86_64-unknown-linux-gnu --example ascii-scn

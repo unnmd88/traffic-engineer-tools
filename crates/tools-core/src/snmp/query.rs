@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::snmp::{parsers::OidValueParserFn, primitives::SnmpOid};
+use crate::snmp::{oid::SnmpOid, parsers::OidValueParserFn};
 
 #[derive(Debug)]
-pub struct SnmpQueryItem {
+pub struct SnmpGetQueryItem {
     pub name: Option<String>,
     pub oid: SnmpOid,
-    pub parser: Option<OidValueParserFn>,
+    pub business_value_parser: Option<OidValueParserFn>,
 }

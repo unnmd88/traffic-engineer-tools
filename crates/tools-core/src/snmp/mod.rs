@@ -1,11 +1,16 @@
 pub mod adapters;
 mod client;
 pub mod parsers;
-pub mod primitives;
 mod query;
 pub mod registry;
 mod response;
 pub use client::{SnmpReadClient, create_client};
-pub use query::SnmpQueryItem;
+pub use query::SnmpGetQueryItem;
 pub use response::SnmpGetResponse;
+pub mod business_value;
+pub mod community;
+pub mod oid;
 pub mod profiles;
+pub mod ug405_stage;
+pub mod value;
+pub mod varbind;

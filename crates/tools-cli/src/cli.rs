@@ -3,7 +3,7 @@ use std::{net::IpAddr, path::PathBuf};
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
-use tools_core::snmp::primitives::{Community, SnmpOid};
+use tools_core::snmp::{community::Community, oid::SnmpOid};
 
 #[derive(Parser)]
 pub struct Cli {

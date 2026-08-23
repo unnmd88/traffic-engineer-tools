@@ -1,8 +1,12 @@
-mod base;
-
-pub use base::{
-    DefaultSnmpRawValueParser, OidValueParserFn, SnmpRawValueParser, debug_parse, default_parse,
-    parse_oids,
+use crate::{
+    error::ParseError,
+    snmp::{business_value::BusinessValue, value::SnmpValue},
 };
 
-pub mod oid_values;
+mod base;
+
+pub mod bit_mask_ug405;
+pub mod stage_ug405;
+pub use stage_ug405::parse_ug405_stage;
+
+pub type OidValueParserFn = fn(&SnmpValue) -> Result<BusinessValue, ParseError>;

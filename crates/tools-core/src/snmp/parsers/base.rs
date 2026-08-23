@@ -1,30 +1,8 @@
 use crate::{
-    error::SnmpError,
-    snmp::primitives::{SnmpOid, SnmpRawValue},
+    error::{ParseError, SnmpError},
+    snmp::{business_value::BusinessValue, oid::SnmpOid, value::SnmpValue},
 };
 use async_snmp::Oid;
-
-pub type OidValueParserFn = fn(&SnmpRawValue) -> Result<String, SnmpError>;
-
-pub fn default_parse(value: &SnmpRawValue) -> Result<String, SnmpError> {
-    Ok(format!("{value}"))
-}
-
-pub fn debug_parse(value: &SnmpRawValue) -> Result<String, SnmpError> {
-    Ok(format!("value: {value}  as bytes: {:?}", value.as_bytes()))
-}
-
-pub trait SnmpRawValueParser: Send + Sync {
-    fn parse(&self, raw_value: &SnmpRawValue) -> Result<String, SnmpError>;
-}
-
-pub struct DefaultSnmpRawValueParser;
-
-impl SnmpRawValueParser for DefaultSnmpRawValueParser {
-    fn parse(&self, raw_value: &SnmpRawValue) -> Result<String, SnmpError> {
-        Ok(format!("{:?}", raw_value))
-    }
-}
 
 /// Парсит строковые OID в SnmpOid.
 pub fn parse_oids(oids: &[String]) -> Result<Vec<SnmpOid>, SnmpError> {

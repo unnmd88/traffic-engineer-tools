@@ -3,6 +3,16 @@ use std::{io::Seek, str::FromStr};
 use itertools::Itertools;
 use strum::{Display, EnumIter, IntoEnumIterator};
 
+use crate::{
+    AsciiError, Error, SnmpError,
+    domain::ascii::Ascii,
+    snmp::{
+        SnmpReadClient,
+        oid::SnmpOid,
+        registry::{STAGE_ALIASES, utcReplyGn, utcReplySiteID},
+    },
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Display, EnumIter)]
 pub enum SnmpProfile {
     Swarco,
@@ -14,9 +24,51 @@ pub enum SnmpProfile {
 }
 
 impl SnmpProfile {
-    pub fn scn_required(&self) -> bool {
-        matches!(self, SnmpProfile::PotokUg405 | SnmpProfile::PeekUg405)
+    pub async fn get_scn(&self, client: &SnmpReadClient) -> Result<Option<Ascii>, SnmpError> {
+        match self {
+            Self::PotokUg405 => {
+                let site_id_as_bytes = get_site_id_from_potok(client).await?;
+                let site_id = Ascii::from_bytes(&site_id_as_bytes).map_err(|e| {
+                    println!("Ошибка: {e}");
+                    tracing::error!(target: "Get scn", "{}", e);
+                    SnmpError::ConvertScn(e.to_string())
+                })?;
+
+                Ok(Some(site_id))
+            }
+            Self::PeekUg405 => {
+                // TODO: реализовать логику для Peek
+                // let scn = get_scn_from_peek(client).await?;
+                // Ok(Some(scn))
+                todo!("PeekUg405 SCN logic not implemented yet")
+            }
+            _ => Ok(None),
+        }
     }
+
+    /// Получить OID по алиасу для этого профиля
+    pub fn get_oid_by_alias(&self, alias: &str) -> Option<&'static str> {
+        match self {
+            Self::PotokUg405 => STAGE_ALIASES.contains(&alias).then_some(utcReplyGn),
+            // Остальные варианты
+            _ => None,
+        }
+    }
+}
+
+pub async fn get_site_id_from_potok(client: &SnmpReadClient) -> Result<Vec<u8>, SnmpError> {
+    let oid = SnmpOid::parse(utcReplySiteID)?;
+    let varbind = client.get(&oid).await?;
+    println!("OID: {oid:?}");
+
+    varbind
+        .value
+        .as_bytes()
+        .map(|b| b.to_vec())
+        .ok_or_else(|| SnmpError::UnexpectedValueType {
+            expected: "OctetString".to_string(),
+            actual: varbind.value.as_string(),
+        })
 }
 
 impl FromStr for SnmpProfile {

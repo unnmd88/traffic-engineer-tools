@@ -52,7 +52,7 @@ impl AppBuilder {
             let to_query = match &t.query {
                 TaskDto::SnmpGet(q) => {
                     let query = QuerySnmpGet {
-                        profile: None,
+                        profile: Some("potok_ug405".to_string()),
                         host: q.host.clone(),
                         port: q.port,
                         community: q.community.clone(),
@@ -62,6 +62,7 @@ impl AppBuilder {
                             .map(|item| SnmpOidItem {
                                 name: item.name.clone(),
                                 oid: item.oid.clone(),
+                                value: item.value.clone(),
                             })
                             .collect(),
                     };

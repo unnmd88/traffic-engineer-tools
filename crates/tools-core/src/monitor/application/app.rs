@@ -1,12 +1,7 @@
-use core::task;
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr},
-};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 
-use chrono::Local;
 use derive_more::Display;
-use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio::{
     sync::{broadcast, oneshot},
@@ -14,90 +9,30 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::snmp::adapters::CustomReader;
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
-        TaskRepository, Uid,
+        TaskRepository,
         application::{
             TasksRepoCommand, TasksRepoManager,
             config::{AppConfig, Query, SnmpOidItem},
-            task_mapping::{GroupMapping, Mapping, TaskMapping},
             tasksrepo_manager::TasksRepoEvent,
             worker_brige::WorkerBridge,
         },
-        task::{Protocol, Task, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta, TypeQuery},
+        task::{Protocol, TaskHistory, TaskId, TaskMeta, TypeQuery},
     },
     polling::PollConfig,
     snmp::{
-        SnmpQueryItem, SnmpReadClient,
-        parsers::debug_parse,
-        primitives::{Community, SnmpOid},
+        SnmpGetQueryItem, SnmpReadClient,
+        community::Community,
+        oid::SnmpOid,
+        parsers::{OidValueParserFn, parse_ug405_stage},
         profiles::SnmpProfile,
+        registry::{scn_required, utcReplyGn},
     },
-    worker::{Metrics, PollerFactory, TaskEvent, TaskResult, Worker, WorkerCommand, WorkerId},
+    worker::{PollerFactory, TaskEvent, Worker, WorkerCommand, WorkerId},
 };
-
-#[derive(Clone, Debug, Display)]
-pub struct TaskGroupName(String);
-
-impl TaskGroupName {
-    const MIN_LEN: usize = 1;
-    const MAX_LEN: usize = 64;
-
-    pub fn parse(name: &str) -> Result<Self, ParseError> {
-        let len = name.len();
-
-        if !(Self::MIN_LEN..=Self::MAX_LEN).contains(&len) {
-            let message = match len {
-                0 => {
-                    return Err(ParseError::CantBeEmpty {
-                        name: "GroupName".to_string(),
-                    });
-                }
-                l if l < Self::MIN_LEN => {
-                    format!("too short (got {l}, need at least {})", Self::MIN_LEN)
-                }
-                _ => format!("too long (got {len}, max {})", Self::MAX_LEN),
-            };
-
-            return Err(ParseError::InvalidLength {
-                message,
-                min: Self::MIN_LEN,
-                max: Self::MAX_LEN,
-                provide: len,
-            });
-        }
-
-        Ok(Self(name.to_string()))
-    }
-}
-
-#[derive(Debug)]
-struct IdGenerator {
-    uid: u64,
-    worker_id: u64,
-}
-
-impl IdGenerator {
-    pub fn new() -> Self {
-        Self {
-            uid: 0,
-            worker_id: 0,
-        }
-    }
-
-    pub fn next_uid(&mut self) -> Uid {
-        let id = self.worker_id;
-        self.worker_id += 1;
-        Uid(id)
-    }
-
-    pub fn next_worker_id(&mut self) -> WorkerId {
-        let id = self.worker_id;
-        self.worker_id += 1;
-        WorkerId(id)
-    }
-}
 
 #[derive(Clone, Display)]
 pub struct ApplicationId(Uuid);
@@ -114,12 +49,6 @@ pub enum ApplicationState {
     Runnig,
 }
 
-#[derive(Debug, Clone)]
-pub struct TaskGroup {
-    name: TaskGroupName,
-    groups: Vec<TaskId>,
-}
-
 #[derive(Debug)]
 struct WorkerControl {
     cmd_tx: mpsc::Sender<WorkerCommand>,
@@ -128,7 +57,6 @@ struct WorkerControl {
 
 #[derive(Debug)]
 pub struct TaskWorker {
-    //task_id: TaskId,
     worker_id: WorkerId,
     worker_control: WorkerControl,
 }
@@ -136,17 +64,10 @@ pub struct TaskWorker {
 pub struct Application {
     app_uid: ApplicationId,
     task_binding: HashMap<TaskId, TaskWorker>,
-    //snapshot: Snapshot,
-    //uid_to_task: HashMap<Uid, (TaskGroupId, TaskPosition)>,
-    //uid_to_worker_control: HashMap<Uid, WorkerControl>,
     tasks_order: Vec<TaskId>,
     tasksrepo_manager_tx: mpsc::Sender<TasksRepoCommand>,
     state: ApplicationState,
     subscriber_broadcast_tx: broadcast::Sender<TasksRepoEvent>,
-    //worker_mapping: HashMap<WorkerId, WorkerTaskMapping>,
-    //worker_to_uid: HashMap<WorkerId, Uid>,
-    //tx: mpsc::Sender<TaskEvent>,
-    //rx: mpsc::Receiver<TaskEvent>,
 }
 
 impl Application {
@@ -157,8 +78,6 @@ impl Application {
         let mut tasks_binding: HashMap<TaskId, TaskWorker> = HashMap::new();
 
         let mut tasks_repo = TaskRepository::new_empty();
-        //let mut id_generator = IdGenerator::new();
-        //let mut uid_to_worker_control: HashMap<Uid, WorkerControl> = HashMap::new();
 
         let (worker_tx, worker_rx) = mpsc::channel::<TaskEvent>(32);
 
@@ -187,23 +106,14 @@ impl Application {
                         .map(|p| p.parse::<SnmpProfile>())
                         .transpose()
                         .map_err(|e| CreateMonitorError::InvalidSnmpProfile { message: e })?;
-                    /*
-                                        let oids = if &profile.is_some_and() {
-                                            Some(p) => match p {
-                                                SnmpProfile::PotokUg405 => {
-                                                    let snmp_client = SnmpReadClient::new(
-                                                        target,
-                                                        port,
-                                                        community.clone(),
-                                                        Duration::from_secs(1),
-                                                        4,
-                                                        Duration::from_millis(200),
-                                                    );
-                                                }
-                                            },
-                                        };
-                    */
-                    let oids = parse_oids(&dto.oids, i)?;
+
+                    let snmp_client =
+                        create_snmp_read_client(target, port, community.clone(), &poll_config)
+                            .await?;
+
+                    let sanitized_oids = sanitize_oids(&dto.oids, i, profile.as_ref())?;
+                    let oids = resolve_oids(sanitized_oids, profile.as_ref(), &snmp_client).await?;
+
                     let subject = format!(
                         "Snmp-get request. Oids to request({}):\n{}",
                         oids.len(),
@@ -221,11 +131,9 @@ impl Application {
                             .join("\n")
                     );
 
-                    let poller = poller_factory
-                        .snmp_get_use_case2(target, port, community, oids)
-                        .await?;
-                    let worker =
-                        Worker::new(worker_id, poller, Duration::from_millis(task.interval_ms));
+                    let poller = poller_factory.snmp_get_use_case_with_client(snmp_client, oids);
+                    let worker_interval = Duration::from_millis(task.interval_ms);
+                    let worker = Worker::new(worker_id, poller, worker_interval);
                     let join_handle = tokio::spawn(worker.run(worker_tx.clone(), worker_cmd_rx));
                     let worker_control = WorkerControl {
                         cmd_tx: worker_cmd_tx,
@@ -249,10 +157,6 @@ impl Application {
                             worker_control,
                         },
                     );
-
-                    //uid_to_worker_control.insert(task_uid, worker_control);
-                    //uid_to_task.insert(task_uid, (task_group_id, task_position));
-                    //worker_to_uid.insert(worker_id, task_uid);
                 }
             }
         }
@@ -330,10 +234,126 @@ impl Application {
     }
 }
 
-struct TaskParseData<'a> {
-    group_name: &'a TaskGroupName,
-    group_id: usize,
-    task_id: usize,
+async fn create_snmp_read_client(
+    target: IpAddr,
+    port: u16,
+    community: Community,
+    poll_config: &PollConfig,
+) -> Result<SnmpReadClient, CreateMonitorError> {
+    SnmpReadClient::new(
+        target,
+        port,
+        community,
+        poll_config.timeout.clone(),
+        (poll_config.retries.clone()) as u32,
+        poll_config.retry_delay.clone(),
+    )
+    .await
+    .map_err(|_| CreateMonitorError::SnmpClientCreate)
+}
+
+fn resolve_oid(
+    raw: &str,
+    profile: Option<&SnmpProfile>,
+    task_idx: usize,
+    pos: usize,
+) -> Result<SnmpOid, CreateMonitorError> {
+    let raw = raw.trim().to_lowercase();
+
+    if let Ok(oid) = SnmpOid::parse(&raw) {
+        return Ok(oid);
+    }
+
+    let profile = profile.ok_or(CreateMonitorError::SnmpProfileMustBeProvided {
+        message: "SNMP profile is required for auto search oid by name".to_string(),
+        task_idx,
+    })?;
+
+    let oid_str = profile
+        .get_oid_by_alias(&raw)
+        .ok_or(CreateMonitorError::UnknownAlias {
+            task_idx,
+            pos,
+            alias: raw.clone(),
+        })?;
+
+    SnmpOid::parse(oid_str).map_err(|_| CreateMonitorError::InvalidSnmpOid {
+        task_idx,
+        pos,
+        oid: oid_str.to_string(),
+    })
+}
+
+fn resolve_oid_parser(oid: &SnmpOid) -> Option<OidValueParserFn> {
+    let parser: OidValueParserFn = match oid.to_string().as_ref() {
+        utcReplyGn => parse_ug405_stage,
+        _ => return None,
+    };
+
+    Some(parser)
+}
+
+fn sanitize_oids(
+    oids: &[SnmpOidItem],
+    task_idx: usize,
+    profile: Option<&SnmpProfile>,
+) -> Result<Vec<SnmpGetQueryItem>, CreateMonitorError> {
+    let sanitized_oids = oids
+        .iter()
+        .enumerate()
+        .map(|(pos, item)| -> Result<SnmpGetQueryItem, CreateMonitorError> {
+            let oid = resolve_oid(&item.oid, profile, task_idx, pos)?;
+            let parser = resolve_oid_parser(&oid);
+            Ok(SnmpGetQueryItem {
+                name: item.name.clone(),
+                oid,
+                business_value_parser: parser,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(sanitized_oids)
+}
+
+async fn resolve_oids(
+    oids: Vec<SnmpGetQueryItem>,
+    profile: Option<&SnmpProfile>,
+    client: &SnmpReadClient,
+) -> Result<Vec<SnmpGetQueryItem>, CreateMonitorError> {
+    let ascii_scn = if let Some(profile) = profile {
+        profile
+            .get_scn(&client)
+            .await
+            .map_err(|e| CreateMonitorError::ScnError {
+                profile: (*profile).to_string(),
+                message: e.to_string(),
+            })?
+    } else {
+        None
+    };
+
+    if let Some(scn) = ascii_scn {
+        let scn_as_str = scn.to_scn();
+        let mut result = Vec::with_capacity(oids.len());
+
+        for item in oids {
+            let oid = if scn_required(&item.oid) {
+                SnmpOid::parse(&format!("{}{}", item.oid, scn_as_str)).map_err(|e| {
+                    tracing::error!(target: "resolve_oids", "Bug: {}", e);
+                    CreateMonitorError::Other("Can`t resolve oids".to_string())
+                })?
+            } else {
+                item.oid
+            };
+            result.push(SnmpGetQueryItem {
+                name: item.name,
+                oid,
+                business_value_parser: item.business_value_parser,
+            });
+        }
+        Ok(result)
+    } else {
+        Ok(oids)
+    }
 }
 
 fn parse_ip(ip: &str, task_idx: usize) -> Result<IpAddr, CreateMonitorError> {
@@ -359,13 +379,14 @@ fn parse_snmp_community(community: &str, task_idx: usize) -> Result<Community, C
             provide: provided,
         },
         ParseError::Common { message } => CreateMonitorError::Other(message),
+        _ => CreateMonitorError::Other("Can`t parse community string".to_string()),
     })
 }
 
 fn parse_oids(
     items: &[SnmpOidItem],
     task_idx: usize,
-) -> Result<Vec<SnmpQueryItem>, CreateMonitorError> {
+) -> Result<Vec<SnmpGetQueryItem>, CreateMonitorError> {
     let mut query_items = Vec::with_capacity(items.len());
 
     for (i, item) in items.iter().enumerate() {
@@ -382,10 +403,10 @@ fn parse_oids(
                 )),
             }
         })?;
-        query_items.push(SnmpQueryItem {
+        query_items.push(SnmpGetQueryItem {
             oid: parsed_oid,
             name: item.name.clone(),
-            parser: Some(debug_parse),
+            business_value_parser: None,
         });
     }
 

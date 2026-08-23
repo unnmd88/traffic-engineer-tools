@@ -43,7 +43,7 @@ pub enum Error {
     NotFound(String),
     #[error("No response: {0}")]
     NoResponse(String),
-    #[error("ParseError error. Reason: {0}")]
+    #[error("ParseError error: {0}")]
     Parse(#[from] ParseError),
     #[error("SnapShot error: {0}")]
     SnapShot(#[from] SnapShotError),
@@ -55,10 +55,20 @@ pub enum Error {
 
 #[derive(Error, Debug, Clone)]
 pub enum CreateMonitorError {
+    #[error("Can`t create snmp-driver. Try again later.")]
+    SnmpClientCreate,
     #[error("Invalid ip-address: {ip}. Task position: {task_idx}")]
     InvalidIpAddress { task_idx: usize, ip: String },
     #[error("{message}")]
     InvalidSnmpProfile { message: String },
+    #[error("Task #{task_idx}: {message}")]
+    SnmpProfileMustBeProvided { message: String, task_idx: usize },
+    #[error("Task #{task_idx}, OID at position {pos}: unknown alias '{alias}'")]
+    UnknownAlias {
+        task_idx: usize,
+        pos: usize,
+        alias: String,
+    },
     #[error("Community string can`t be empty. Task position: {task_idx}")]
     SnmpCommunityIsEmpty { task_idx: usize },
     #[error("Invalid length for community string. Task position: {task_idx}")]
@@ -74,6 +84,8 @@ pub enum CreateMonitorError {
         oid: String,
         pos: usize,
     },
+    #[error("Error to set scn. Profile: {profile}, Reason: {message}")]
+    ScnError { profile: String, message: String },
     #[error("{0}")]
     Other(String),
 }
@@ -96,6 +108,8 @@ pub enum ParseError {
         max: usize,
         provide: usize,
     },
+    #[error("Expected {expected}, but got {actual}")]
+    InvalidType { expected: String, actual: String },
     #[error("{name} can`t be empty")]
     CantBeEmpty { name: String },
     #[error("{message}")]
@@ -141,8 +155,14 @@ pub enum SnmpError {
     ConnectionFailed { target: IpAddr, port: u16 },
     #[error("Error parse raw SNMP value: {0}")]
     ParseRawValue(String),
+    #[error("Unexpected value in oid: expected: {expected} actual: {actual}")]
+    UnexpectedValueType { expected: String, actual: String },
     #[error("Internal SNMP error: {0}")]
     Internal(String),
+    #[error("Convert bytes to scn error: {0}")]
+    ConvertScn(String),
+    #[error("Unsupported value for snmp-set: {value}")]
+    UnsupportedForSet { value: String },
 }
 
 #[derive(Debug, Clone, Error)]

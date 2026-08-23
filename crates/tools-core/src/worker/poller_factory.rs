@@ -5,9 +5,8 @@ use crate::{
     Error,
     polling::{PollConfig, Poller},
     snmp::{
-        SnmpGetResponse, SnmpQueryItem, SnmpReadClient,
-        adapters::{CustomReader, GenericCustomReader},
-        primitives::Community,
+        SnmpGetQueryItem, SnmpGetResponse, SnmpReadClient, adapters::CustomReader,
+        community::Community,
     },
 };
 
@@ -25,29 +24,7 @@ impl PollerFactory {
         target: IpAddr,
         port: u16,
         community: Community,
-        oids_to_request: Vec<SnmpQueryItem>,
-    ) -> Result<Poller<GenericCustomReader>, Error> {
-        let client = SnmpReadClient::new(
-            target,
-            port,
-            community,
-            self.poll_config
-                .timeout
-                .saturating_add(Duration::from_millis(1000)),
-            0,
-            Duration::from_secs(1),
-        )
-        .await?;
-        let adapter = GenericCustomReader::new(client, oids_to_request);
-        Ok(Poller::new(adapter, self.poll_config.clone()))
-    }
-
-    pub async fn snmp_get_use_case2(
-        &self,
-        target: IpAddr,
-        port: u16,
-        community: Community,
-        oids_to_request: Vec<SnmpQueryItem>,
+        oids_to_request: Vec<SnmpGetQueryItem>,
     ) -> Result<Poller<CustomReader>, Error> {
         let client = SnmpReadClient::new(
             target,
@@ -62,5 +39,14 @@ impl PollerFactory {
         .await?;
         let adapter = CustomReader::new(client, oids_to_request);
         Ok(Poller::new(adapter, self.poll_config.clone()))
+    }
+
+    pub fn snmp_get_use_case_with_client(
+        &self,
+        client: SnmpReadClient,
+        oids_to_request: Vec<SnmpGetQueryItem>,
+    ) -> Poller<CustomReader> {
+        let adapter = CustomReader::new(client, oids_to_request);
+        Poller::new(adapter, self.poll_config.clone())
     }
 }

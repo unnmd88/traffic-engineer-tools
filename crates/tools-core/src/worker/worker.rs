@@ -6,7 +6,6 @@ use tokio::time::{Duration, Instant, sleep};
 use crate::error::PollError;
 use crate::polling::{Poller, Response};
 use crate::snmp::SnmpGetResponse;
-use crate::snmp::adapters::GenericCustomReader;
 use crate::utils::get_elapsed_as_u64;
 use crate::worker::Metrics;
 use crate::{Error, PollErrorContext, Pollable};
