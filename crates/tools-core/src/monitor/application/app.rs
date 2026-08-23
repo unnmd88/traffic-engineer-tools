@@ -112,12 +112,11 @@ impl Application {
                             .await?;
 
                     let sanitized_oids = sanitize_oids(&dto.oids, i, profile.as_ref())?;
-                    let oids = resolve_oids(sanitized_oids, profile.as_ref(), &snmp_client).await?;
-
                     let subject = format!(
                         "Snmp-get request. Oids to request({}):\n{}",
-                        oids.len(),
-                        oids.iter()
+                        sanitized_oids.len(),
+                        sanitized_oids
+                            .iter()
                             .map(|item| {
                                 format!(
                                     " - {}{}",
@@ -130,6 +129,7 @@ impl Application {
                             .collect::<Vec<String>>()
                             .join("\n")
                     );
+                    let oids = resolve_oids(sanitized_oids, profile.as_ref(), &snmp_client).await?;
 
                     let poller = poller_factory.snmp_get_use_case_with_client(snmp_client, oids);
                     let worker_interval = Duration::from_millis(task.interval_ms);
