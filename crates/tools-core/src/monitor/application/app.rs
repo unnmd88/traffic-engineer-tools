@@ -10,6 +10,8 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::snmp::adapters::CustomReader;
+use crate::snmp::parsers::site_id_ug405_potok;
+use crate::snmp::registry::{UTC_REPLY_GN, UTC_REPLY_SITE_ID_POTOK};
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
@@ -29,7 +31,7 @@ use crate::{
         oid::SnmpOid,
         parsers::{OidValueParserFn, parse_ug405_stage},
         profiles::SnmpProfile,
-        registry::{scn_required, utcReplyGn},
+        registry::scn_required,
     },
     worker::{PollerFactory, TaskEvent, Worker, WorkerCommand, WorkerId},
 };
@@ -286,7 +288,8 @@ fn resolve_oid(
 
 fn resolve_oid_parser(oid: &SnmpOid) -> Option<OidValueParserFn> {
     let parser: OidValueParserFn = match oid.to_string().as_ref() {
-        utcReplyGn => parse_ug405_stage,
+        UTC_REPLY_GN => parse_ug405_stage,
+        UTC_REPLY_SITE_ID_POTOK => site_id_ug405_potok,
         _ => return None,
     };
 

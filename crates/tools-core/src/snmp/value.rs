@@ -27,9 +27,14 @@ impl SnmpValue {
         matches!(self, SnmpValue::OctetString(_))
     }
 
+    pub fn is_opaque(&self) -> bool {
+        matches!(self, SnmpValue::Opaque(_))
+    }
+
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             SnmpValue::OctetString(v) => Some(v),
+            SnmpValue::Opaque(v) => Some(v),
             _ => None,
         }
     }

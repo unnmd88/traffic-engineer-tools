@@ -9,7 +9,7 @@ use crate::{
     snmp::{
         SnmpReadClient,
         oid::SnmpOid,
-        registry::{STAGE_ALIASES, utcReplyGn, utcReplySiteID},
+        registry::{STAGE_ALIASES, UTC_REPLY_GN, UTC_REPLY_SITE_ID_POTOK},
     },
 };
 
@@ -49,7 +49,7 @@ impl SnmpProfile {
     /// Получить OID по алиасу для этого профиля
     pub fn get_oid_by_alias(&self, alias: &str) -> Option<&'static str> {
         match self {
-            Self::PotokUg405 => STAGE_ALIASES.contains(&alias).then_some(utcReplyGn),
+            Self::PotokUg405 => STAGE_ALIASES.contains(&alias).then_some(UTC_REPLY_GN),
             // Остальные варианты
             _ => None,
         }
@@ -57,7 +57,7 @@ impl SnmpProfile {
 }
 
 pub async fn get_site_id_from_potok(client: &SnmpReadClient) -> Result<Vec<u8>, SnmpError> {
-    let oid = SnmpOid::parse(utcReplySiteID)?;
+    let oid = SnmpOid::parse(UTC_REPLY_SITE_ID_POTOK)?;
     let varbind = client.get(&oid).await?;
     println!("OID: {oid:?}");
 

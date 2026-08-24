@@ -1,4 +1,4 @@
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Display, Formatter, write};
 
 use tokio::time::error::Elapsed;
 
@@ -12,6 +12,7 @@ pub enum BusinessValue {
     Unsigned64(u64),
     Flags { bits: Vec<bool> },
     Text(String),
+    SiteId { bytes: Vec<u8> },
 }
 
 impl Display for BusinessValue {
@@ -26,6 +27,7 @@ impl Display for BusinessValue {
                 write!(f, "{s}")
             }
             Self::Text(s) => write!(f, "{s}"),
+            Self::SiteId { bytes } => write!(f, "{}", String::from_utf8_lossy(&bytes)),
         }
     }
 }
