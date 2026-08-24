@@ -1,64 +1,16 @@
-use std::net::IpAddr;
-
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, sleep};
 
 use crate::error::PollError;
 use crate::polling::{Poller, Response};
 use crate::snmp::SnmpGetResponse;
 use crate::utils::get_elapsed_as_u64;
-use crate::worker::Metrics;
+use crate::worker::env::{TaskEvent, WorkerCommand, WorkerId, WorkerState};
+use crate::worker::{Metrics, TaskResult};
 use crate::{Error, PollErrorContext, Pollable};
-
-use derive_more::{Constructor, Display, Eq, Into};
-
-#[derive(Debug, Display, Into, Clone, Copy, Hash, Eq, PartialEq, Constructor)]
-pub struct WorkerId(pub u64);
-
-#[derive(Display, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkerState {
-    Idle,
-    Running,
-    Stopped,
-    Finished,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum WorkerCommand {
-    Start,
-    Stop,
-}
-
-#[derive(PartialEq, Eq)]
-pub enum WorkerResponse {
-    CurrentState(WorkerState),
-}
-
-#[derive(Clone, Debug)]
-pub enum TaskResult {
-    Initial,
-    SnmpGet(Response<SnmpGetResponse>),
-    NoResponse(Vec<PollErrorContext>),
-    Fail { message: String },
-}
-
-impl From<Response<SnmpGetResponse>> for TaskResult {
-    fn from(response: Response<SnmpGetResponse>) -> Self {
-        TaskResult::SnmpGet(response)
-    }
-}
-
-#[derive(Clone)]
-pub struct TaskEvent {
-    pub worker_id: WorkerId,
-    pub task_result: TaskResult,
-    pub metrics: Metrics,
-    pub worker_state: WorkerState,
-}
 
 pub struct Worker<P: Pollable> {
     id: WorkerId,
-    //state: WorkerState,
     poller: Poller<P>,
     interval: Duration,
 }
@@ -67,12 +19,7 @@ impl<P: Pollable> Worker<P>
 where
     TaskResult: From<Response<P::Output>>,
 {
-    pub fn new(
-        id: WorkerId,
-        poller: Poller<P>,
-        interval: Duration,
-        //repeat_config: WorkRimingConfig,
-    ) -> Self {
+    pub fn new(id: WorkerId, poller: Poller<P>, interval: Duration) -> Self {
         Self {
             //state: WorkerState::Idle,
             id,
@@ -83,10 +30,7 @@ where
 
     pub async fn run(self, tx: mpsc::Sender<TaskEvent>, mut cmd_rx: mpsc::Receiver<WorkerCommand>) {
         let mut state = WorkerState::Idle;
-        //let mut attempts = 0u64;
         let mut metrics = Metrics::default();
-        //println!("Worker {} state: {:#?}", self.id, state);
-        //println!("interval: {:?}", self.interval);
 
         loop {
             //let start = Instant::now();

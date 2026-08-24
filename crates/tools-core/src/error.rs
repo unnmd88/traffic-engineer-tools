@@ -51,6 +51,14 @@ pub enum Error {
     Internal(String),
     #[error("Create `Monitor` error: {0}")]
     CreateMonitorError(#[from] CreateMonitorError),
+    #[error("Update error: {0}")]
+    Update(#[from] UpdateError),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum UpdateError {
+    #[error("{message}")]
+    Adapter { message: String },
 }
 
 #[derive(Error, Debug, Clone)]

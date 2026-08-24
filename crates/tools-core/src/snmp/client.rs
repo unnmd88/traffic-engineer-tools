@@ -10,7 +10,17 @@ use crate::{
     snmp::{community::Community, oid::SnmpOid, value::SnmpValue, varbind::SnmpVarbind},
 };
 
-pub async fn create_client(
+#[derive(Debug, Clone)]
+pub struct SnmpReadClientConfig {
+    pub target: IpAddr,
+    pub port: u16,
+    pub community: Community,
+    pub timeout: Duration,
+    pub retries: u32,
+    pub retry_delay: Duration,
+}
+
+async fn create_inner_client(
     target: IpAddr,
     port: u16,
     community: Community,
@@ -37,6 +47,7 @@ pub async fn create_client(
 #[derive(Clone)]
 pub struct SnmpReadClient {
     client: Client,
+    config: SnmpReadClientConfig,
 }
 
 #[derive(Clone)]
@@ -53,20 +64,21 @@ pub struct SnmpReadWriteClient {
 }
 
 impl SnmpReadClient {
-    pub fn new_with_client(client: Client) -> Self {
-        Self { client }
+    pub async fn new(config: SnmpReadClientConfig) -> Result<Self, SnmpError> {
+        let client = create_inner_client(
+            config.target,
+            config.port,
+            config.community.clone(),
+            config.timeout,
+            config.retries,
+            config.retry_delay,
+        )
+        .await?;
+        Ok(Self { client, config })
     }
 
-    pub async fn new(
-        target: IpAddr,
-        port: u16,
-        community: Community,
-        timeout: Duration,
-        retries: u32,
-        retry_delay: Duration,
-    ) -> Result<Self, SnmpError> {
-        let client = create_client(target, port, community, timeout, retries, retry_delay).await?;
-        Ok(Self { client })
+    pub fn config(&self) -> &SnmpReadClientConfig {
+        &self.config
     }
 
     pub async fn get(&self, oid: &SnmpOid) -> Result<SnmpVarbind, SnmpError> {

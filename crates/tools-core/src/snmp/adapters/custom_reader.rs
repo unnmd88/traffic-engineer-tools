@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    Payload, Pollable, SnmpError,
-    error::PollError,
+    Payload, Pollable, SnmpError, Updateble,
+    error::{PollError, UpdateError},
     snmp::{
         SnmpGetQueryItem, SnmpReadClient,
         business_value::BusinessValue,
@@ -36,6 +36,21 @@ impl CustomReader {
             oids_to_request,
             request,
         }
+    }
+}
+
+#[async_trait]
+impl Updateble for CustomReader {
+    type Instance = Self;
+
+    async fn update(self) -> Result<Self::Instance, UpdateError> {
+        let config = self.client.config().clone();
+        let new_client = SnmpReadClient::new(config)
+            .await
+            .map_err(|e| UpdateError::Adapter {
+                message: format!("Fail to create snmp-read client: {e}"),
+            })?;
+        Ok(Self::new(new_client, self.request))
     }
 }
 

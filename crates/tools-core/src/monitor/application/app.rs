@@ -9,9 +9,12 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::polling::Poller2;
+use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::CustomReader;
 use crate::snmp::parsers::site_id_ug405_potok;
 use crate::snmp::registry::{UTC_REPLY_GN, UTC_REPLY_SITE_ID_POTOK};
+use crate::worker::{TaskEvent, Worker2, WorkerCommand, WorkerId};
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
@@ -33,7 +36,7 @@ use crate::{
         profiles::SnmpProfile,
         registry::scn_required,
     },
-    worker::{PollerFactory, TaskEvent, Worker, WorkerCommand, WorkerId},
+    worker::PollerFactory,
 };
 
 #[derive(Clone, Display)]
@@ -92,8 +95,9 @@ impl Application {
 
             let worker_id = WorkerId::new(i as u64);
             let (worker_cmd_tx, worker_cmd_rx) = mpsc::channel(32);
+            let poller = Poller2::new(poll_config.clone());
 
-            let poller_factory = PollerFactory::new(poll_config);
+            //let poller_factory = PollerFactory::new(poll_config);
             let task_history = TaskHistory::new(task.deep_history);
             let name = task.name.clone();
 
@@ -109,9 +113,16 @@ impl Application {
                         .transpose()
                         .map_err(|e| CreateMonitorError::InvalidSnmpProfile { message: e })?;
 
-                    let snmp_client =
-                        create_snmp_read_client(target, port, community.clone(), &poll_config)
-                            .await?;
+                    let snmp_client_config = SnmpReadClientConfig {
+                        target,
+                        port,
+                        community,
+                        timeout: poll_config.timeout,
+                        retries: poll_config.retries as u32,
+                        retry_delay: poll_config.retry_delay,
+                    };
+
+                    let snmp_client = create_snmp_read_client(snmp_client_config).await?;
 
                     let sanitized_oids = sanitize_oids(&dto.oids, i, profile.as_ref())?;
                     let subject = format!(
@@ -133,10 +144,23 @@ impl Application {
                     );
                     let oids = resolve_oids(sanitized_oids, profile.as_ref(), &snmp_client).await?;
 
-                    let poller = poller_factory.snmp_get_use_case_with_client(snmp_client, oids);
+                    let adapter = CustomReader::new(snmp_client, oids);
+
+                    // let poller = poller_factory.snmp_get_use_case_with_client(snmp_client, oids);
+
                     let worker_interval = Duration::from_millis(task.interval_ms);
-                    let worker = Worker::new(worker_id, poller, worker_interval);
-                    let join_handle = tokio::spawn(worker.run(worker_tx.clone(), worker_cmd_rx));
+                    let mut worker = Worker2::new(
+                        worker_id,
+                        adapter,
+                        worker_interval,
+                        poller,
+                        worker_tx.clone(),
+                        worker_cmd_rx,
+                    );
+                    let join_handle = tokio::spawn(worker.run());
+
+                    //let worker = Worker::new(worker_id, poller, worker_interval);
+                    //let join_handle = tokio::spawn(worker.run(worker_tx.clone(), worker_cmd_rx));
                     let worker_control = WorkerControl {
                         cmd_tx: worker_cmd_tx,
                         join_handle,
@@ -237,21 +261,11 @@ impl Application {
 }
 
 async fn create_snmp_read_client(
-    target: IpAddr,
-    port: u16,
-    community: Community,
-    poll_config: &PollConfig,
+    config: SnmpReadClientConfig,
 ) -> Result<SnmpReadClient, CreateMonitorError> {
-    SnmpReadClient::new(
-        target,
-        port,
-        community,
-        poll_config.timeout.clone(),
-        (poll_config.retries.clone()) as u32,
-        poll_config.retry_delay.clone(),
-    )
-    .await
-    .map_err(|_| CreateMonitorError::SnmpClientCreate)
+    SnmpReadClient::new(config)
+        .await
+        .map_err(|_| CreateMonitorError::SnmpClientCreate)
 }
 
 fn resolve_oid(
