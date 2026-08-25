@@ -53,12 +53,20 @@ pub enum Error {
     CreateMonitorError(#[from] CreateMonitorError),
     #[error("Update error: {0}")]
     Update(#[from] UpdateError),
+    #[error("{0}")]
+    Adapter(#[from] AdapterError),
 }
 
 #[derive(Error, Debug, Clone)]
 pub enum UpdateError {
-    #[error("{message}")]
+    #[error("Can`t create ada adapter {message}")]
     Adapter { message: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum AdapterError {
+    #[error("{message}")]
+    Create { message: String },
 }
 
 #[derive(Error, Debug, Clone)]
@@ -151,6 +159,8 @@ pub enum PollError {
 
 #[derive(Error, Debug, Clone)]
 pub enum SnmpError {
+    #[error("authentication failed for {target}")]
+    Auth { target: SocketAddr },
     #[error("SNMP error: timeout error for {target} with {retries} retries")]
     RequestTimeOut { target: SocketAddr, retries: u32 },
     #[error("Timeout while connecting to host {0}")]
@@ -165,6 +175,10 @@ pub enum SnmpError {
     ParseRawValue(String),
     #[error("Unexpected value in oid: expected: {expected} actual: {actual}")]
     UnexpectedValueType { expected: String, actual: String },
+    #[error("Error to set scn. Profile: {profile}, Reason: {message}")]
+    ScnError { profile: String, message: String },
+    #[error("Can`t resolve oid: {0}")]
+    ResolveOid(String),
     #[error("Internal SNMP error: {0}")]
     Internal(String),
     #[error("Convert bytes to scn error: {0}")]

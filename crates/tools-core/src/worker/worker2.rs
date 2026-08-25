@@ -9,7 +9,7 @@ use crate::{
     worker::{Metrics, TaskEvent, TaskResult, WorkerCommand, WorkerId, WorkerState},
 };
 
-pub struct Worker2<A: Pollable + Updateble> {
+pub struct PollWorker<A: Pollable + Updateble> {
     id: WorkerId,
     state: WorkerState,
     metrics: Metrics,
@@ -20,7 +20,7 @@ pub struct Worker2<A: Pollable + Updateble> {
     interval: Duration,
 }
 
-impl<A: Pollable + Updateble<Instance = A>> Worker2<A>
+impl<A: Pollable + Updateble<Instance = A>> PollWorker<A>
 where
     TaskResult: From<Response<A::Output>>,
 {
@@ -29,7 +29,6 @@ where
         adapter: A,
         interval: Duration,
         poll_config: PollConfig,
-        //poller: PollAdapter,
         tx: mpsc::Sender<TaskEvent>,
         mut cmd_rx: mpsc::Receiver<WorkerCommand>,
     ) -> Self {

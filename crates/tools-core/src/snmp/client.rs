@@ -121,6 +121,7 @@ fn map_snmp_error(e: async_snmp::Error) -> SnmpError {
         async_snmp::Error::Timeout {
             target, retries, ..
         } => SnmpError::RequestTimeOut { target, retries },
+        async_snmp::Error::Auth { target } => SnmpError::Auth { target },
         _ => SnmpError::Internal(e.to_string()),
     }
 }

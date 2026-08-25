@@ -12,8 +12,8 @@ use uuid::Uuid;
 use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::CustomReader;
 use crate::snmp::parsers::site_id_ug405_potok;
-use crate::snmp::registry::{UTC_REPLY_GN, UTC_REPLY_SITE_ID_POTOK};
-use crate::worker::{TaskEvent, Worker2, WorkerCommand, WorkerId};
+use crate::snmp::registry::{UTC_REPLY_GN_OID, UTC_REPLY_SITE_ID_POTOK_OID};
+use crate::worker::{PollWorker, TaskEvent, WorkerCommand, WorkerId};
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
@@ -140,14 +140,11 @@ impl Application {
                             .collect::<Vec<String>>()
                             .join("\n")
                     );
-                    let oids = resolve_oids(sanitized_oids, profile.as_ref(), &snmp_client).await?;
 
-                    let adapter = CustomReader::new(snmp_client, oids);
-
-                    // let poller = poller_factory.snmp_get_use_case_with_client(snmp_client, oids);
+                    let adapter = CustomReader::new(snmp_client, sanitized_oids, profile).await?;
 
                     let worker_interval = Duration::from_millis(task.interval_ms);
-                    let worker = Worker2::new(
+                    let worker = PollWorker::new(
                         worker_id,
                         adapter,
                         worker_interval,
@@ -298,16 +295,6 @@ fn resolve_oid(
     })
 }
 
-fn resolve_oid_parser(oid: &SnmpOid) -> Option<OidValueParserFn> {
-    let parser: OidValueParserFn = match oid.to_string().as_ref() {
-        UTC_REPLY_GN => parse_ug405_stage,
-        UTC_REPLY_SITE_ID_POTOK => site_id_ug405_potok,
-        _ => return None,
-    };
-
-    Some(parser)
-}
-
 fn sanitize_oids(
     oids: &[SnmpOidItem],
     task_idx: usize,
@@ -318,17 +305,18 @@ fn sanitize_oids(
         .enumerate()
         .map(|(pos, item)| -> Result<SnmpGetQueryItem, CreateMonitorError> {
             let oid = resolve_oid(&item.oid, profile, task_idx, pos)?;
-            let parser = resolve_oid_parser(&oid);
+            //let parser = resolve_oid_parser(&oid);
             Ok(SnmpGetQueryItem {
                 name: item.name.clone(),
                 oid,
-                business_value_parser: parser,
+                business_value_parser: None, // делегируем поиск парсера в 'реестре' адаптеру
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(sanitized_oids)
 }
 
+/*
 async fn resolve_oids(
     oids: Vec<SnmpGetQueryItem>,
     profile: Option<&SnmpProfile>,
@@ -370,6 +358,7 @@ async fn resolve_oids(
         Ok(oids)
     }
 }
+*/
 
 fn parse_ip(ip: &str, task_idx: usize) -> Result<IpAddr, CreateMonitorError> {
     ip.parse::<IpAddr>()

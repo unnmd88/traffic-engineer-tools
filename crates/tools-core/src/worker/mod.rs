@@ -10,4 +10,4 @@ pub use metrics::Metrics;
 pub use poller_factory::PollerFactory;
 pub use task_result::TaskResult;
 //pub use worker::Worker;
-pub use worker2::Worker2;
+pub use worker2::PollWorker;

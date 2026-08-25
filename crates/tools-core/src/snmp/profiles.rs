@@ -9,7 +9,13 @@ use crate::{
     snmp::{
         SnmpReadClient,
         oid::SnmpOid,
-        registry::{STAGE_ALIASES, UTC_REPLY_GN, UTC_REPLY_SITE_ID_POTOK},
+        oid_metadata::OidMetadata,
+        parsers::{OidValueParserFn, parse_ug405_stage, site_id_ug405_potok},
+        registry::{
+            STAGE_ALIASES, UTC_REPLY_GN_METADATA, UTC_REPLY_GN_OID,
+            UTC_REPLY_SITE_ID_POTOK_METADATA, UTC_REPLY_SITE_ID_POTOK_OID,
+        },
+        site_id::fetch_site_id_potok_ug405,
     },
 };
 
@@ -24,51 +30,44 @@ pub enum SnmpProfile {
 }
 
 impl SnmpProfile {
-    pub async fn get_scn(&self, client: &SnmpReadClient) -> Result<Option<Ascii>, SnmpError> {
-        match self {
-            Self::PotokUg405 => {
-                let site_id_as_bytes = get_site_id_from_potok(client).await?;
-                let site_id = Ascii::from_bytes(&site_id_as_bytes).map_err(|e| {
-                    println!("Ошибка: {e}");
-                    tracing::error!(target: "Get scn", "{}", e);
-                    SnmpError::ConvertScn(e.to_string())
-                })?;
+    pub fn required_scn(&self) -> bool {
+        matches!(self, Self::PotokUg405 | Self::PeekUg405)
+    }
 
-                Ok(Some(site_id))
-            }
-            Self::PeekUg405 => {
-                // TODO: реализовать логику для Peek
-                // let scn = get_scn_from_peek(client).await?;
-                // Ok(Some(scn))
-                todo!("PeekUg405 SCN logic not implemented yet")
-            }
-            _ => Ok(None),
-        }
+    pub async fn get_site_id_if_required(
+        &self,
+        client: &SnmpReadClient,
+    ) -> Result<Option<Vec<u8>>, SnmpError> {
+        let site_id = match self {
+            Self::PotokUg405 => Some(fetch_site_id_potok_ug405(client).await?),
+            _ => None,
+        };
+
+        Ok(site_id)
     }
 
     /// Получить OID по алиасу для этого профиля
     pub fn get_oid_by_alias(&self, alias: &str) -> Option<&'static str> {
         match self {
-            Self::PotokUg405 => STAGE_ALIASES.contains(&alias).then_some(UTC_REPLY_GN),
+            Self::PotokUg405 => STAGE_ALIASES.contains(&alias).then_some(UTC_REPLY_GN_OID),
             // Остальные варианты
             _ => None,
         }
     }
-}
 
-pub async fn get_site_id_from_potok(client: &SnmpReadClient) -> Result<Vec<u8>, SnmpError> {
-    let oid = SnmpOid::parse(UTC_REPLY_SITE_ID_POTOK)?;
-    let varbind = client.get(&oid).await?;
-    println!("OID: {oid:?}");
+    pub fn metadata(&self, oid: &SnmpOid) -> Option<OidMetadata> {
+        let binding = oid.to_string();
+        let oid_as_str = binding.as_str();
 
-    varbind
-        .value
-        .as_bytes()
-        .map(|b| b.to_vec())
-        .ok_or_else(|| SnmpError::UnexpectedValueType {
-            expected: "OctetString".to_string(),
-            actual: varbind.value.as_string(),
-        })
+        match self {
+            Self::PotokUg405 => match oid_as_str {
+                UTC_REPLY_GN_OID => Some(UTC_REPLY_GN_METADATA),
+                UTC_REPLY_SITE_ID_POTOK_OID => Some(UTC_REPLY_SITE_ID_POTOK_METADATA),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 impl FromStr for SnmpProfile {

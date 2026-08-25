@@ -4,7 +4,6 @@ use tokio::sync::mpsc;
 
 use crate::{
     monitor::{
-        Uid,
         application::TasksRepoCommand,
         task::{TaskDataUpdateMessage, TaskId},
     },

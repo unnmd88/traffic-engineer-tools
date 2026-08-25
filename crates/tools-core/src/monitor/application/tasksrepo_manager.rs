@@ -6,7 +6,7 @@ use tracing::error;
 use crate::{
     Error,
     monitor::{
-        TaskRepository, Uid,
+        TaskRepository,
         task::{TaskDataUpdateMessage, TaskId},
     },
     worker::{Metrics, TaskEvent, TaskResult},
