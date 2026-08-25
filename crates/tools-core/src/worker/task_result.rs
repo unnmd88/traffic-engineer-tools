@@ -1,4 +1,4 @@
-use crate::{PollErrorContext, polling::Response, snmp::SnmpGetResponse};
+use crate::{PollErrorContext, poll_response::Response, snmp::SnmpGetResponse};
 
 #[derive(Clone, Debug)]
 pub enum TaskResult {

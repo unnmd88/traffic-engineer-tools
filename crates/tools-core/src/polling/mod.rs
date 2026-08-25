@@ -1,5 +1,9 @@
+mod config;
+mod poll;
+mod poll_adapter;
 mod poller;
-mod response;
 
-pub use poller::{PollConfig, Poller2};
-pub use response::Response;
+pub use config::PollConfig;
+pub use poll::poll;
+pub use poll_adapter::PollAdapter;
+pub use poller::Poller;

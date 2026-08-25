@@ -2,10 +2,10 @@ use tokio::time::Duration;
 use tokio::{sync::mpsc, time::sleep};
 
 use crate::error::PollError;
-use crate::polling::Poller2;
+use crate::poll_response::Response;
+use crate::polling::PollAdapter;
 use crate::{
     Pollable, Updateble,
-    polling::Response,
     worker::{Metrics, TaskEvent, TaskResult, WorkerCommand, WorkerId, WorkerState},
 };
 
@@ -15,7 +15,7 @@ pub struct Worker2<A: Pollable + Updateble> {
     metrics: Metrics,
     tx: mpsc::Sender<TaskEvent>,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
-    poller: Poller2,
+    poller: PollAdapter,
     adapter: A,
     interval: Duration,
 }
@@ -28,7 +28,7 @@ where
         id: WorkerId,
         adapter: A,
         interval: Duration,
-        poller: Poller2,
+        poller: PollAdapter,
         tx: mpsc::Sender<TaskEvent>,
         mut cmd_rx: mpsc::Receiver<WorkerCommand>,
     ) -> Self {
@@ -55,12 +55,6 @@ where
                 _ = sleep(self.interval) => {
 
                     if self.state == WorkerState::Running {
-                        if self.metrics.total_attempts % 4 == 0 {
-                                println!("Rebuild adapter!");
-                                self.adapter = self.adapter.update().await.unwrap();
-                                println!("Rebuild adapter success!");
-                                sleep(Duration::from_secs(3)).await;
-                            }
 
                         let raw_result = self.poller.run_poll(&self.adapter).await;
 
