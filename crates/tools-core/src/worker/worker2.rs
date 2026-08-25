@@ -3,7 +3,7 @@ use tokio::{sync::mpsc, time::sleep};
 
 use crate::error::PollError;
 use crate::poll_response::Response;
-use crate::polling::PollAdapter;
+use crate::polling::{PollConfig, poll};
 use crate::{
     Pollable, Updateble,
     worker::{Metrics, TaskEvent, TaskResult, WorkerCommand, WorkerId, WorkerState},
@@ -15,7 +15,7 @@ pub struct Worker2<A: Pollable + Updateble> {
     metrics: Metrics,
     tx: mpsc::Sender<TaskEvent>,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
-    poller: PollAdapter,
+    poll_config: PollConfig,
     adapter: A,
     interval: Duration,
 }
@@ -28,14 +28,15 @@ where
         id: WorkerId,
         adapter: A,
         interval: Duration,
-        poller: PollAdapter,
+        poll_config: PollConfig,
+        //poller: PollAdapter,
         tx: mpsc::Sender<TaskEvent>,
         mut cmd_rx: mpsc::Receiver<WorkerCommand>,
     ) -> Self {
         Self {
             state: WorkerState::Idle,
             id,
-            poller,
+            poll_config,
             metrics: Metrics::default(),
             adapter,
             interval,
@@ -56,7 +57,7 @@ where
 
                     if self.state == WorkerState::Running {
 
-                        let raw_result = self.poller.run_poll(&self.adapter).await;
+                        let raw_result = poll(&self.poll_config, &self.adapter).await;
 
                         let (updated_metrics,  res) = match raw_result {
                             Ok(response) => {

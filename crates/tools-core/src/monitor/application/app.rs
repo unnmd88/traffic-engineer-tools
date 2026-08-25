@@ -9,7 +9,6 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::polling::PollAdapter;
 use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::CustomReader;
 use crate::snmp::parsers::site_id_ug405_potok;
@@ -95,7 +94,6 @@ impl Application {
 
             let worker_id = WorkerId::new(i as u64);
             let (worker_cmd_tx, worker_cmd_rx) = mpsc::channel(32);
-            let poller = PollAdapter::new(poll_config.clone());
 
             //let poller_factory = PollerFactory::new(poll_config);
             let task_history = TaskHistory::new(task.deep_history);
@@ -153,7 +151,7 @@ impl Application {
                         worker_id,
                         adapter,
                         worker_interval,
-                        poller,
+                        poll_config,
                         worker_tx.clone(),
                         worker_cmd_rx,
                     );
