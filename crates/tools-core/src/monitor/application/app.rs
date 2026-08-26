@@ -9,11 +9,12 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::Pollable;
 use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::CustomReader;
 use crate::snmp::parsers::site_id_ug405_potok;
 use crate::snmp::registry::{UTC_REPLY_GN_OID, UTC_REPLY_SITE_ID_POTOK_OID};
-use crate::worker::{PollWorker, TaskEvent, WorkerCommand, WorkerId};
+use crate::worker::{PollWorker, TaskEvent, WorkerCommand, WorkerEvent, WorkerId};
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
@@ -83,7 +84,7 @@ impl Application {
 
         let mut tasks_repo = TaskRepository::new_empty();
 
-        let (worker_tx, worker_rx) = mpsc::channel::<TaskEvent>(32);
+        let (worker_tx, worker_rx) = mpsc::channel(32);
 
         for (i, task) in config.tasks.iter().enumerate() {
             let poll_config = PollConfig {

@@ -4,6 +4,7 @@ use tokio::{sync::mpsc, time::sleep};
 use crate::error::PollError;
 use crate::poll_response::Response;
 use crate::polling::{PollConfig, poll};
+use crate::worker::event::WorkerEvent;
 use crate::{
     Pollable, Updateble,
     worker::{Metrics, TaskEvent, TaskResult, WorkerCommand, WorkerId, WorkerState},
@@ -13,7 +14,7 @@ pub struct PollWorker<A: Pollable + Updateble> {
     id: WorkerId,
     state: WorkerState,
     metrics: Metrics,
-    tx: mpsc::Sender<TaskEvent>,
+    tx: mpsc::Sender<WorkerEvent<A>>,
     cmd_rx: mpsc::Receiver<WorkerCommand>,
     poll_config: PollConfig,
     adapter: A,
@@ -29,7 +30,7 @@ where
         adapter: A,
         interval: Duration,
         poll_config: PollConfig,
-        tx: mpsc::Sender<TaskEvent>,
+        tx: mpsc::Sender<WorkerEvent<A>>,
         mut cmd_rx: mpsc::Receiver<WorkerCommand>,
     ) -> Self {
         Self {
@@ -56,6 +57,8 @@ where
 
                     if self.state == WorkerState::Running {
 
+
+                        /*
                         let raw_result = poll(&self.poll_config, &self.adapter).await;
 
                         let (updated_metrics,  res) = match raw_result {
@@ -68,8 +71,27 @@ where
                         };
                         self.metrics = updated_metrics;
                         //println!("Выполнена работа #{:#?}", &res);
+                        */
 
+                       let event = match poll(&self.poll_config, &self.adapter).await {
+                            Ok(response) => {
+                                    self.metrics = self.metrics.with_success(response.elapsed);
+                                    WorkerEvent::PollSuccess { worker_id: self.id, metrics: self.metrics, state: self.state, payload: response }
 
+                                }
+                            Err(error) => {
+                                    self.metrics = self.metrics.with_error();
+                                    WorkerEvent::PollError { worker_id: self.id, metrics: self.metrics, state: self.state, error: error }
+                                }
+
+                        };
+                        if self.tx.send(event).await.is_err() {
+                                tracing::warn!(target: "worker", worker_id=?self.id, "Receiver dropped");
+                                return;
+
+                            }
+
+                        /*
                        if  self.tx.send(TaskEvent {
                               worker_id: self.id,
                               task_result: res,
@@ -80,6 +102,7 @@ where
                                 tracing::warn!(target: "worker", worker_id=?self.id, "Receiver dropped");
                                 return;
                         };
+                        */
                     }
 
                 }
