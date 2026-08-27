@@ -45,8 +45,6 @@ pub enum Error {
     NoResponse(String),
     #[error("ParseError error: {0}")]
     Parse(#[from] ParseError),
-    #[error("SnapShot error: {0}")]
-    SnapShot(#[from] SnapShotError),
     #[error("Internal error: {0}")]
     Internal(String),
     #[error("Create `Monitor` error: {0}")]
@@ -55,12 +53,30 @@ pub enum Error {
     Update(#[from] UpdateError),
     #[error("{0}")]
     Adapter(#[from] AdapterError),
+    #[error("{0}")]
+    TaskRepository(#[from] TaskRepositoryError),
+    #[error("{0}")]
+    Application(#[from] ApplicationError),
 }
 
 #[derive(Error, Debug, Clone)]
 pub enum UpdateError {
     #[error("Can`t create ada adapter {message}")]
     Adapter { message: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum ApplicationError {
+    #[error("Cat`n subscribe to for task repository updates: {reason}")]
+    RepositorySubscribe { reason: String },
+    #[error("Cat`n get snapshot of task repository: {reason}")]
+    GetSnapshot { reason: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum TaskRepositoryError {
+    #[error("Task with id={task_id} not fond in repository.")]
+    TaskNotFound { task_id: String },
 }
 
 #[derive(Error, Debug, Clone)]
@@ -106,6 +122,7 @@ pub enum CreateMonitorError {
     Other(String),
 }
 
+/*
 #[derive(Error, Debug, Clone)]
 pub enum SnapShotError {
     #[error("Can`t update Snapshot(id={snapshot_id}). Worker with id: {worker_id} not found.")]
@@ -114,6 +131,7 @@ pub enum SnapShotError {
         worker_id: String,
     },
 }
+*/
 
 #[derive(Error, Debug, Clone)]
 pub enum ParseError {

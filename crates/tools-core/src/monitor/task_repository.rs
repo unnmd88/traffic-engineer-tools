@@ -4,10 +4,8 @@ use std::collections::HashMap;
 use crate::{
     Error,
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
-    error::SnapShotError,
-    monitor::task::{
-        Task, TaskData, TaskDataUpdateMessage, TaskEntity, TaskHistory, TaskId, TaskMeta,
-    },
+    error::TaskRepositoryError,
+    monitor::task::{Task, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta},
     utils::format_moscow_human,
     worker::{Metrics, TaskEvent, TaskResult, WorkerId},
 };
@@ -15,7 +13,7 @@ use chrono::{DateTime, Local, Utc};
 use constcat::concat;
 use derive_more::Display;
 use itertools::Itertools;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -35,13 +33,18 @@ impl TaskIdGenerator {
 }
 
 #[derive(Clone, Debug)]
+pub struct TaskDataUpdate {
+    pub task_result: TaskResult,
+    pub metrics: Metrics,
+}
+
+#[derive(Clone, Debug)]
 pub struct TaskRepository {
     tasks: HashMap<TaskId, TaskEntity>,
     id_gen: TaskIdGenerator,
     order_ids: Vec<TaskId>,
     created_at: DateTime<Local>,
     updated_at: DateTime<Local>,
-    //last_update: DateTime<Local>,
 }
 
 impl TaskRepository {
@@ -86,13 +89,9 @@ impl TaskRepository {
         history: Option<TaskHistory>,
     ) -> TaskId {
         let id = self.id_gen.next();
+        let data = data.unwrap_or_else(|| TaskData::new(TaskResult::Initial, None));
 
-        let task = TaskEntity::new(
-            id.clone(),
-            meta,
-            data.unwrap_or_default(),
-            history.unwrap_or_default(),
-        );
+        let task = TaskEntity::new(id.clone(), meta, data, history.unwrap_or_default());
 
         self.tasks.insert(id.clone(), task);
         self.order_ids.push(id.clone());
@@ -119,18 +118,15 @@ impl TaskRepository {
     pub fn update_taskstate(
         &mut self,
         task_id: &TaskId,
-        data: TaskDataUpdateMessage,
+        data: TaskDataUpdate,
     ) -> Result<(), Error> {
-        let target = self.get_mut_task(task_id).ok_or_else(|| {
-            error!(
-            target: "TaskRepository",
-            task_id = ?task_id,
-            "Task not found"
-            );
-            Error::NotFound(format!("Task whith id: {task_id} not found"))
-        })?;
+        let target = self
+            .get_mut_task(task_id)
+            .ok_or(TaskRepositoryError::TaskNotFound {
+                task_id: task_id.0.to_string(),
+            })?;
 
-        target.update_data(TaskData::new(Some(data.task_result), Some(data.metrics)));
+        target.update_data(TaskData::new(data.task_result, Some(data.metrics)));
         self.updated_at = Local::now();
 
         Ok(())
@@ -169,7 +165,7 @@ const LINE_DOUBLE: &str =
     "════════════════════════════════════════════════════════════════════════════";
 const LINE_DOTTED: &str =
     "················································································";
-const TITLE: &str = "SNAPSHOT";
+const TITLE: &str = "Monitor created at";
 const SPACES: &str = "                                      ";
 const SNAPSHOT_HEADER: &str = concat!(LINE_DOUBLE, "\n", SPACES, TITLE, "\n", LINE_DOUBLE);
 
@@ -178,8 +174,8 @@ impl Display for TaskRepository {
         writeln!(f, "{LINE_DOUBLE}")?;
         writeln!(
             f,
-            "{TITLE} Last update: {} Created: {}",
-            self.updated_at.format(DT_FMT_WITH_MICROSECONDS),
+            "{TITLE}: {}",
+            //self.updated_at.format(DT_FMT_WITH_MICROSECONDS),
             self.created_at.format(DT_FMT)
         )?;
         writeln!(f, "{LINE_DOUBLE}")?;
@@ -188,14 +184,16 @@ impl Display for TaskRepository {
             let meta = task.meta();
             let data = task.data();
 
-            writeln!(f, "Name: '{}' Target: {} Id: {}", meta.name, meta.target, task.id())?;
-            writeln!(f, "Subject: {}\n", meta.subject)?;
             writeln!(
                 f,
-                "Last update: {} Created: {}",
-                task.updated_at().format(DT_FMT_WITH_MICROSECONDS),
-                task.created_at().format(DT_FMT),
+                "Name: '{}' Target: {} Id: {} Created: {}",
+                meta.name,
+                meta.target,
+                task.id(),
+                task.created_at().format(DT_FMT)
             )?;
+            writeln!(f, "{}\n{LINE_THIN}\n", meta.subject)?;
+            writeln!(f, "Last update: {}", task.updated_at().format(DT_FMT_WITH_MICROSECONDS),)?;
 
             let m = data.metrics();
             if m.total_attempts > 0 {

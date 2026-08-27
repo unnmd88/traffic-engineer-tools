@@ -1,7 +1,7 @@
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use tools_core::monitor::{application::TasksRepoEvent, task::TaskId};
+use tools_core::monitor::{application::TasksRepoResponse, task::TaskId};
 use tracing::{error, info};
 mod monior;
 mod scn;
@@ -19,7 +19,10 @@ async fn main() -> anyhow::Result<()> {
 
             tokio::spawn(async move {
                 app.start().await;
-                let mut rx = app.subscribe();
+                //let mut rx = app.subscribe().await?;
+                let mut rx = app.subscribe().await.unwrap_or_else(|e| {
+                    panic!("{}", e);
+                });
                 let ordered_tasks_ids: Vec<TaskId> = app
                     .get_snapshot()
                     .await
@@ -33,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
                     //execute!(stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0))
                     //    .unwrap_or_default();
                     match update {
-                        TasksRepoEvent::Update { snapshot, task_id } => {
+                        TasksRepoResponse::Update { snapshot, task_id } => {
                             println!("{snapshot}");
                             /*
                                                         for task_id in ordered_tasks_ids.iter() {

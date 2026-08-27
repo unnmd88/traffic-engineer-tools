@@ -5,17 +5,9 @@ use crate::{
     worker::{Metrics, WorkerId, WorkerState},
 };
 
-pub enum WorkerEvent<A: Pollable> {
-    PollSuccess {
-        worker_id: WorkerId,
-        metrics: Metrics,
-        state: WorkerState,
-        payload: Response<A::Output>,
-    },
-    PollError {
-        worker_id: WorkerId,
-        metrics: Metrics,
-        state: WorkerState,
-        error: PollError,
-    },
+#[derive(Clone, Debug)]
+pub struct PollEvent<P: Pollable> {
+    pub metrics: Metrics,
+    pub state: WorkerState,
+    pub result: Result<Response<P::Output>, PollError>,
 }

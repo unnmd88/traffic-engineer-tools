@@ -87,11 +87,10 @@ pub struct TaskData {
 }
 
 impl TaskData {
-    pub fn new(result: Option<TaskResult>, metrics: Option<Metrics>) -> Self {
+    pub fn new(result: TaskResult, metrics: Option<Metrics>) -> Self {
         Self {
-            result: result.unwrap_or_else(|| TaskResult::Initial),
+            result,
             metrics: metrics.unwrap_or_default(),
-            //last_update: Local::now(),
         }
     }
 
@@ -125,12 +124,6 @@ pub struct Task {
     pub meta: TaskMeta,
     pub data: TaskData,
     pub history: TaskHistory,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskDataUpdateMessage {
-    pub task_result: TaskResult,
-    pub metrics: Metrics,
 }
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]

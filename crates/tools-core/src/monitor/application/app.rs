@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 
 use derive_more::Display;
+use itertools::Itertools;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio::{
     sync::{broadcast, oneshot},
@@ -10,11 +11,12 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::Pollable;
+use crate::error::ApplicationError;
 use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::CustomReader;
 use crate::snmp::parsers::site_id_ug405_potok;
 use crate::snmp::registry::{UTC_REPLY_GN_OID, UTC_REPLY_SITE_ID_POTOK_OID};
-use crate::worker::{PollWorker, TaskEvent, WorkerCommand, WorkerEvent, WorkerId};
+use crate::worker::{PollWorker, TaskEvent, TaskResult, WorkerCommand, WorkerId};
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
@@ -22,8 +24,7 @@ use crate::{
         application::{
             TasksRepoCommand, TasksRepoManager,
             config::{AppConfig, Query, SnmpOidItem},
-            tasksrepo_manager::TasksRepoEvent,
-            worker_brige::WorkerBridge,
+            tasksrepo_manager::TasksRepoResponse,
         },
         task::{Protocol, TaskHistory, TaskId, TaskMeta, TypeQuery},
     },
@@ -72,7 +73,6 @@ pub struct Application {
     tasks_order: Vec<TaskId>,
     tasksrepo_manager_tx: mpsc::Sender<TasksRepoCommand>,
     state: ApplicationState,
-    subscriber_broadcast_tx: broadcast::Sender<TasksRepoEvent>,
 }
 
 impl Application {
@@ -99,6 +99,7 @@ impl Application {
             //let poller_factory = PollerFactory::new(poll_config);
             let task_history = TaskHistory::new(task.deep_history);
             let name = task.name.clone();
+            let mut subject = vec![format!("Poll interval: {}ms", task.interval_ms)];
 
             match &task.query {
                 Query::SnmpGet(dto) => {
@@ -124,7 +125,7 @@ impl Application {
                     let snmp_client = create_snmp_read_client(snmp_client_config).await?;
 
                     let sanitized_oids = sanitize_oids(&dto.oids, i, profile.as_ref())?;
-                    let subject = format!(
+                    let oids_to_request = format!(
                         "Snmp-get request. Oids to request({}):\n{}",
                         sanitized_oids.len(),
                         sanitized_oids
@@ -141,6 +142,7 @@ impl Application {
                             .collect::<Vec<String>>()
                             .join("\n")
                     );
+                    subject.push(oids_to_request);
 
                     let adapter = CustomReader::new(snmp_client, sanitized_oids, profile).await?;
 
@@ -166,7 +168,7 @@ impl Application {
                         protocol: Protocol::Snmp,
                         type_query: TypeQuery::SnmpGet,
                         name,
-                        subject: subject,
+                        subject: subject.into_iter().join("\n"),
                         target: format!("{target} port: {port}"),
                     };
 
@@ -183,33 +185,25 @@ impl Application {
             }
         }
 
-        // tx - для воркеров(они шлют в snapshot-менеджер уже)
-        // rx - для самого snapshot-менеджера(он принимает от воркеров, обновляет snapshot и т.д.)
-        let (snapshot_tx, snapshot_rx) = mpsc::channel(32);
-        // Воркер-Бридж - это прокси, куда шлют результаты воркеры. Разбирает сообщение, маппит
-        // id воркера на uid, оборачивает в enum TasksRepoCommand и отправляет дальше
-        // в TasksRepoManager.
-        //let mut worker_to_uid: HashMap<WorkerId, Uid> = HashMap::new();
+        let (repo_cmd_tx, mut repo_cmd_rx) = mpsc::channel::<TasksRepoCommand>(32);
+
         let worker_to_uid: HashMap<WorkerId, TaskId> = tasks_binding
             .iter()
             .map(|(k, v)| (v.worker_id.clone(), k.clone()))
             .collect();
-        let workers_bridge = WorkerBridge::new(worker_to_uid);
-        tokio::spawn(workers_bridge.run(snapshot_tx.clone(), worker_rx));
-        let mut snapshot_manager = TasksRepoManager::new(tasks_repo);
 
-        // Броадкаст для подписки пользователя на обновления репо задач.
-        let (subscriber_broadcast_tx, _) = broadcast::channel(16);
+        let mut snapshot_manager =
+            TasksRepoManager::new(tasks_repo, worker_to_uid, repo_cmd_rx, worker_rx);
 
-        tokio::spawn(snapshot_manager.run(snapshot_rx, subscriber_broadcast_tx.clone()));
+        tokio::spawn(snapshot_manager.run());
 
         Ok(Self {
             app_uid,
             tasks_order,
             task_binding: tasks_binding,
             state: ApplicationState::Idle,
-            tasksrepo_manager_tx: snapshot_tx,
-            subscriber_broadcast_tx,
+            tasksrepo_manager_tx: repo_cmd_tx,
+            //repository_tx,
         })
     }
 
@@ -235,24 +229,77 @@ impl Application {
         &self.tasks_order
     }
 
-    pub async fn get_snapshot(&self) -> Result<TaskRepository, Error> {
+    pub async fn get_snapshot(&self) -> Result<TaskRepository, ApplicationError> {
+        /*
+                let (resp_tx, resp_rx) = oneshot::channel();
+
+                self.tasksrepo_manager_tx
+                    .send(TasksRepoCommand::GetSnapShot { response: resp_tx })
+                    .await
+                    .map_err(|_| Error::NoResponse("Can`t get Snapshot".to_string()));
+                resp_rx
+                    .await
+                    .map_err(|_| Error::NoResponse("Can`t get Snapshot".to_string()))
+
+        */
+
         let (resp_tx, resp_rx) = oneshot::channel();
 
-        self.tasksrepo_manager_tx
+        if let Err(_) = self
+            .tasksrepo_manager_tx
             .send(TasksRepoCommand::GetSnapShot { response: resp_tx })
             .await
-            .map_err(|_| Error::NoResponse("Can`t get Snapshot".to_string()));
-        resp_rx
-            .await
-            .map_err(|_| Error::NoResponse("Can`t get Snapshot".to_string()))
+        {
+            let reason = "Repository unawailable.".to_string();
+            tracing::error!(target: "subscribe", "{}", &reason);
+            return Err(ApplicationError::GetSnapshot { reason });
+        }
+
+        match resp_rx.await {
+            Ok(subscribe) => {
+                tracing::info!(target: "subscribe", "{}", "Snapshot was received successfully ".to_string());
+
+                Ok(subscribe)
+            }
+            Err(_) => {
+                let reason = "Timeout error from repository.".to_string();
+                tracing::error!(target: "subscribe", "{}", &reason);
+                Err(ApplicationError::GetSnapshot { reason })
+            }
+        }
     }
 
     pub fn id(&self) -> &ApplicationId {
         &self.app_uid
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<TasksRepoEvent> {
-        self.subscriber_broadcast_tx.subscribe()
+    pub async fn subscribe(
+        &self,
+    ) -> Result<broadcast::Receiver<TasksRepoResponse>, ApplicationError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+
+        if let Err(_) = self
+            .tasksrepo_manager_tx
+            .send(TasksRepoCommand::SubscribeForUpdate { response: resp_tx })
+            .await
+        {
+            let reason = "Repository unawailable.".to_string();
+            tracing::error!(target: "subscribe", "{}", &reason);
+            return Err(ApplicationError::RepositorySubscribe { reason });
+        }
+
+        match resp_rx.await {
+            Ok(subscribe) => {
+                tracing::info!(target: "subscribe", "{}", "Subcrribe for task repository update succesfull".to_string());
+
+                Ok(subscribe)
+            }
+            Err(_) => {
+                let reason = "Timeout error from repository.".to_string();
+                tracing::error!(target: "subscribe", "{}", &reason);
+                Err(ApplicationError::RepositorySubscribe { reason })
+            }
+        }
     }
 }
 

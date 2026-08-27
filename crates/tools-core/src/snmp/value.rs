@@ -43,8 +43,8 @@ impl SnmpValue {
         match self {
             SnmpValue::Integer(v) => v.to_string(),
             SnmpValue::Gauge32(v) => v.to_string(),
-            SnmpValue::OctetString(v) => encode_to_hex(v),
-            SnmpValue::Opaque(v) => encode_to_hex(v),
+            SnmpValue::OctetString(v) => format!("[{}]", encode_to_hex(v)),
+            SnmpValue::Opaque(v) => format!("[{}]", encode_to_hex(v)),
             SnmpValue::TimeTicks(v) => v.to_string(),
             SnmpValue::Oid(v) => v.to_string(),
             SnmpValue::IpAddress(v) => format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3]),
