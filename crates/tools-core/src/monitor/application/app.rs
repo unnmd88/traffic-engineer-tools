@@ -228,19 +228,6 @@ impl Application {
     }
 
     pub async fn get_snapshot(&self) -> Result<TaskRepository, ApplicationError> {
-        /*
-                let (resp_tx, resp_rx) = oneshot::channel();
-
-                self.tasksrepo_manager_tx
-                    .send(TasksRepoCommand::GetSnapShot { response: resp_tx })
-                    .await
-                    .map_err(|_| Error::NoResponse("Can`t get Snapshot".to_string()));
-                resp_rx
-                    .await
-                    .map_err(|_| Error::NoResponse("Can`t get Snapshot".to_string()))
-
-        */
-
         let (resp_tx, resp_rx) = oneshot::channel();
 
         if let Err(_) = self
@@ -361,50 +348,6 @@ fn sanitize_oids(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(sanitized_oids)
 }
-
-/*
-async fn resolve_oids(
-    oids: Vec<SnmpGetQueryItem>,
-    profile: Option<&SnmpProfile>,
-    client: &SnmpReadClient,
-) -> Result<Vec<SnmpGetQueryItem>, CreateMonitorError> {
-    let ascii_scn = if let Some(profile) = profile {
-        profile
-            .get_scn(&client)
-            .await
-            .map_err(|e| CreateMonitorError::ScnError {
-                profile: (*profile).to_string(),
-                message: e.to_string(),
-            })?
-    } else {
-        None
-    };
-
-    if let Some(scn) = ascii_scn {
-        let scn_as_str = scn.to_scn();
-        let mut result = Vec::with_capacity(oids.len());
-
-        for item in oids {
-            let oid = if scn_required(&item.oid) {
-                SnmpOid::parse(&format!("{}{}", item.oid, scn_as_str)).map_err(|e| {
-                    tracing::error!(target: "resolve_oids", "Bug: {}", e);
-                    CreateMonitorError::Other("Can`t resolve oids".to_string())
-                })?
-            } else {
-                item.oid
-            };
-            result.push(SnmpGetQueryItem {
-                name: item.name,
-                oid,
-                business_value_parser: item.business_value_parser,
-            });
-        }
-        Ok(result)
-    } else {
-        Ok(oids)
-    }
-}
-*/
 
 fn parse_ip(ip: &str, task_idx: usize) -> Result<IpAddr, CreateMonitorError> {
     ip.parse::<IpAddr>()

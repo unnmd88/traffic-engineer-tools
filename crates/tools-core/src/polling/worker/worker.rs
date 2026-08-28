@@ -44,14 +44,12 @@ where
     pub async fn run(mut self) {
         loop {
             tokio::select! {
-                    cmd = self.cmd_rx.recv() => {
-                       self.handle_command(cmd).await
-                    }
-                    _ = sleep(self.interval) => {
-                        &self.handle_interval_tick().await;
-                    }
-
-
+                cmd = self.cmd_rx.recv() => {
+                    self.handle_command(cmd).await;
+                }
+               _ = sleep(self.interval) => {
+                    self.handle_interval_tick().await;
+                }
             }
         }
     }

@@ -4,7 +4,6 @@ mod poll;
 mod poll_result;
 mod pollable;
 mod poller;
-mod poller_factory;
 mod response;
 mod updateble;
 pub mod worker;
