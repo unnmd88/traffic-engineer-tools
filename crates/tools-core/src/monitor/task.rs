@@ -9,7 +9,7 @@ use derive_more::{Constructor, Display};
 
 use crate::{
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
-    worker::{Metrics, TaskResult},
+    polling::{Metrics, PollResult},
 };
 use tracing::{debug, error, info, warn};
 
@@ -81,20 +81,20 @@ pub struct TaskMeta {
 
 #[derive(Clone, Debug)]
 pub struct TaskData {
-    result: TaskResult,
+    result: PollResult,
     metrics: Metrics,
     //pub last_update: DateTime<Local>,
 }
 
 impl TaskData {
-    pub fn new(result: TaskResult, metrics: Option<Metrics>) -> Self {
+    pub fn new(result: PollResult, metrics: Option<Metrics>) -> Self {
         Self {
             result,
             metrics: metrics.unwrap_or_default(),
         }
     }
 
-    pub fn result(&self) -> &TaskResult {
+    pub fn result(&self) -> &PollResult {
         &self.result
     }
 
@@ -106,7 +106,7 @@ impl TaskData {
 impl Default for TaskData {
     fn default() -> Self {
         Self {
-            result: TaskResult::Initial,
+            result: PollResult::Initial,
             metrics: Metrics::default(),
             //last_update: Local::now(),
         }
@@ -225,10 +225,10 @@ impl std::fmt::Display for TaskEntity {
         }
 
         match &data.result {
-            TaskResult::SnmpGet(response) => {
+            PollResult::SnmpGet(response) => {
                 writeln!(f, "Snmp-get response:\n{response}")?;
             }
-            TaskResult::NoResponse(errors) => {
+            PollResult::NoResponse(errors) => {
                 writeln!(f, "Timeout error after {} attempts:", errors.len())?;
                 for err in errors.iter() {
                     writeln!(f, "{err}")?;

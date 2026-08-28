@@ -6,7 +6,7 @@ use crate::{
     polling::PollConfig,
     snmp::{
         SnmpGetQueryItem, SnmpGetResponse, SnmpReadClient, SnmpReadClientConfig,
-        adapters::CustomReader, community::Community,
+        adapters::SnmpReader, community::Community,
     },
 };
 

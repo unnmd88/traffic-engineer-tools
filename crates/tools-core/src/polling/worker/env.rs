@@ -1,9 +1,6 @@
 use derive_more::{Constructor, Display, Into};
 
-use crate::{
-    error::PollError,
-    worker::{Metrics, task_result::TaskResult},
-};
+use crate::polling::{Metrics, PollResult};
 
 #[derive(Debug, Display, Into, Clone, Copy, Hash, Eq, PartialEq, Constructor)]
 pub struct WorkerId(pub u64);
@@ -28,9 +25,9 @@ pub enum WorkerResponse {
 }
 
 #[derive(Clone)]
-pub struct TaskEvent {
-    pub worker_id: WorkerId,
-    pub task_result: TaskResult,
+pub struct WorkerEvent {
+    pub id: WorkerId,
+    pub state: WorkerState,
     pub metrics: Metrics,
-    pub worker_state: WorkerState,
+    pub poll_result: PollResult,
 }

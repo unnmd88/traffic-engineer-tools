@@ -13,7 +13,7 @@ use tools_core::snmp::adapters::GenericCustomReader;
 use tools_core::snmp::parsers::parse_oids;
 use tools_core::snmp::primitives::{Community, Port, SnmpOid};
 use tools_core::snmp::{SnmpGetQueryItem, SnmpReadClient, create_client, primitives};
-use tools_core::worker::{PollerFactory, TaskEvent, TaskResult, Worker, WorkerId};
+use tools_core::worker::{PollResult, PollerFactory, TaskEvent, Worker, WorkerId};
 use tools_core::{Pollable, SnmpError};
 
 #[tokio::main]
@@ -180,7 +180,7 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
         println!("WorkerID: {:#?}", message.task_result);
 
         match message.task_result {
-            TaskResult::SnmpGet(r) => println!("{r}"),
+            PollResult::SnmpGet(r) => println!("{r}"),
             _ => println!("NotImplemented"),
         }
     }

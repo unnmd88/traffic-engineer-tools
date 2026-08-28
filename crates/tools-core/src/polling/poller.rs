@@ -1,10 +1,9 @@
 use core::error;
 
 use crate::{
-    Error, Pollable,
+    Error,
     error::{PollError, PollErrorContext},
-    poll_response::Response,
-    polling::{PollConfig, poll},
+    polling::{PollConfig, Pollable, Response, poll},
     utils::get_elapsed_as_u64,
 };
 use chrono::{Local, Utc};

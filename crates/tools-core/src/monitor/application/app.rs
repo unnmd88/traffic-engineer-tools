@@ -10,13 +10,12 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::Pollable;
 use crate::error::ApplicationError;
+use crate::polling::worker::{PollWorker, WorkerCommand, WorkerId};
 use crate::snmp::SnmpReadClientConfig;
-use crate::snmp::adapters::CustomReader;
+use crate::snmp::adapters::SnmpReader;
 use crate::snmp::parsers::site_id_ug405_potok;
 use crate::snmp::registry::{UTC_REPLY_GN_OID, UTC_REPLY_SITE_ID_POTOK_OID};
-use crate::worker::{PollWorker, TaskEvent, TaskResult, WorkerCommand, WorkerId};
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
@@ -37,7 +36,6 @@ use crate::{
         profiles::SnmpProfile,
         registry::scn_required,
     },
-    worker::PollerFactory,
 };
 
 #[derive(Clone, Display)]
@@ -144,7 +142,7 @@ impl Application {
                     );
                     subject.push(oids_to_request);
 
-                    let adapter = CustomReader::new(snmp_client, sanitized_oids, profile).await?;
+                    let adapter = SnmpReader::new(snmp_client, sanitized_oids, profile).await?;
 
                     let worker_interval = Duration::from_millis(task.interval_ms);
                     let worker = PollWorker::new(

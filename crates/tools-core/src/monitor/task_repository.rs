@@ -6,10 +6,10 @@ use crate::{
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
     error::TaskRepositoryError,
     monitor::task::{Task, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta},
+    polling::{Metrics, PollResult},
     utils::format_moscow_human,
-    worker::{Metrics, TaskEvent, TaskResult, WorkerId},
 };
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local};
 use constcat::concat;
 use derive_more::Display;
 use itertools::Itertools;
@@ -34,7 +34,7 @@ impl TaskIdGenerator {
 
 #[derive(Clone, Debug)]
 pub struct TaskDataUpdate {
-    pub task_result: TaskResult,
+    pub poll_result: PollResult,
     pub metrics: Metrics,
 }
 
@@ -89,7 +89,7 @@ impl TaskRepository {
         history: Option<TaskHistory>,
     ) -> TaskId {
         let id = self.id_gen.next();
-        let data = data.unwrap_or_else(|| TaskData::new(TaskResult::Initial, None));
+        let data = data.unwrap_or_else(|| TaskData::new(PollResult::Initial, None));
 
         let task = TaskEntity::new(id.clone(), meta, data, history.unwrap_or_default());
 
@@ -126,7 +126,7 @@ impl TaskRepository {
                 task_id: task_id.0.to_string(),
             })?;
 
-        target.update_data(TaskData::new(data.task_result, Some(data.metrics)));
+        target.update_data(TaskData::new(data.poll_result, Some(data.metrics)));
         self.updated_at = Local::now();
 
         Ok(())
@@ -217,10 +217,10 @@ impl Display for TaskRepository {
             }
 
             match &task.data().result() {
-                TaskResult::SnmpGet(response) => {
+                PollResult::SnmpGet(response) => {
                     writeln!(f, "Snmp-get response:\n{response}")?;
                 }
-                TaskResult::NoResponse(errors) => {
+                PollResult::NoResponse(errors) => {
                     writeln!(f, "Timeout error after {} attempts:", errors.len())?;
                     for err in errors.iter() {
                         writeln!(f, "{err}")?;

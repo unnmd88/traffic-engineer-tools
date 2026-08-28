@@ -4,11 +4,13 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, warn};
 
 use crate::{
-    Error, Pollable,
+    Error,
     error::PollError,
     monitor::{TaskRepository, task::TaskId, task_repository::TaskDataUpdate},
-    poll_response::Response,
-    worker::{Metrics, PollEvent, TaskEvent, TaskResult, WorkerId},
+    polling::{
+        PollResult, Pollable, Response,
+        worker::{WorkerEvent, WorkerId},
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -29,26 +31,20 @@ pub enum TasksRepoCommand {
     },
 }
 
-pub struct TasksRepoManager<P: Pollable>
-where
-    Response<P::Output>: Into<TaskResult>,
-{
+pub struct TasksRepoManager {
     repository: TaskRepository,
     mapping: HashMap<WorkerId, TaskId>,
     tx: broadcast::Sender<TasksRepoResponse>,
     rx_cmd: mpsc::Receiver<TasksRepoCommand>,
-    rx_worker: mpsc::Receiver<(WorkerId, PollEvent<P>)>,
+    rx_worker: mpsc::Receiver<WorkerEvent>,
 }
 
-impl<P: Pollable> TasksRepoManager<P>
-where
-    Response<P::Output>: Into<TaskResult>,
-{
+impl TasksRepoManager {
     pub fn new(
         repository: TaskRepository,
         mapping: HashMap<WorkerId, TaskId>,
         mut rx_cmd: mpsc::Receiver<TasksRepoCommand>,
-        mut rx_worker: mpsc::Receiver<(WorkerId, PollEvent<P>)>,
+        mut rx_worker: mpsc::Receiver<WorkerEvent>,
     ) -> Self {
         let (tx, _) = broadcast::channel(16);
         Self {
@@ -63,8 +59,8 @@ where
     pub async fn run(mut self) {
         loop {
             tokio::select! {
-                Some((worker_id, poll_event)) = self.rx_worker.recv() => {
-                    self.handle_worker_event(worker_id, poll_event).await;
+                Some(worker_event) = self.rx_worker.recv() => {
+                    self.handle_worker_event(worker_event).await;
                 }
                 Some(cmd) = self.rx_cmd.recv() => {
                     match cmd {
@@ -105,29 +101,20 @@ where
                 }
             }
     */
-    async fn handle_worker_event(&mut self, worker_id: WorkerId, poll_event: PollEvent<P>) {
-        let task_id = match self.mapping.get(&worker_id) {
+    async fn handle_worker_event(&mut self, worker_event: WorkerEvent) {
+        let task_id = match self.mapping.get(&worker_event.id) {
             Some(id) => id.clone(),
             None => {
-                tracing::warn!(target: "handle_worker_event", worker_id=?worker_id, "Task for worker not found");
+                tracing::warn!(target: "handle_worker_event", worker_id=?worker_event.id, "Task for worker not found");
                 return;
             }
-        };
-
-        let metrics = poll_event.metrics;
-        let task_result = match poll_event.result {
-            Ok(payload) => payload.into(),
-            Err(e) => match e {
-                PollError::NoResponse { errors } => TaskResult::NoResponse(errors),
-                PollError::Other { message } => TaskResult::Fail { message },
-            },
         };
 
         match self.repository.update_taskstate(
             &task_id,
             TaskDataUpdate {
-                metrics,
-                task_result,
+                metrics: worker_event.metrics,
+                poll_result: worker_event.poll_result,
             },
         ) {
             Ok(_) => {
@@ -144,7 +131,7 @@ where
             Err(e) => {
                 warn!(
                     target: "handle_worker_event",
-                    worker_id=?worker_id,
+                    worker_id=?worker_event.id,
                     task_id = ?task_id,
                     "{}", e.to_string());
             }

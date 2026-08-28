@@ -1,9 +1,7 @@
+use crate::{constants::DT_FMT_WITH_MICROSECONDS, error::PollErrorContext};
+use chrono::{DateTime, Local};
 use std::fmt::{self, Display, Formatter};
 use tokio::time::Duration;
-
-use chrono::{DateTime, Local};
-
-use crate::{constants::DT_FMT_WITH_MICROSECONDS, error::PollErrorContext};
 
 #[derive(Debug, Clone)]
 pub struct Response<T> {

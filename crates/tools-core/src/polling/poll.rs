@@ -1,5 +1,7 @@
 use crate::{
-    PollErrorContext, Pollable, error::PollError, poll_response::Response, polling::PollConfig,
+    PollErrorContext,
+    error::PollError,
+    polling::{PollConfig, Pollable, Response},
 };
 use chrono::{Local, Utc};
 use tokio::time::{Duration, Instant, error::Elapsed, sleep, timeout};

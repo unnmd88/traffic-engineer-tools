@@ -4,9 +4,9 @@ use std::{
 };
 
 use crate::{
-    Payload, Pollable, SnmpError, Updateble,
-    domain::ascii::Ascii,
+    SnmpError,
     error::{PollError, UpdateError},
+    polling::{Pollable, Updateble},
     snmp::{
         SnmpGetQueryItem, SnmpReadClient,
         business_value::BusinessValue,
@@ -16,9 +16,7 @@ use crate::{
         parsers::OidValueParserFn,
         profiles::SnmpProfile,
         response::{SnmpGetResponse, SnmpGetSample},
-        site_id,
     },
-    utils::get_elapsed_as_u64,
 };
 use async_snmp::value;
 use async_trait::async_trait;
@@ -32,7 +30,7 @@ struct InnerQueryItem {
     parser: Option<OidValueParserFn>,
 }
 
-pub struct CustomReader {
+pub struct SnmpReader {
     client: SnmpReadClient,
     profile: Option<SnmpProfile>,
     oids_to_request: Vec<SnmpOid>,
@@ -40,7 +38,7 @@ pub struct CustomReader {
     request: Vec<SnmpGetQueryItem>,
 }
 
-impl CustomReader {
+impl SnmpReader {
     pub async fn new(
         client: SnmpReadClient,
         request: Vec<SnmpGetQueryItem>,
@@ -81,7 +79,7 @@ impl CustomReader {
 }
 
 #[async_trait]
-impl Updateble for CustomReader {
+impl Updateble for SnmpReader {
     type Instance = Self;
 
     async fn update(self) -> Result<Self::Instance, UpdateError> {
@@ -100,7 +98,7 @@ impl Updateble for CustomReader {
 }
 
 #[async_trait]
-impl Pollable for CustomReader {
+impl Pollable for SnmpReader {
     type Output = SnmpGetResponse;
 
     async fn poll(&self) -> Result<Self::Output, PollError> {
