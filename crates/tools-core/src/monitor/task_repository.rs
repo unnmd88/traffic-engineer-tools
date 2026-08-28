@@ -155,6 +155,10 @@ impl TaskRepository {
     pub fn tasks(&self) -> impl Iterator<Item = &TaskEntity> + '_ {
         self.tasks.values()
     }
+
+    pub fn created_at(&self) -> &DateTime<Local> {
+        &self.created_at
+    }
 }
 
 use std::fmt::{self, Display, Formatter};
@@ -192,7 +196,7 @@ impl Display for TaskRepository {
                 task.id(),
                 task.created_at().format(DT_FMT)
             )?;
-            writeln!(f, "{}\n{LINE_THIN}\n", meta.subject)?;
+            writeln!(f, "{}\n{LINE_THIN}", meta.subject)?;
             writeln!(f, "Last update: {}", task.updated_at().format(DT_FMT_WITH_MICROSECONDS),)?;
 
             let m = data.metrics();
@@ -218,7 +222,7 @@ impl Display for TaskRepository {
 
             match &task.data().result() {
                 PollResult::SnmpGet(response) => {
-                    writeln!(f, "Snmp-get response:\n{response}")?;
+                    writeln!(f, "Snmp-get response:\n{}", response.payload)?;
                 }
                 PollResult::NoResponse(errors) => {
                     writeln!(f, "Timeout error after {} attempts:", errors.len())?;

@@ -17,3 +17,4 @@ futures = "0.3.33"
 chrono = { workspace = true }
 crossterm = "0.29.0"
 tracing = { workspace = true }
+tabled = "0.21.0"

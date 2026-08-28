@@ -11,6 +11,10 @@ pub struct SnmpGetSample {
     pub raw_value: SnmpValue,
 }
 
+impl SnmpGetSample {
+    //pub fn display_whith_oid_first(&self) -> {}
+}
+
 impl Display for SnmpGetSample {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let name = self.oid_name.as_deref().unwrap_or("");
@@ -23,13 +27,26 @@ impl Display for SnmpGetSample {
 
         if name.is_empty() {
             // Example: OID[Name]: val: X raw: Y
-            write!(f, "{}: {value} raw val: {raw_value}\n", self.oid,)?;
+            writeln!(f, "{raw_value}[{value}] OID: {}", self.oid,)?;
         } else {
             // Example: OID: val: X raw: Y
-            write!(f, "{}[{name}]: {value} raw val: {raw_value}\n", self.oid,)?;
+            writeln!(f, "{name}: {raw_value}[{value}] OID: {}", self.oid,)?;
         }
 
-        Ok(())
+        return Ok(());
+
+        // Было
+        /*
+                if name.is_empty() {
+                    // Example: OID[Name]: val: X raw: Y
+                    writeln!(f, "{}: {value} raw val: {raw_value}", self.oid,)?;
+                } else {
+                    // Example: OID: val: X raw: Y
+                    writeln!(f, "{}[{name}]: {value} raw val: {raw_value}", self.oid,)?;
+                }
+
+                Ok(())
+        */
     }
 }
 

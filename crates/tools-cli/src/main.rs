@@ -3,10 +3,13 @@ mod cli;
 use cli::Cli;
 use tools_core::monitor::{application::TasksRepoResponse, task::TaskId};
 use tracing::{error, info};
-mod monior;
+mod monitor;
 mod scn;
 
-use crate::{cli::print_output, monior::app::AppBuilder};
+use crate::{
+    cli::print_output,
+    monitor::{app::AppBuilder, formatters::format_repository},
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
                     //    .unwrap_or_default();
                     match update {
                         TasksRepoResponse::Update { snapshot, task_id } => {
-                            println!("{snapshot}");
+                            println!("{}", format_repository(&snapshot));
                             /*
                                                         for task_id in ordered_tasks_ids.iter() {
                                                             println!("Задача 1:\n{:#?}", snapshot.get_task(task_id));

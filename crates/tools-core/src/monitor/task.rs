@@ -226,12 +226,12 @@ impl std::fmt::Display for TaskEntity {
 
         match &data.result {
             PollResult::SnmpGet(response) => {
-                writeln!(f, "Snmp-get response:\n{response}")?;
+                write!(f, "Snmp-get response:\n{response}")?;
             }
             PollResult::NoResponse(errors) => {
                 writeln!(f, "Timeout error after {} attempts:", errors.len())?;
                 for err in errors.iter() {
-                    writeln!(f, "{err}")?;
+                    write!(f, "{err}")?;
                 }
             }
             _ => {}

@@ -4,7 +4,7 @@ use tools_core::monitor::application::{
     config::{AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskPollTimings},
 };
 
-use crate::monior::queries::snmpget::SnmpGetQueryDto;
+use crate::monitor::queries::snmpget::SnmpGetQueryDto;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "query_type", rename_all = "lowercase")]

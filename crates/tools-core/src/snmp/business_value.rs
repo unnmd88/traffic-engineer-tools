@@ -18,8 +18,8 @@ pub enum BusinessValue {
 impl Display for BusinessValue {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stage(s) => write!(f, "{s}"),
-            Self::StageUg405 { number, hex } => write!(f, "{number}(0x{hex})"),
+            Self::Stage(s) => write!(f, "Num: {s}"),
+            Self::StageUg405 { number, hex } => write!(f, "Num: {number} hex: (0x{hex})"),
             Self::Integer32(v) => write!(f, "{v}"),
             Self::Unsigned64(v) => write!(f, "{v}"),
             Self::Flags { bits } => {
