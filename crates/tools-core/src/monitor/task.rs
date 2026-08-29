@@ -188,6 +188,7 @@ impl TaskEntity {
     }
 }
 
+/*
 impl std::fmt::Display for TaskEntity {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let meta = &self.meta;
@@ -240,3 +241,4 @@ impl std::fmt::Display for TaskEntity {
         Ok(())
     }
 }
+*/

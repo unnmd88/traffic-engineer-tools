@@ -14,7 +14,7 @@ pub struct SnmpGetSample {
 impl SnmpGetSample {
     //pub fn display_whith_oid_first(&self) -> {}
 }
-
+/*
 impl Display for SnmpGetSample {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let name = self.oid_name.as_deref().unwrap_or("");
@@ -49,12 +49,14 @@ impl Display for SnmpGetSample {
         */
     }
 }
+*/
 
 #[derive(Debug, Clone)]
 pub struct SnmpGetResponse {
     pub samples: Vec<SnmpGetSample>,
 }
 
+/*
 impl Display for SnmpGetResponse {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "OIDs({}):", self.samples.len())?;
@@ -65,3 +67,4 @@ impl Display for SnmpGetResponse {
         Ok(())
     }
 }
+*/

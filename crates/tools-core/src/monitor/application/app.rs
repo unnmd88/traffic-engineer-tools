@@ -167,7 +167,7 @@ impl Application {
                         type_query: TypeQuery::SnmpGet,
                         name,
                         subject: subject.into_iter().join("\n"),
-                        target: format!("{target} port: {port}"),
+                        target: format!("{target}:{port}"),
                     };
 
                     let task_id = tasks_repo.add_task(meta, None, Some(task_history));

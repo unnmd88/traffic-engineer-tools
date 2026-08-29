@@ -1,47 +1,55 @@
-// crates/tools-cli/src/monitor/formatters/repository.rs
+use crate::monitor::formatters::constants::{LINE_DOTTED_LN, LINE_THIN_LN};
+
 use super::format_oids;
+use chrono::{DateTime, Local};
+use tools_core::DT_FMT;
 use tools_core::monitor::TaskRepository;
+use tools_core::monitor::application::app::ApplicationId;
 use tools_core::polling::PollResult;
+
+/*
+pub fn create_header(app_id: &ApplicationId, created_at: &DateTime<Local>) -> String {
+    let mut output = String::new();
+
+    output.push_str(LINE_DOUBLE_LN);
+    output.push_str(&format!(
+        "📊 Monitor[ID: {}] created at: {}\n",
+        app_id,
+        created_at.format(DT_FMT)
+    ));
+    output.push_str(&format!("{LINE_DOUBLE_LN}\n"));
+
+    output
+}
+*/
 
 pub fn format_repository(repo: &TaskRepository) -> String {
     let mut output = String::new();
 
-    // ============================================================
-    // Заголовок
-    // ============================================================
-    output.push_str("═══════════════════════════════════════════════════════════════\n");
-    output.push_str(&format!("📊 Monitor created at: {}\n", repo.created_at()));
-    output.push_str("═══════════════════════════════════════════════════════════════\n\n");
-
-    // ============================================================
-    // Задачи
-    // ============================================================
     for task in repo.tasks_sorted_by_id() {
         let meta = task.meta();
         let data = task.data();
 
-        // Метаданные
-        output.push_str(&format!(
-            "{} [ID: {}]  Target: {} Created: {}\n",
-            meta.name,
-            task.id(),
-            meta.target,
-            //meta.interval,
-            task.created_at()
-        ));
+        // Metadata
+        output.push_str(&format!("{} [ID: {}]  Target: {}\n", meta.name, task.id(), meta.target,));
 
-        // ✅ SUBJECT — список OID, которые запрашиваются
         output.push_str(&format!("{}\n", meta.subject));
 
-        output.push_str("────────────────────────────────────────────────────────────────\n");
+        output.push_str(LINE_THIN_LN);
 
-        // Метрики
+        // Metrics
         let m = data.metrics();
         output.push_str(&format!(
-            "Requests: {} (✓{} ✗{})  |  Latency: {}ms (avg: {}ms)\n",
-            m.total_attempts, m.successful, m.errors, m.current_latency_ms, m.avg_latency_ms
+            "Requests: {} (✓{} ✗{})  |  Latency: {}ms (min: {}ms max: {}ms avg: {}ms)\n",
+            m.total_attempts,
+            m.successful,
+            m.errors,
+            m.current_latency_ms,
+            m.min_latency_ms,
+            m.max_latency_ms,
+            m.avg_latency_ms
         ));
-        output.push_str("────────────────────────────────────────────────────────────────\n");
+        output.push_str(LINE_THIN_LN);
 
         // Response
         match data.result() {
@@ -56,8 +64,7 @@ pub fn format_repository(repo: &TaskRepository) -> String {
             _ => {}
         }
 
-        // Разделитель между задачами
-        output.push_str("································································\n");
+        output.push_str(LINE_DOTTED_LN);
         output.push('\n');
     }
 

@@ -1,14 +1,21 @@
+use chrono::Local;
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use tools_core::monitor::{application::TasksRepoResponse, task::TaskId};
+use tools_core::{
+    DT_FMT,
+    monitor::{application::TasksRepoResponse, task::TaskId},
+};
 use tracing::{error, info};
 mod monitor;
 mod scn;
 
 use crate::{
     cli::print_output,
-    monitor::{app::AppBuilder, formatters::format_repository},
+    monitor::{
+        app::AppBuilder,
+        formatters::{constants::LINE_DOUBLE_LN, format_repository},
+    },
 };
 
 #[tokio::main]
@@ -19,9 +26,12 @@ async fn main() -> anyhow::Result<()> {
         cli::Commands::Poll { config } => {
             let content = std::fs::read_to_string(config)?;
             let mut app = AppBuilder::from_yaml(&content).await?;
+            let app_created_at = Local::now();
+            let app_created_at_fmt = Local::now().format(DT_FMT);
 
             tokio::spawn(async move {
                 app.start().await;
+                let monitor_id = app.id();
                 //let mut rx = app.subscribe().await?;
                 let mut rx = app.subscribe().await.unwrap_or_else(|e| {
                     panic!("{}", e);
@@ -35,12 +45,17 @@ async fn main() -> anyhow::Result<()> {
 
                 while let Ok(update) = rx.recv().await {
                     clear_screen();
-
+                    let uptime = Local::now() - app_created_at;
+                    let minutes = uptime.num_minutes();
+                    let seconds = uptime.num_seconds() % 60;
                     //execute!(stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0))
                     //    .unwrap_or_default();
                     match update {
                         TasksRepoResponse::Update { snapshot, task_id } => {
-                            println!("{}", format_repository(&snapshot));
+                            println!(
+                                "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Created at: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
+                                format_repository(&snapshot)
+                            );
                             /*
                                                         for task_id in ordered_tasks_ids.iter() {
                                                             println!("Задача 1:\n{:#?}", snapshot.get_task(task_id));

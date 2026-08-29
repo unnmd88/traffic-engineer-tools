@@ -161,6 +161,7 @@ impl TaskRepository {
     }
 }
 
+/*
 use std::fmt::{self, Display, Formatter};
 
 const LINE_THIN: &str =
@@ -231,88 +232,6 @@ impl Display for TaskRepository {
                     }
                 }
                 _ => {}
-            }
-            writeln!(f, "{LINE_DOTTED}")?;
-        }
-
-        Ok(())
-    }
-}
-
-/*
-impl Display for TaskRepository {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        // ============================================================
-        // Заголовок
-        // ============================================================
-
-        writeln!(f, "{SNAPSHOT_HEADER}")?;
-        writeln!(f, "Last update: {}", &self.last_update)?;
-        writeln!(f, "Total groups: {} Total tasks: {}\n", self.groups.len(), self.total_tasks())?;
-        //writeln!(f, "{LINE_THIN}")?;
-
-        // ============================================================
-        // Группы
-        // ============================================================
-        for (group_idx, group) in self.groups.iter().enumerate() {
-            writeln!(f, "Task group name: {} ({} tasks)", group.name(), group.len())?;
-
-            for (task_idx, task) in group.tasks().iter().enumerate() {
-                // ============================================================
-                // Шапка задачи
-                // ============================================================
-
-                writeln!(f, "\nTask name: '{}'", task.meta.name)?;
-
-                // ============================================================
-                // Метаданные
-                // ============================================================
-                writeln!(f, "Target: {}", task.meta.target)?;
-                writeln!(f, "Subject: {}", task.meta.subject)?;
-
-                // ============================================================
-                // Статус и данные
-                // ============================================================
-
-                match &task.data.result {
-                    TaskResult::SnmpGet(response) => {
-                        writeln!(f, "Snmp-get response:\n{response}")?;
-                    }
-                    TaskResult::NoResponse(errors) => {
-                        writeln!(f, "Timeout error after {} attempts:", errors.len())?;
-                        for err in errors.iter() {
-                            writeln!(f, "{err}")?;
-                        }
-                    }
-                    _ => {}
-                }
-
-                // ============================================================
-                // Метрики
-                // ============================================================
-                let m = &task.data.metrics;
-                if m.total_attempts > 0 {
-                    //writeln!(f, "\nMetrics:")?;
-                    writeln!(
-                        f,
-                        "Requests| Total: {} Successfull: {} Errors: {}",
-                        m.total_attempts, m.successful, m.errors
-                    )?;
-                    writeln!(
-                        f,
-                        "Latency ms| Current: {} Avg: {} Min: {} Max: {}",
-                        m.current_latency_ms,
-                        m.avg_latency_ms,
-                        if m.min_latency_ms == u64::MAX {
-                            0
-                        } else {
-                            m.min_latency_ms
-                        },
-                        m.max_latency_ms
-                    )?;
-                }
-
-                writeln!(f, "Last update: {}", task.data.last_update.format(HUMAN_DT_FMT))?;
             }
             writeln!(f, "{LINE_DOTTED}")?;
         }
