@@ -16,6 +16,7 @@ pub enum WorkerState {
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerCommand {
     Start,
+    Finish,
     Stop,
 }
 

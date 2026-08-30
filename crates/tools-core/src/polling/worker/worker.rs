@@ -15,6 +15,7 @@ pub struct PollWorker<A: Pollable + Updateble> {
     poll_config: PollConfig,
     adapter: A,
     interval: Duration,
+    interval_tick: tokio::time::Interval,
 }
 
 impl<A: Pollable + Updateble<Instance = A>> PollWorker<A>
@@ -36,6 +37,7 @@ where
             metrics: Metrics::default(),
             adapter,
             interval,
+            interval_tick: tokio::time::interval(interval),
             tx,
             cmd_rx,
         }
@@ -47,7 +49,7 @@ where
                 cmd = self.cmd_rx.recv() => {
                     self.handle_command(cmd).await;
                 }
-               _ = sleep(self.interval) => {
+               _ = self.interval_tick.tick() => {
                     self.handle_interval_tick().await;
                 }
             }
@@ -81,16 +83,26 @@ where
     }
 
     async fn handle_command(&mut self, cmd: Option<WorkerCommand>) {
-        match cmd {
-            Some(WorkerCommand::Stop) => {
-                self.state = WorkerState::Stopped;
+        if matches!(self.state, WorkerState::Finished) {
+            return;
+        }
+
+        if let Some(cmd) = cmd {
+            match cmd {
+                WorkerCommand::Start => {
+                    self.state = WorkerState::Running;
+                    self.interval_tick.reset();
+                    self.handle_interval_tick().await;
+                }
+                WorkerCommand::Stop => {
+                    self.state = WorkerState::Stopped;
+                }
+                WorkerCommand::Finish => {
+                    self.state = WorkerState::Finished;
+                }
             }
-            Some(WorkerCommand::Start) => {
-                self.state = WorkerState::Running;
-            }
-            None => {
-                tracing::warn!(target: "worker", worker_id=?self.id, "Channel closed");
-            }
+        } else {
+            tracing::warn!(target: "worker", worker_id=?self.id, "Channel closed");
         }
     }
 }
