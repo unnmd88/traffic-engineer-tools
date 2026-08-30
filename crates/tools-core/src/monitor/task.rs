@@ -1,11 +1,13 @@
 use std::{
     collections::VecDeque,
     fmt::{self, Formatter},
+    fs::OpenOptions,
     mem,
 };
 
 use chrono::{DateTime, Local};
 use derive_more::{Constructor, Display};
+use tokio::task::futures::TaskLocalFuture;
 
 use crate::{
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
@@ -25,10 +27,18 @@ pub enum TypeQuery {
     SnmpGet,
 }
 
+#[derive(Clone, Debug, Copy, Display)]
+pub enum PollStatus {
+    Idle,
+    Active,
+    Paused,
+    Finished,
+}
+
 #[derive(Clone, Debug)]
 pub struct TaskHistory {
     max: usize,
-    history: VecDeque<TaskData>,
+    history: VecDeque<TaskSnapshot>,
 }
 
 impl TaskHistory {
@@ -40,7 +50,7 @@ impl TaskHistory {
         }
     }
 
-    pub fn push(&mut self, task_data: TaskData) {
+    pub fn push(&mut self, snapshot: TaskSnapshot) {
         if self.max == 0 {
             return;
         }
@@ -48,10 +58,10 @@ impl TaskHistory {
         if self.history.len() >= self.max {
             self.history.pop_back();
         }
-        self.history.push_front(task_data);
+        self.history.push_front(snapshot);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &TaskData> {
+    pub fn iter(&self) -> impl Iterator<Item = &TaskSnapshot> {
         self.history.iter()
     }
 
@@ -83,7 +93,6 @@ pub struct TaskMeta {
 pub struct TaskData {
     result: PollResult,
     metrics: Metrics,
-    //pub last_update: DateTime<Local>,
 }
 
 impl TaskData {
@@ -108,22 +117,61 @@ impl Default for TaskData {
         Self {
             result: PollResult::Initial,
             metrics: Metrics::default(),
-            //last_update: Local::now(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct TaskState {
-    pub data: TaskData,
-    pub history: TaskHistory,
+pub struct TaskSnapshot {
+    poll_result: PollResult,
+    metrics: Metrics,
+    poll_status: PollStatus,
 }
 
-#[derive(Clone, Debug)]
-pub struct Task {
-    pub meta: TaskMeta,
-    pub data: TaskData,
-    pub history: TaskHistory,
+impl TaskSnapshot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_poll_result(self, poll_result: PollResult) -> Self {
+        Self {
+            poll_result,
+            ..self
+        }
+    }
+
+    pub fn with_poll_status(self, poll_status: PollStatus) -> Self {
+        Self {
+            poll_status,
+            ..self
+        }
+    }
+
+    pub fn with_metrics(self, metrics: Metrics) -> Self {
+        Self { metrics, ..self }
+    }
+
+    pub fn poll_result(&self) -> &PollResult {
+        &self.poll_result
+    }
+
+    pub fn poll_status(&self) -> &PollStatus {
+        &self.poll_status
+    }
+
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+}
+
+impl Default for TaskSnapshot {
+    fn default() -> Self {
+        Self {
+            poll_status: PollStatus::Idle,
+            poll_result: PollResult::Initial,
+            metrics: Metrics::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
@@ -133,23 +181,39 @@ pub struct TaskId(pub u64);
 pub struct TaskEntity {
     id: TaskId,
     meta: TaskMeta,
-    data: TaskData,
+    snapshot: TaskSnapshot,
     history: TaskHistory,
     created_at: DateTime<Local>,
     updated_at: DateTime<Local>,
 }
 
 impl TaskEntity {
-    pub fn new(id: TaskId, meta: TaskMeta, data: TaskData, history: TaskHistory) -> Self {
+    pub fn new(id: TaskId, meta: TaskMeta, snapshot: TaskSnapshot, history: TaskHistory) -> Self {
         let dt = Local::now();
         Self {
             id,
             meta,
-            data,
+            snapshot,
             history,
             created_at: dt.clone(),
             updated_at: dt,
         }
+    }
+
+    pub fn snapshot(&self) -> &TaskSnapshot {
+        &self.snapshot
+    }
+
+    pub fn poll_result(&self) -> &PollResult {
+        &self.snapshot.poll_result
+    }
+
+    pub fn status(&self) -> &PollStatus {
+        &self.snapshot.poll_status
+    }
+
+    pub fn metrics(&self) -> &Metrics {
+        &self.snapshot.metrics
     }
 
     pub fn created_at(&self) -> &DateTime<Local> {
@@ -164,12 +228,12 @@ impl TaskEntity {
         &self.meta
     }
 
-    pub fn data(&self) -> &TaskData {
-        &self.data
-    }
-
     pub fn id(&self) -> &TaskId {
         &self.id
+    }
+
+    pub fn history(&self) -> &TaskHistory {
+        &self.history
     }
 
     pub fn update_meta(&mut self, meta: TaskMeta) {
@@ -177,14 +241,10 @@ impl TaskEntity {
         self.updated_at = Local::now();
     }
 
-    pub fn update_data(&mut self, data: TaskData) {
-        let old_data = mem::replace(&mut self.data, data);
-        self.history.push(old_data);
+    pub fn update(&mut self, new_snapshot: TaskSnapshot) {
+        let old_snapshot = mem::replace(&mut self.snapshot, new_snapshot);
+        self.history.push(old_snapshot);
         self.updated_at = Local::now();
-    }
-
-    pub fn history(&self) -> &TaskHistory {
-        &self.history
     }
 }
 

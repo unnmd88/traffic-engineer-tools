@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
                     match update {
                         TasksRepoResponse::Update { snapshot, task_id } => {
                             println!(
-                                "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Created at: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
+                                "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
                                 format_repository(&snapshot)
                             );
                             /*

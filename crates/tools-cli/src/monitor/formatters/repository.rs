@@ -28,7 +28,7 @@ pub fn format_repository(repo: &TaskRepository) -> String {
 
     for task in repo.tasks_sorted_by_id() {
         let meta = task.meta();
-        let data = task.data();
+        let task_snapshot = task.snapshot();
 
         // Metadata
         output.push_str(&format!("{} [ID: {}]  Target: {}\n", meta.name, task.id(), meta.target,));
@@ -38,9 +38,10 @@ pub fn format_repository(repo: &TaskRepository) -> String {
         output.push_str(LINE_THIN_LN);
 
         // Metrics
-        let m = data.metrics();
+        let m = task_snapshot.metrics();
         output.push_str(&format!(
-            "Requests: {} (✓{} ✗{})  |  Latency: {}ms (min: {}ms max: {}ms avg: {}ms)\n",
+            "Status: {}\nRequests: {} (✓{} ✗{})  |  Latency: {}ms (min: {}ms max: {}ms avg: {}ms)\n",
+            task_snapshot.poll_status(),
             m.total_attempts,
             m.successful,
             m.errors,
@@ -52,7 +53,7 @@ pub fn format_repository(repo: &TaskRepository) -> String {
         output.push_str(LINE_THIN_LN);
 
         // Response
-        match data.result() {
+        match task_snapshot.poll_result() {
             PollResult::SnmpGet(response) => {
                 output.push_str("Snmp-get response:\n");
                 output.push_str(&format_oids(&response.payload.samples));

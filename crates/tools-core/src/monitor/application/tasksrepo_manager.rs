@@ -6,12 +6,27 @@ use tracing::{error, warn};
 use crate::{
     Error,
     error::PollError,
-    monitor::{TaskRepository, task::TaskId, task_repository::TaskDataUpdate},
+    monitor::{
+        TaskRepository,
+        task::{PollStatus, TaskId},
+        task_repository::TaskSnapshotUpdate,
+    },
     polling::{
         PollResult, Pollable, Response,
-        worker::{WorkerEvent, WorkerId},
+        worker::{WorkerEvent, WorkerId, WorkerState},
     },
 };
+
+impl From<WorkerState> for PollStatus {
+    fn from(state: WorkerState) -> Self {
+        match state {
+            WorkerState::Idle => Self::Idle,
+            WorkerState::Running => Self::Active,
+            WorkerState::Stopped => Self::Paused,
+            WorkerState::Finished => Self::Finished,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum TasksRepoResponse {
@@ -110,9 +125,10 @@ impl TasksRepoManager {
             }
         };
 
-        match self.repository.update_taskstate(
+        match self.repository.update_task_snaphot(
             &task_id,
-            TaskDataUpdate {
+            TaskSnapshotUpdate {
+                poll_status: worker_event.state.into(),
                 metrics: worker_event.metrics,
                 poll_result: worker_event.poll_result,
             },

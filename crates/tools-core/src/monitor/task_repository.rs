@@ -5,7 +5,9 @@ use crate::{
     Error,
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
     error::TaskRepositoryError,
-    monitor::task::{Task, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta},
+    monitor::task::{
+        PollStatus, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta, TaskSnapshot,
+    },
     polling::{Metrics, PollResult},
     utils::format_moscow_human,
 };
@@ -33,8 +35,9 @@ impl TaskIdGenerator {
 }
 
 #[derive(Clone, Debug)]
-pub struct TaskDataUpdate {
+pub struct TaskSnapshotUpdate {
     pub poll_result: PollResult,
+    pub poll_status: PollStatus,
     pub metrics: Metrics,
 }
 
@@ -85,11 +88,11 @@ impl TaskRepository {
     pub fn add_task(
         &mut self,
         meta: TaskMeta,
-        data: Option<TaskData>,
+        task_snapshot: Option<TaskSnapshot>,
         history: Option<TaskHistory>,
     ) -> TaskId {
         let id = self.id_gen.next();
-        let data = data.unwrap_or_else(|| TaskData::new(PollResult::Initial, None));
+        let data = task_snapshot.unwrap_or_else(|| TaskSnapshot::new());
 
         let task = TaskEntity::new(id.clone(), meta, data, history.unwrap_or_default());
 
@@ -115,10 +118,10 @@ impl TaskRepository {
         self.tasks.get_mut(&id)
     }
 
-    pub fn update_taskstate(
+    pub fn update_task_snaphot(
         &mut self,
         task_id: &TaskId,
-        data: TaskDataUpdate,
+        snapshot: TaskSnapshotUpdate,
     ) -> Result<(), Error> {
         let target = self
             .get_mut_task(task_id)
@@ -126,7 +129,14 @@ impl TaskRepository {
                 task_id: task_id.0.to_string(),
             })?;
 
-        target.update_data(TaskData::new(data.poll_result, Some(data.metrics)));
+        let snapshot = TaskSnapshot::new()
+            .with_poll_result(snapshot.poll_result)
+            .with_poll_status(snapshot.poll_status)
+            .with_metrics(snapshot.metrics);
+
+        target.update(snapshot);
+
+        //target.update_data(TaskData::new(data.poll_result, Some(data.metrics)));
         self.updated_at = Local::now();
 
         Ok(())
