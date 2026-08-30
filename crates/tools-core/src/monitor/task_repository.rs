@@ -136,7 +136,6 @@ impl TaskRepository {
 
         target.update(snapshot);
 
-        //target.update_data(TaskData::new(data.poll_result, Some(data.metrics)));
         self.updated_at = Local::now();
 
         Ok(())
@@ -170,83 +169,3 @@ impl TaskRepository {
         &self.created_at
     }
 }
-
-/*
-use std::fmt::{self, Display, Formatter};
-
-const LINE_THIN: &str =
-    "────────────────────────────────────────────────────────────────────────────────";
-const LINE_DOUBLE: &str =
-    "════════════════════════════════════════════════════════════════════════════";
-const LINE_DOTTED: &str =
-    "················································································";
-const TITLE: &str = "Monitor created at";
-const SPACES: &str = "                                      ";
-const SNAPSHOT_HEADER: &str = concat!(LINE_DOUBLE, "\n", SPACES, TITLE, "\n", LINE_DOUBLE);
-
-impl Display for TaskRepository {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{LINE_DOUBLE}")?;
-        writeln!(
-            f,
-            "{TITLE}: {}",
-            //self.updated_at.format(DT_FMT_WITH_MICROSECONDS),
-            self.created_at.format(DT_FMT)
-        )?;
-        writeln!(f, "{LINE_DOUBLE}")?;
-
-        for task in self.tasks_sorted_by_id() {
-            let meta = task.meta();
-            let data = task.data();
-
-            writeln!(
-                f,
-                "Name: '{}' Target: {} Id: {} Created: {}",
-                meta.name,
-                meta.target,
-                task.id(),
-                task.created_at().format(DT_FMT)
-            )?;
-            writeln!(f, "{}\n{LINE_THIN}", meta.subject)?;
-            writeln!(f, "Last update: {}", task.updated_at().format(DT_FMT_WITH_MICROSECONDS),)?;
-
-            let m = data.metrics();
-            if m.total_attempts > 0 {
-                writeln!(
-                    f,
-                    "Requests: Total={} Successfull={} Errors={}",
-                    m.total_attempts, m.successful, m.errors
-                )?;
-                writeln!(
-                    f,
-                    "Latency ms: Current={} Avg={} Min={} Max={}",
-                    m.current_latency_ms,
-                    m.avg_latency_ms,
-                    if m.min_latency_ms == u64::MAX {
-                        0
-                    } else {
-                        m.min_latency_ms
-                    },
-                    m.max_latency_ms
-                )?;
-            }
-
-            match &task.data().result() {
-                PollResult::SnmpGet(response) => {
-                    writeln!(f, "Snmp-get response:\n{}", response.payload)?;
-                }
-                PollResult::NoResponse(errors) => {
-                    writeln!(f, "Timeout error after {} attempts:", errors.len())?;
-                    for err in errors.iter() {
-                        writeln!(f, "{err}")?;
-                    }
-                }
-                _ => {}
-            }
-            writeln!(f, "{LINE_DOTTED}")?;
-        }
-
-        Ok(())
-    }
-}
-*/

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::Deserialize;
 use tools_core::monitor::application::{
     app::Application,
@@ -52,7 +53,7 @@ impl AppBuilder {
             let to_query = match &t.query {
                 TaskDto::SnmpGet(q) => {
                     let query = QuerySnmpGet {
-                        profile: Some("potok_ug405".to_string()),
+                        profile: q.profile.clone(),
                         host: q.host.clone(),
                         port: q.port,
                         community: q.community.clone(),

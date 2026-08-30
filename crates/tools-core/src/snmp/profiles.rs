@@ -12,7 +12,8 @@ use crate::{
         oid_metadata::OidMetadata,
         parsers::{OidValueParserFn, parse_ug405_stage, site_id_ug405_potok},
         registry::{
-            STAGE_ALIASES, UTC_REPLY_GN_METADATA, UTC_REPLY_GN_OID,
+            STAGE_ALIASES, SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA,
+            SWARCO_UTC_TRAFFTECH_PHASE_STATUS_OID, UTC_REPLY_GN_METADATA, UTC_REPLY_GN_OID,
             UTC_REPLY_SITE_ID_POTOK_METADATA, UTC_REPLY_SITE_ID_POTOK_OID,
         },
         site_id::fetch_site_id_potok_ug405,
@@ -50,6 +51,9 @@ impl SnmpProfile {
     pub fn get_oid_by_alias(&self, alias: &str) -> Option<&'static str> {
         match self {
             Self::PotokUg405 => STAGE_ALIASES.contains(&alias).then_some(UTC_REPLY_GN_OID),
+            Self::Swarco | Self::PotokS => STAGE_ALIASES
+                .contains(&alias)
+                .then_some(SWARCO_UTC_TRAFFTECH_PHASE_STATUS_OID),
             // Остальные варианты
             _ => None,
         }
@@ -63,6 +67,18 @@ impl SnmpProfile {
             Self::PotokUg405 => match oid_as_str {
                 UTC_REPLY_GN_OID => Some(UTC_REPLY_GN_METADATA),
                 UTC_REPLY_SITE_ID_POTOK_OID => Some(UTC_REPLY_SITE_ID_POTOK_METADATA),
+                _ => None,
+            },
+            Self::Swarco => match oid_as_str {
+                SWARCO_UTC_TRAFFTECH_PHASE_STATUS_OID => {
+                    Some(SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA)
+                }
+                _ => None,
+            },
+            Self::PotokS => match oid_as_str {
+                SWARCO_UTC_TRAFFTECH_PHASE_STATUS_OID => {
+                    Some(SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA)
+                }
                 _ => None,
             },
             _ => None,

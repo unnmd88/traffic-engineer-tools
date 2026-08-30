@@ -10,5 +10,6 @@ mod common;
 pub mod stage_ug405;
 pub use common::site_id_ug405_potok;
 pub use stage_ug405::parse_ug405_stage;
+pub mod stage_stcip;
 
 pub type OidValueParserFn = fn(&SnmpValue) -> Result<BusinessValue, ParseError>;

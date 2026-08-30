@@ -1,5 +1,5 @@
+use tokio::sync::mpsc;
 use tokio::time::Duration;
-use tokio::{sync::mpsc, time::sleep};
 
 use crate::error::PollError;
 use crate::polling::worker::env::WorkerEvent;

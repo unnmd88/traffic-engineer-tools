@@ -1,6 +1,51 @@
 use std::fmt::{self, Formatter};
 
+use derive_more::Display;
+
 use crate::{SnmpError, snmp::oid::SnmpOid, utils::encode_to_hex};
+
+#[derive(Debug, Clone, Display)]
+pub enum SnmpValueType {
+    OctetString,
+    Opaque,
+    Gauge32,
+    Integer,
+    Unsigned32,
+    Counter32,
+    Counter64,
+    TimeTicks,
+    Oid,
+    IpAddress,
+    Null,
+    NoSuchObject,
+    NoSuchInstance,
+    EndOfMibView,
+    Other,
+    Unknown,
+}
+
+impl From<&SnmpValue> for SnmpValueType {
+    fn from(value: &SnmpValue) -> Self {
+        match value {
+            SnmpValue::Integer(_) => Self::Integer,
+            SnmpValue::Gauge32(_) => Self::Gauge32,
+            SnmpValue::OctetString(_) => Self::OctetString,
+            SnmpValue::Opaque(_) => Self::Opaque,
+            SnmpValue::TimeTicks(_) => Self::TimeTicks,
+            SnmpValue::Oid(_) => Self::Oid,
+            SnmpValue::IpAddress(_) => Self::IpAddress,
+            SnmpValue::Null => Self::Null,
+            SnmpValue::NoSuchObject => Self::NoSuchObject,
+            SnmpValue::NoSuchInstance => Self::NoSuchInstance,
+            SnmpValue::EndOfMibView => Self::EndOfMibView,
+            SnmpValue::Unsigned32(_) => Self::Unsigned32,
+            SnmpValue::Counter32(_) => Self::Counter32,
+            SnmpValue::Counter64(_) => Self::Counter64,
+            SnmpValue::Unknown { .. } => Self::Unknown,
+            SnmpValue::Other(_) => Self::Other,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum SnmpValue {
@@ -35,6 +80,14 @@ impl SnmpValue {
         match self {
             SnmpValue::OctetString(v) => Some(v),
             SnmpValue::Opaque(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        match self {
+            Self::Counter32(v) | Self::Gauge32(v) | Self::TimeTicks(v) => Some(*v),
+            Self::Integer(v) if *v >= 0 => Some(*v as u32),
             _ => None,
         }
     }
@@ -88,8 +141,8 @@ impl From<&async_snmp::Value> for SnmpValue {
     fn from(value: &async_snmp::Value) -> Self {
         match value {
             async_snmp::Value::Integer(v) => SnmpValue::Integer(*v),
-            async_snmp::Value::Counter32(v) => SnmpValue::Unsigned32(*v),
-            async_snmp::Value::Gauge32(v) => SnmpValue::Unsigned32(*v),
+            async_snmp::Value::Counter32(v) => SnmpValue::Counter32(*v),
+            async_snmp::Value::Gauge32(v) => SnmpValue::Gauge32(*v),
             async_snmp::Value::Counter64(v) => SnmpValue::Counter64(*v),
             async_snmp::Value::OctetString(v) => SnmpValue::OctetString(v.to_vec()),
             async_snmp::Value::ObjectIdentifier(v) => SnmpValue::Oid(SnmpOid::new(v.clone())),

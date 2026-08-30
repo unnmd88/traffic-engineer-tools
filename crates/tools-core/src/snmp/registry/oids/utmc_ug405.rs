@@ -4,6 +4,7 @@ use crate::snmp::{
     oid::SnmpOid,
     oid_metadata::OidMetadata,
     parsers::{parse_ug405_stage, site_id_ug405_potok},
+    registry::oids::STAGE_ALIAS,
 };
 
 /// utcReplySiteID for Potok with index 0
@@ -25,7 +26,7 @@ pub const UTC_REPLY_SITE_ID_POTOK_METADATA: OidMetadata = OidMetadata {
 /// utcReplyGn
 pub const UTC_REPLY_GN_OID: &str = "1.3.6.1.4.1.13267.3.2.5.1.1.3";
 pub const UTC_REPLY_GN_NAME: &str = "utcReplyGn";
-pub const UTC_REPLY_GN_ALIAS: &str = "Stage";
+pub const UTC_REPLY_GN_ALIAS: &str = STAGE_ALIAS;
 pub const UTC_REPLY_GN_DESCRIPTION: &str =
     "Condition 1 confirms that a particular stage, or phase if specified is running.
 G1 and G2 shall normally be returned simultaneously to indicate
@@ -60,8 +61,6 @@ pub const UTC_CONTROL_SITE_ID_POTOK_OID: &str = "1.3.6.1.4.1.13267.3.2.4.2.1.2.0
 pub const UTC_CONTROL_TO: &str = "1.3.6.1.4.1.13267.3.2.4.2.1.15";
 
 pub const SCN_REQUIRED_OIDS: [&str; 2] = [UTC_REPLY_GN_OID, UTC_CONTROL_TO];
-
-pub const STAGE_ALIASES: [&str; 4] = ["stage", "phase", "фаза", "utcReplyGn"];
 
 pub fn scn_required_for_oid_as_str(oid: &str) -> bool {
     SCN_REQUIRED_OIDS.contains(&oid)

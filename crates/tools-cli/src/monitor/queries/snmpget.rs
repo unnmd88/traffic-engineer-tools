@@ -12,6 +12,7 @@ pub struct SnmpOidItemDto {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SnmpGetQueryDto {
     pub name: Option<String>,
+    #[serde(default)]
     pub profile: Option<String>,
     pub host: String,
     pub port: u16,
