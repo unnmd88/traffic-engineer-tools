@@ -1,11 +1,7 @@
-pub mod stcip;
-pub mod utmc_ug405;
+mod properties;
+pub use properties::*;
+mod metadata;
+pub use metadata::*;
 
 pub const STAGE_ALIAS: &str = "Stage";
-pub const STAGE_ALIASES: [&str; 5] = [
-    "stage",
-    "phase",
-    "фаза",
-    "utcReplyGn",
-    "swarcoUTCTrafftechPhaseStatus",
-];
+pub const STAGE_ALIASES: &[&str] = &["stage", "phase", "фаза"];

@@ -12,7 +12,6 @@ use crate::{
         business_value::BusinessValue,
         oid::SnmpOid,
         oid_metadata::OidMetadata,
-        oids_resolve::resolve_oids,
         parsers::OidValueParserFn,
         profiles::SnmpProfile,
         response::{SnmpGetResponse, SnmpGetSample},
@@ -52,8 +51,9 @@ impl SnmpReader {
         for item in request.iter() {
             oids.push(item.oid.clone());
 
-            let metadata: Option<OidMetadata> =
-                profile.as_ref().and_then(|p| p.metadata(&item.oid));
+            let metadata = profile
+                .as_ref()
+                .and_then(|p| p.get_metadata_by_oid(&item.oid));
 
             let parser = item
                 .business_value_parser
@@ -66,7 +66,10 @@ impl SnmpReader {
         }
 
         // Resolved oids. If profile has SCN - create new oids with SCN.
-        let resolved_oids = resolve_oids(&client, profile.as_ref(), &oids).await?;
+        let resolved_oids = match &profile {
+            Some(profile) => profile.resolve_oids(&client, &oids).await?,
+            None => oids,
+        };
 
         Ok(Self {
             client,

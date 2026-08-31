@@ -15,7 +15,6 @@ use crate::polling::worker::{PollWorker, WorkerCommand, WorkerId};
 use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::SnmpReader;
 use crate::snmp::parsers::site_id_ug405_potok;
-use crate::snmp::registry::{UTC_REPLY_GN_OID, UTC_REPLY_SITE_ID_POTOK_OID};
 use crate::{
     error::{CreateMonitorError, Error, ParseError, SnmpError},
     monitor::{
@@ -34,7 +33,6 @@ use crate::{
         oid::SnmpOid,
         parsers::{OidValueParserFn, parse_ug405_stage},
         profiles::SnmpProfile,
-        registry::scn_required,
     },
 };
 
@@ -313,18 +311,19 @@ fn resolve_oid(
         task_idx,
     })?;
 
-    let oid_str = profile
-        .get_oid_by_alias(&raw)
-        .ok_or(CreateMonitorError::UnknownAlias {
-            task_idx,
-            pos,
-            alias: raw.clone(),
-        })?;
+    let oid_metadata =
+        profile
+            .get_metadata_by_name_or_alias(&raw)
+            .ok_or(CreateMonitorError::UnknownAlias {
+                task_idx,
+                pos,
+                alias: raw.clone(),
+            })?;
 
-    SnmpOid::parse(oid_str).map_err(|_| CreateMonitorError::InvalidSnmpOid {
+    SnmpOid::parse(oid_metadata.oid).map_err(|_| CreateMonitorError::InvalidSnmpOid {
         task_idx,
         pos,
-        oid: oid_str.to_string(),
+        oid: oid_metadata.oid.to_string(),
     })
 }
 

@@ -1,8 +1,6 @@
 use crate::{
     SnmpError,
-    snmp::{
-        SnmpReadClient, oid::SnmpOid, profiles::SnmpProfile, registry::UTC_REPLY_SITE_ID_POTOK_OID,
-    },
+    snmp::{SnmpReadClient, oid::SnmpOid, registry::oids::UTC_REPLY_SITE_ID_POTOK_OID},
 };
 
 pub async fn fetch_site_id_potok_ug405(client: &SnmpReadClient) -> Result<Vec<u8>, SnmpError> {
