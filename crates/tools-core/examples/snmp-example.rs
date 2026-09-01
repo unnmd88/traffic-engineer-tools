@@ -5,10 +5,10 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::Duration;
 use tools_core::monitor::application::app::Application;
 use tools_core::monitor::application::config::{
-    AppConfig, Query, QuerySnmpGet, TaskConfig, TaskPollTimings,
+    AppConfig, AttemptPollTimingsDto, Query, QuerySnmpGet, TaskConfigDto,
 };
 
-use tools_core::polling::PollConfig;
+use tools_core::polling::AttemptConfig;
 use tools_core::snmp::adapters::GenericCustomReader;
 use tools_core::snmp::parsers::parse_oids;
 use tools_core::snmp::primitives::{Community, Port, SnmpOid};
@@ -118,7 +118,7 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
             oid: plan,
         },
     ];
-    let poll_config = PollConfig {
+    let poll_config = AttemptConfig {
         timeout: Duration::from_millis(2000),
         retries: 4,
         retry_delay: Duration::from_millis(200),
@@ -152,7 +152,7 @@ async fn test_worker(snmp_client: &SnmpReadClient) -> Result<()> {
                 oid: plan,
             },
         ];
-        let poll_config = PollConfig {
+        let poll_config = AttemptConfig {
             timeout: Duration::from_millis(2000),
             retries: 3,
             retry_delay: Duration::from_millis(200),
@@ -205,9 +205,9 @@ async fn test_monitor_application() -> anyhow::Result<()> {
     };
 
     let snmp_get_query = Query::SnmpGet(task_snmp_get_dto);
-    let task = TaskConfig {
+    let task = TaskConfigDto {
         name: "T-1".to_string(),
-        poll_timings: TaskPollTimings {
+        attempt_timings: AttemptPollTimingsDto {
             timeout_ms: 1000,
             retries: 2,
             retry_delay_ms: 200,

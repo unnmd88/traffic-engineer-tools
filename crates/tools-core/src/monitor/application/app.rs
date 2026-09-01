@@ -11,6 +11,8 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::error::ApplicationError;
+use crate::monitor::task::{TaskAttemptPollConfig, TaskPollConfig};
+use crate::polling::PollConfig;
 use crate::polling::worker::{PollWorker, WorkerCommand, WorkerId};
 use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::SnmpReader;
@@ -26,7 +28,7 @@ use crate::{
         },
         task::{Protocol, TaskHistory, TaskId, TaskMeta, TypeQuery},
     },
-    polling::PollConfig,
+    polling::AttemptConfig,
     snmp::{
         SnmpGetQueryItem, SnmpReadClient,
         community::Community,
@@ -83,10 +85,26 @@ impl Application {
         let (worker_tx, worker_rx) = mpsc::channel(32);
 
         for (i, task) in config.tasks.iter().enumerate() {
-            let poll_config = PollConfig {
-                timeout: Duration::from_millis(task.poll_timings.timeout_ms),
-                retries: task.poll_timings.retries,
-                retry_delay: Duration::from_millis(task.poll_timings.retry_delay_ms),
+            let worker_attempt_config = AttemptConfig {
+                timeout: Duration::from_millis(task.attempt_timings.timeout_ms),
+                retries: task.attempt_timings.retries,
+                retry_delay: Duration::from_millis(task.attempt_timings.retry_delay_ms),
+            };
+            let worker_poll_config = PollConfig {
+                interval: Duration::from_millis(task.interval_ms),
+                limit: task.limit,
+                attempt: worker_attempt_config,
+            };
+
+            let task_attempt_config = TaskAttemptPollConfig {
+                timeout: worker_poll_config.attempt.timeout,
+                retry_delay: worker_poll_config.attempt.retry_delay,
+                retries: worker_poll_config.attempt.retries,
+            };
+            let task_poll_config = TaskPollConfig {
+                interval: worker_poll_config.interval,
+                limit: worker_poll_config.limit,
+                attempt: task_attempt_config,
             };
 
             let worker_id = WorkerId::new(i as u64);
@@ -113,9 +131,9 @@ impl Application {
                         target,
                         port,
                         community,
-                        timeout: poll_config.timeout,
-                        retries: poll_config.retries as u32,
-                        retry_delay: poll_config.retry_delay,
+                        timeout: worker_poll_config.attempt.timeout,
+                        retries: worker_poll_config.attempt.retries as u32,
+                        retry_delay: worker_poll_config.attempt.retry_delay,
                     };
 
                     let snmp_client = create_snmp_read_client(snmp_client_config).await?;
@@ -146,8 +164,7 @@ impl Application {
                     let worker = PollWorker::new(
                         worker_id,
                         adapter,
-                        worker_interval,
-                        poll_config,
+                        worker_poll_config,
                         worker_tx.clone(),
                         worker_cmd_rx,
                     );
@@ -168,7 +185,8 @@ impl Application {
                         target: format!("{target}:{port}"),
                     };
 
-                    let task_id = tasks_repo.add_task(meta, None, Some(task_history));
+                    let task_id =
+                        tasks_repo.add_task(meta, Some(task_poll_config), None, Some(task_history));
                     tasks_order.push(task_id.clone());
                     tasks_binding.insert(
                         task_id,

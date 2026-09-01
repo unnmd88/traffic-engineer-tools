@@ -8,7 +8,7 @@ mod response;
 mod updateble;
 pub mod worker;
 
-pub use config::PollConfig;
+pub use config::{AttemptConfig, PollConfig};
 pub use metrics::Metrics;
 pub use poll::poll;
 pub use poll_result::PollResult;

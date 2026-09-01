@@ -29,16 +29,26 @@ pub fn format_repository(repo: &TaskRepository) -> String {
     for task in repo.tasks_sorted_by_id() {
         let meta = task.meta();
         let task_snapshot = task.snapshot();
+        let poll_config = task.poll_config();
+        let m = task_snapshot.metrics();
 
         // Metadata
         output.push_str(&format!("{} [ID: {}]  Target: {}\n", meta.name, task.id(), meta.target,));
 
         output.push_str(&format!("{}\n", meta.subject));
 
+        let limit = match poll_config.limit {
+            0 => "infinity",
+            _ => {
+                &format!("{}({} remained)", poll_config.limit, poll_config.limit - m.total_attempts)
+            }
+        };
+
+        output.push_str(&format!("Interval: {} Limit: {limit}\n", poll_config.interval.as_secs()));
+
         output.push_str(LINE_THIN_LN);
 
         // Metrics
-        let m = task_snapshot.metrics();
         output.push_str(&format!(
             "Status: {}\nRequests: {} (✓{} ✗{})  |  Latency: {}ms (min: {}ms max: {}ms avg: {}ms)\n",
             task_snapshot.poll_status(),

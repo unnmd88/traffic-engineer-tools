@@ -1,6 +1,6 @@
 use derive_more::{Constructor, Display, Into};
 
-use crate::polling::{Metrics, PollResult};
+use crate::polling::{Metrics, PollResult, config::PollConfig};
 
 #[derive(Debug, Display, Into, Clone, Copy, Hash, Eq, PartialEq, Constructor)]
 pub struct WorkerId(pub u64);
@@ -29,6 +29,7 @@ pub enum WorkerResponse {
 pub struct WorkerEvent {
     pub id: WorkerId,
     pub state: WorkerState,
+    pub poll_config: PollConfig,
     pub metrics: Metrics,
     pub poll_result: PollResult,
 }

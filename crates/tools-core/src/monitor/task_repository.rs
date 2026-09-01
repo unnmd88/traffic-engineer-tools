@@ -6,7 +6,8 @@ use crate::{
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
     error::TaskRepositoryError,
     monitor::task::{
-        PollStatus, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta, TaskSnapshot,
+        PollStatus, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta, TaskPollConfig,
+        TaskSnapshot, TaskUpdateDto,
     },
     polling::{Metrics, PollResult},
     utils::format_moscow_human,
@@ -88,13 +89,21 @@ impl TaskRepository {
     pub fn add_task(
         &mut self,
         meta: TaskMeta,
+        poll_config: Option<TaskPollConfig>,
         task_snapshot: Option<TaskSnapshot>,
         history: Option<TaskHistory>,
     ) -> TaskId {
         let id = self.id_gen.next();
-        let data = task_snapshot.unwrap_or_else(|| TaskSnapshot::new());
+        let task_snaphot = task_snapshot.unwrap_or_else(|| TaskSnapshot::new());
+        let poll_config = poll_config.unwrap_or_default();
 
-        let task = TaskEntity::new(id.clone(), meta, data, history.unwrap_or_default());
+        let task = TaskEntity::new(
+            id.clone(),
+            meta,
+            task_snaphot,
+            poll_config,
+            history.unwrap_or_default(),
+        );
 
         self.tasks.insert(id.clone(), task);
         self.order_ids.push(id.clone());
@@ -118,25 +127,21 @@ impl TaskRepository {
         self.tasks.get_mut(&id)
     }
 
-    pub fn update_task_snaphot(
+    pub fn update_task(
         &mut self,
         task_id: &TaskId,
-        snapshot: TaskSnapshotUpdate,
-    ) -> Result<(), Error> {
+        to_update: TaskUpdateDto,
+        //snapshot: TaskSnapshotUpdate,
+    ) -> Result<(), TaskRepositoryError> {
         let target = self
             .get_mut_task(task_id)
             .ok_or(TaskRepositoryError::TaskNotFound {
                 task_id: task_id.0.to_string(),
             })?;
 
-        let snapshot = TaskSnapshot::new()
-            .with_poll_result(snapshot.poll_result)
-            .with_poll_status(snapshot.poll_status)
-            .with_metrics(snapshot.metrics);
-
-        target.update(snapshot);
-
-        self.updated_at = Local::now();
+        if target.update(to_update) {
+            self.updated_at = Local::now();
+        }
 
         Ok(())
     }

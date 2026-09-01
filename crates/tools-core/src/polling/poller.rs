@@ -3,7 +3,7 @@ use core::error;
 use crate::{
     Error,
     error::{PollError, PollErrorContext},
-    polling::{PollConfig, Pollable, Response, poll},
+    polling::{AttemptConfig, Pollable, Response, poll},
     utils::get_elapsed_as_u64,
 };
 use chrono::{Local, Utc};
@@ -11,11 +11,11 @@ use tokio::time::{Duration, Instant, error::Elapsed, sleep, timeout};
 
 pub struct Poller<A: Pollable> {
     adapter: A,
-    config: PollConfig,
+    config: AttemptConfig,
 }
 
 impl<A: Pollable> Poller<A> {
-    pub fn new(adapter: A, config: PollConfig) -> Self {
+    pub fn new(adapter: A, config: AttemptConfig) -> Self {
         Self { adapter, config }
     }
 

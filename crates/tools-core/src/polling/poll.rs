@@ -1,13 +1,13 @@
 use crate::{
     PollErrorContext,
     error::PollError,
-    polling::{PollConfig, Pollable, Response},
+    polling::{AttemptConfig, Pollable, Response},
 };
 use chrono::{Local, Utc};
 use tokio::time::{Duration, Instant, error::Elapsed, sleep, timeout};
 
 pub async fn poll<A: Pollable>(
-    config: &PollConfig,
+    config: &AttemptConfig,
     adapter: &A,
 ) -> Result<Response<A::Output>, PollError> {
     let start = Instant::now();

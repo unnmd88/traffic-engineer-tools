@@ -2,7 +2,10 @@ use anyhow::Context;
 use serde::Deserialize;
 use tools_core::monitor::application::{
     app::Application,
-    config::{AppConfig, Query, QuerySnmpGet, SnmpOidItem, TaskConfig, TaskPollTimings},
+    config::{
+        AppConfig, AttemptPollTimingsDto, Query, QuerySnmpGet, SnmpOidItem,
+        TaskConfigDto as AppTaskConfigDto,
+    },
 };
 
 use crate::monitor::queries::snmpget::SnmpGetQueryDto;
@@ -24,8 +27,9 @@ struct PollTimingsDto {
 struct TaskConfigDto {
     name: String,
     interval_seconds: u64,
+    limit: u64,
     deep_history: u8,
-    poll_timings: PollTimingsDto,
+    attempt_config: PollTimingsDto,
     query: TaskDto,
 }
 
@@ -44,10 +48,10 @@ impl AppBuilder {
         //println!("{:#?}", dto_config);
 
         for t in dto_config.tasks.iter() {
-            let poll_timings = TaskPollTimings {
-                retries: t.poll_timings.retries,
-                retry_delay_ms: t.poll_timings.retry_delay_ms,
-                timeout_ms: t.poll_timings.timeout_ms,
+            let attempt_timings = AttemptPollTimingsDto {
+                retries: t.attempt_config.retries,
+                retry_delay_ms: t.attempt_config.retry_delay_ms,
+                timeout_ms: t.attempt_config.timeout_ms,
             };
 
             let to_query = match &t.query {
@@ -71,11 +75,12 @@ impl AppBuilder {
                 }
             };
 
-            let task_config = TaskConfig {
+            let task_config = AppTaskConfigDto {
                 name: t.name.clone(),
-                poll_timings,
-                query: to_query,
                 interval_ms: t.interval_seconds * 1000,
+                limit: t.limit,
+                attempt_timings,
+                query: to_query,
                 deep_history: t.deep_history,
             };
 

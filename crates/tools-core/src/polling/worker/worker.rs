@@ -2,9 +2,10 @@ use tokio::sync::mpsc;
 use tokio::time::Duration;
 
 use crate::error::PollError;
+use crate::polling::config::PollConfig;
 use crate::polling::worker::env::WorkerEvent;
 use crate::polling::worker::{WorkerCommand, WorkerId, WorkerState};
-use crate::polling::{Metrics, PollConfig, PollResult, Pollable, Response, Updateble, poll};
+use crate::polling::{AttemptConfig, Metrics, PollResult, Pollable, Response, Updateble, poll};
 
 pub struct PollWorker<A: Pollable + Updateble> {
     id: WorkerId,
@@ -14,7 +15,6 @@ pub struct PollWorker<A: Pollable + Updateble> {
     cmd_rx: mpsc::Receiver<WorkerCommand>,
     poll_config: PollConfig,
     adapter: A,
-    interval: Duration,
     interval_tick: tokio::time::Interval,
 }
 
@@ -25,7 +25,6 @@ where
     pub fn new(
         id: WorkerId,
         adapter: A,
-        interval: Duration,
         poll_config: PollConfig,
         tx: mpsc::Sender<WorkerEvent>,
         mut cmd_rx: mpsc::Receiver<WorkerCommand>,
@@ -36,8 +35,7 @@ where
             poll_config,
             metrics: Metrics::default(),
             adapter,
-            interval,
-            interval_tick: tokio::time::interval(interval),
+            interval_tick: tokio::time::interval(poll_config.interval),
             tx,
             cmd_rx,
         }
@@ -60,7 +58,7 @@ where
         if self.state != WorkerState::Running {
             return;
         }
-        let poll_result = match poll(&self.poll_config, &self.adapter).await {
+        let poll_result = match poll(&self.poll_config.attempt, &self.adapter).await {
             Ok(response) => {
                 self.metrics = self.metrics.with_success(response.elapsed);
                 response.into()
@@ -71,9 +69,14 @@ where
             }
         };
 
+        if self.poll_config.limit > 0 && self.metrics.total_attempts >= self.poll_config.limit {
+            self.state = WorkerState::Stopped;
+        }
+
         let event = WorkerEvent {
             id: self.id,
             state: self.state,
+            poll_config: self.poll_config.clone(),
             metrics: self.metrics.clone(),
             poll_result,
         };
@@ -91,7 +94,7 @@ where
             match cmd {
                 WorkerCommand::Start => {
                     self.state = WorkerState::Running;
-                    self.interval_tick.reset();
+                    self.interval_tick = tokio::time::interval(self.poll_config.interval);
                     self.handle_interval_tick().await;
                 }
                 WorkerCommand::Stop => {

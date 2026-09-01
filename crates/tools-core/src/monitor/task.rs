@@ -8,10 +8,11 @@ use std::{
 use chrono::{DateTime, Local};
 use derive_more::{Constructor, Display};
 use tokio::task::futures::TaskLocalFuture;
+use tokio::time::Duration;
 
 use crate::{
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
-    polling::{Metrics, PollResult},
+    polling::{AttemptConfig, Metrics, PollResult},
 };
 use tracing::{debug, error, info, warn};
 
@@ -39,6 +40,12 @@ pub enum PollStatus {
 pub struct TaskHistory {
     max: usize,
     history: VecDeque<TaskSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskUpdateDto {
+    pub snapshot: Option<TaskSnapshot>,
+    pub poll_config: Option<TaskPollConfig>,
 }
 
 impl TaskHistory {
@@ -87,6 +94,34 @@ pub struct TaskMeta {
     pub name: String,
     pub target: String,
     pub subject: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskAttemptPollConfig {
+    pub timeout: Duration,
+    pub retries: u8,
+    pub retry_delay: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskPollConfig {
+    pub interval: Duration,
+    pub limit: u64,
+    pub attempt: TaskAttemptPollConfig,
+}
+
+impl Default for TaskPollConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::new(0, 0),
+            limit: 0,
+            attempt: TaskAttemptPollConfig {
+                timeout: Duration::new(0, 0),
+                retries: 0,
+                retry_delay: Duration::new(0, 0),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -182,18 +217,26 @@ pub struct TaskEntity {
     id: TaskId,
     meta: TaskMeta,
     snapshot: TaskSnapshot,
+    poll_config: TaskPollConfig,
     history: TaskHistory,
     created_at: DateTime<Local>,
     updated_at: DateTime<Local>,
 }
 
 impl TaskEntity {
-    pub fn new(id: TaskId, meta: TaskMeta, snapshot: TaskSnapshot, history: TaskHistory) -> Self {
+    pub fn new(
+        id: TaskId,
+        meta: TaskMeta,
+        snapshot: TaskSnapshot,
+        poll_config: TaskPollConfig,
+        history: TaskHistory,
+    ) -> Self {
         let dt = Local::now();
         Self {
             id,
             meta,
             snapshot,
+            poll_config,
             history,
             created_at: dt.clone(),
             updated_at: dt,
@@ -206,6 +249,10 @@ impl TaskEntity {
 
     pub fn poll_result(&self) -> &PollResult {
         &self.snapshot.poll_result
+    }
+
+    pub fn poll_config(&self) -> &TaskPollConfig {
+        &self.poll_config
     }
 
     pub fn status(&self) -> &PollStatus {
@@ -241,10 +288,22 @@ impl TaskEntity {
         self.updated_at = Local::now();
     }
 
-    pub fn update(&mut self, new_snapshot: TaskSnapshot) {
-        let old_snapshot = mem::replace(&mut self.snapshot, new_snapshot);
-        self.history.push(old_snapshot);
-        self.updated_at = Local::now();
+    pub fn update(&mut self, to_update: TaskUpdateDto) -> bool {
+        let mut has_update = false;
+        if let Some(snapshot) = to_update.snapshot {
+            let old_snapshot = mem::replace(&mut self.snapshot, snapshot);
+            self.history.push(old_snapshot);
+            has_update = true;
+            self.updated_at = Local::now();
+        }
+
+        if let Some(poll_cfg) = to_update.poll_config {
+            self.poll_config = poll_cfg;
+            has_update = true;
+            self.updated_at = Local::now();
+        }
+
+        has_update
     }
 }
 

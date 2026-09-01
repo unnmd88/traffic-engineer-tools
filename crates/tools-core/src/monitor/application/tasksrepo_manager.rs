@@ -8,7 +8,9 @@ use crate::{
     error::PollError,
     monitor::{
         TaskRepository,
-        task::{PollStatus, TaskId},
+        task::{
+            PollStatus, TaskAttemptPollConfig, TaskId, TaskPollConfig, TaskSnapshot, TaskUpdateDto,
+        },
         task_repository::TaskSnapshotUpdate,
     },
     polling::{
@@ -125,14 +127,26 @@ impl TasksRepoManager {
             }
         };
 
-        match self.repository.update_task_snaphot(
-            &task_id,
-            TaskSnapshotUpdate {
-                poll_status: worker_event.state.into(),
-                metrics: worker_event.metrics,
-                poll_result: worker_event.poll_result,
+        let task_snapshot = TaskSnapshot::new()
+            .with_poll_result(worker_event.poll_result)
+            .with_poll_status(worker_event.state.into())
+            .with_metrics(worker_event.metrics);
+        let worker_poll_cfg = worker_event.poll_config;
+        let poll_config = TaskPollConfig {
+            interval: worker_poll_cfg.interval,
+            limit: worker_poll_cfg.limit,
+            attempt: TaskAttemptPollConfig {
+                timeout: worker_poll_cfg.attempt.timeout,
+                retries: worker_poll_cfg.attempt.retries,
+                retry_delay: worker_poll_cfg.attempt.retry_delay,
             },
-        ) {
+        };
+        let to_update = TaskUpdateDto {
+            snapshot: Some(task_snapshot),
+            poll_config: Some(poll_config),
+        };
+
+        match self.repository.update_task(&task_id, to_update) {
             Ok(_) => {
                 if self.tx.receiver_count() > 0 {
                     let event = TasksRepoResponse::Update {
