@@ -25,7 +25,7 @@ impl From<WorkerState> for PollStatus {
             WorkerState::Idle => Self::Idle,
             WorkerState::Running => Self::Active,
             WorkerState::Stopped => Self::Paused,
-            WorkerState::Finished => Self::Finished,
+            WorkerState::RatedLimit => Self::RateLimit,
         }
     }
 }

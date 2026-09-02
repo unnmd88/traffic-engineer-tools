@@ -55,9 +55,10 @@ where
     }
 
     async fn handle_interval_tick(&mut self) {
-        if self.state != WorkerState::Running {
+        if !self.is_running() {
             return;
         }
+
         let poll_result = match poll(&self.poll_config.attempt, &self.adapter).await {
             Ok(response) => {
                 self.metrics = self.metrics.with_success(response.elapsed);
@@ -70,7 +71,7 @@ where
         };
 
         if self.poll_config.limit > 0 && self.metrics.total_attempts >= self.poll_config.limit {
-            self.state = WorkerState::Stopped;
+            self.state = WorkerState::RatedLimit;
         }
 
         let event = WorkerEvent {
@@ -86,27 +87,32 @@ where
     }
 
     async fn handle_command(&mut self, cmd: Option<WorkerCommand>) {
-        if matches!(self.state, WorkerState::Finished) {
-            return;
-        }
-
         if let Some(cmd) = cmd {
             match cmd {
                 WorkerCommand::Start => {
                     self.state = WorkerState::Running;
+                    self.metrics = Metrics::default();
                     self.interval_tick = tokio::time::interval(self.poll_config.interval);
                     self.handle_interval_tick().await;
                 }
+                WorkerCommand::Resume => {
+                    if self.is_running() || self.state == WorkerState::RatedLimit {
+                        return;
+                    }
+                    self.state = WorkerState::Running;
+                }
+                WorkerCommand::SetLimit(limit) => self.poll_config.limit = limit,
                 WorkerCommand::Stop => {
                     self.state = WorkerState::Stopped;
-                }
-                WorkerCommand::Finish => {
-                    self.state = WorkerState::Finished;
                 }
             }
         } else {
             tracing::warn!(target: "worker", worker_id=?self.id, "Channel closed");
         }
+    }
+
+    fn is_running(&self) -> bool {
+        self.state == WorkerState::Running
     }
 }
 

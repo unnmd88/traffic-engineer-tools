@@ -10,13 +10,15 @@ pub enum WorkerState {
     Idle,
     Running,
     Stopped,
-    Finished,
+    RatedLimit,
+    //Finished,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerCommand {
     Start,
-    Finish,
+    SetLimit(u64),
+    Resume,
     Stop,
 }
 

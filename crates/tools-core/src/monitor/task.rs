@@ -33,7 +33,7 @@ pub enum PollStatus {
     Idle,
     Active,
     Paused,
-    Finished,
+    RateLimit,
 }
 
 #[derive(Clone, Debug)]
