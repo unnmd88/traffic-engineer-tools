@@ -1,5 +1,4 @@
 use tokio::sync::mpsc;
-use tokio::time::Duration;
 
 use crate::error::PollError;
 use crate::polling::config::PollConfig;
@@ -42,12 +41,21 @@ where
     }
 
     pub async fn run(mut self) {
+        let span = tracing::info_span!("poll_worker", worker_id = %self.id);
+        let _enter = span.enter();
+
+        tracing::info!("worker started");
+
         loop {
             tokio::select! {
                 cmd = self.cmd_rx.recv() => {
+                    let Some(cmd) = cmd else {
+                        tracing::info!("mailbox closed, worker stopped");
+                        break;
+                    };
                     self.handle_command(cmd).await;
                 }
-               _ = self.interval_tick.tick() => {
+                _ = self.interval_tick.tick() => {
                     self.handle_tick().await;
                 }
             }
@@ -62,16 +70,27 @@ where
         let poll_result = match poll(&self.poll_config.attempt, &self.adapter).await {
             Ok(response) => {
                 self.metrics = self.metrics.with_success(response.elapsed);
+                tracing::debug!(
+                    attempts = response.attempts,
+                    elapsed_ms = response.elapsed.as_millis() as u64,
+                    "poll ok"
+                );
                 response.into()
             }
             Err(e) => {
                 self.metrics = self.metrics.with_error();
+                tracing::warn!(error = %e, "poll failed");
                 convert_error(e)
             }
         };
 
         if self.poll_config.limit > 0 && self.metrics.total_attempts >= self.poll_config.limit {
             self.state = WorkerState::RatedLimit;
+            tracing::info!(
+                limit = self.poll_config.limit,
+                attempts = self.metrics.total_attempts,
+                "rate limit reached"
+            );
         }
 
         let event = WorkerEvent {
@@ -82,7 +101,7 @@ where
             poll_result,
         };
         if self.tx.send(event).await.is_err() {
-            tracing::warn!(target: "PollWorker", worker_id=?self.id, "Receiver dropped");
+            tracing::warn!("receiver dropped");
         }
     }
 
@@ -102,20 +121,24 @@ where
     }
 
     fn set_limit(&mut self, limit: u64) {
+        tracing::info!(from = self.poll_config.limit, to = limit, "set limit");
         self.poll_config.limit = limit;
     }
 
-    async fn handle_command(&mut self, cmd: Option<WorkerCommand>) {
-        let Some(cmd) = cmd else {
-            tracing::warn!(target: "worker", worker_id=?self.id, "Channel closed");
-            return;
-        };
+    async fn handle_command(&mut self, cmd: WorkerCommand) {
+        tracing::info!(command = %cmd, "received command");
+
+        let old_state = self.state;
 
         match self.state {
             WorkerState::Idle => self.handle_idle(cmd).await,
             WorkerState::Running => self.handle_running(cmd).await,
             WorkerState::Stopped => self.handle_stopped(cmd).await,
             WorkerState::RatedLimit => self.handle_rated_limit(cmd).await,
+        }
+
+        if self.state != old_state {
+            tracing::info!(old = ?old_state, new = ?self.state, "state changed");
         }
     }
 
@@ -125,23 +148,26 @@ where
                 self.transition_to_running();
                 self.handle_tick().await;
             }
-            _ => {
-                tracing::warn!("Ignoring command {:?} in Idle", cmd);
+            WorkerCommand::SetLimit(limit) => {
+                self.set_limit(limit);
             }
+            _ => ignore_cmd(self.state, cmd),
         }
     }
 
     async fn handle_running(&mut self, cmd: WorkerCommand) {
         match cmd {
+            WorkerCommand::Start => {
+                self.transition_to_running();
+                self.handle_tick().await;
+            }
             WorkerCommand::Stop => {
                 self.transition_to_stop();
             }
             WorkerCommand::SetLimit(limit) => {
                 self.set_limit(limit);
             }
-            _ => {
-                tracing::warn!("Ignoring command {:?} in Running", cmd);
-            }
+            _ => ignore_cmd(self.state, cmd),
         }
     }
 
@@ -153,11 +179,11 @@ where
             }
             WorkerCommand::Resume => {
                 self.transition_to_resume();
-                //self.handle_tick().await;
             }
-            _ => {
-                tracing::warn!("Ignoring command {:?} in Stopped", cmd);
+            WorkerCommand::SetLimit(limit) => {
+                self.set_limit(limit);
             }
+            _ => ignore_cmd(self.state, cmd),
         }
     }
 
@@ -170,9 +196,7 @@ where
             WorkerCommand::SetLimit(limit) => {
                 self.set_limit(limit);
             }
-            _ => {
-                tracing::warn!("Ignoring command {:?} in RatedLimit", cmd);
-            }
+            _ => ignore_cmd(self.state, cmd),
         }
     }
 
@@ -186,4 +210,8 @@ fn convert_error(e: PollError) -> PollResult {
         PollError::NoResponse { errors } => PollResult::NoResponse(errors),
         PollError::Other { message } => PollResult::Fail { message },
     }
+}
+
+fn ignore_cmd(state: WorkerState, cmd: WorkerCommand) {
+    tracing::warn!(state = ?state, command = %cmd, "ignoring command");
 }

@@ -11,10 +11,9 @@ pub enum WorkerState {
     Running,
     Stopped,
     RatedLimit,
-    //Finished,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Display)]
 pub enum WorkerCommand {
     Start,
     SetLimit(u64),
