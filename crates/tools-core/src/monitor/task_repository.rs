@@ -136,7 +136,7 @@ impl TaskRepository {
         let target = self
             .get_mut_task(task_id)
             .ok_or(TaskRepositoryError::TaskNotFound {
-                task_id: task_id.0.to_string(),
+                task_id: task_id.to_string(),
             })?;
 
         if target.update(to_update) {
@@ -144,6 +144,32 @@ impl TaskRepository {
         }
 
         Ok(())
+    }
+
+    pub fn remove_task(&mut self, task_id: &TaskId) -> Result<TaskEntity, TaskRepositoryError> {
+        let removed_task = match self.tasks.remove(task_id) {
+            Some(task) => task,
+            None => {
+                warn!(
+                    target: "TaskRepository",
+                    task_id = ?task_id,
+                    "Attempted to remove non-existent task"
+                );
+                return Err(TaskRepositoryError::TaskNotFound {
+                    task_id: task_id.to_string(),
+                });
+            }
+        };
+        self.order_ids.retain(|id| id != removed_task.id());
+
+        info!(
+            target: "TaskRepository",
+            task_id = ?task_id,
+            "Task removed successfully"
+        );
+        self.updated_at = Local::now();
+
+        Ok(removed_task)
     }
 
     pub fn sorted_task_ids(&self) -> impl Iterator<Item = TaskId> + '_ {
@@ -157,7 +183,7 @@ impl TaskRepository {
                 Some(task) => Some(task),
                 None => {
                     error!(
-                        target: "task repository",
+                        target: "task_repository",
                             task_id = ?id,
                             "TaskId has in order, but not found in `tasks`"
                     );
