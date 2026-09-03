@@ -7,11 +7,13 @@ use tools_core::{
     monitor::{application::TasksRepoResponse, task::TaskId},
 };
 use tracing::{error, info};
+mod logging;
 mod monitor;
 mod scn;
 
 use crate::{
     cli::print_output,
+    logging::init_file_logging,
     monitor::{
         app::AppBuilder,
         formatters::{constants::LINE_DOUBLE_LN, format_repository},
@@ -21,6 +23,13 @@ use crate::{
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let log_dir = std::env::current_dir()
+        .unwrap_or_else(|_| ".".into())
+        .join("logs");
+    let log_dir_str = log_dir.to_str().expect("Invalid log directory path");
+    let _guard = init_file_logging(log_dir_str, "traffic")?;
+
+    tracing::info!("Logger initialized successfully!");
 
     match cli.command {
         cli::Commands::Poll { config } => {
