@@ -5,7 +5,7 @@ use crate::error::PollError;
 use crate::polling::config::PollConfig;
 use crate::polling::worker::env::WorkerEvent;
 use crate::polling::worker::{WorkerCommand, WorkerId, WorkerState};
-use crate::polling::{AttemptConfig, Metrics, PollResult, Pollable, Response, Updateble, poll};
+use crate::polling::{Metrics, PollResult, Pollable, Response, Updateble, poll};
 
 pub struct PollWorker<A: Pollable + Updateble> {
     id: WorkerId,
@@ -27,7 +27,7 @@ where
         adapter: A,
         poll_config: PollConfig,
         tx: mpsc::Sender<WorkerEvent>,
-        mut cmd_rx: mpsc::Receiver<WorkerCommand>,
+        cmd_rx: mpsc::Receiver<WorkerCommand>,
     ) -> Self {
         Self {
             state: WorkerState::Idle,
@@ -48,13 +48,13 @@ where
                     self.handle_command(cmd).await;
                 }
                _ = self.interval_tick.tick() => {
-                    self.handle_interval_tick().await;
+                    self.handle_tick().await;
                 }
             }
         }
     }
 
-    async fn handle_interval_tick(&mut self) {
+    async fn handle_tick(&mut self) {
         if !self.is_running() {
             return;
         }
@@ -86,28 +86,93 @@ where
         }
     }
 
+    fn transition_to_running(&mut self) {
+        self.state = WorkerState::Running;
+        self.metrics = Metrics::default();
+        self.interval_tick = tokio::time::interval(self.poll_config.interval);
+    }
+
+    fn transition_to_resume(&mut self) {
+        self.state = WorkerState::Running;
+        self.interval_tick = tokio::time::interval(self.poll_config.interval);
+    }
+
+    fn transition_to_stop(&mut self) {
+        self.state = WorkerState::Stopped;
+    }
+
+    fn set_limit(&mut self, limit: u64) {
+        self.poll_config.limit = limit;
+    }
+
     async fn handle_command(&mut self, cmd: Option<WorkerCommand>) {
-        if let Some(cmd) = cmd {
-            match cmd {
-                WorkerCommand::Start => {
-                    self.state = WorkerState::Running;
-                    self.metrics = Metrics::default();
-                    self.interval_tick = tokio::time::interval(self.poll_config.interval);
-                    self.handle_interval_tick().await;
-                }
-                WorkerCommand::Resume => {
-                    if self.is_running() || self.state == WorkerState::RatedLimit {
-                        return;
-                    }
-                    self.state = WorkerState::Running;
-                }
-                WorkerCommand::SetLimit(limit) => self.poll_config.limit = limit,
-                WorkerCommand::Stop => {
-                    self.state = WorkerState::Stopped;
-                }
-            }
-        } else {
+        let Some(cmd) = cmd else {
             tracing::warn!(target: "worker", worker_id=?self.id, "Channel closed");
+            return;
+        };
+
+        match self.state {
+            WorkerState::Idle => self.handle_idle(cmd).await,
+            WorkerState::Running => self.handle_running(cmd).await,
+            WorkerState::Stopped => self.handle_stopped(cmd).await,
+            WorkerState::RatedLimit => self.handle_rated_limit(cmd).await,
+        }
+    }
+
+    async fn handle_idle(&mut self, cmd: WorkerCommand) {
+        match cmd {
+            WorkerCommand::Start => {
+                self.transition_to_running();
+                self.handle_tick().await;
+            }
+            _ => {
+                tracing::warn!("Ignoring command {:?} in Idle", cmd);
+            }
+        }
+    }
+
+    async fn handle_running(&mut self, cmd: WorkerCommand) {
+        match cmd {
+            WorkerCommand::Stop => {
+                self.transition_to_stop();
+            }
+            WorkerCommand::SetLimit(limit) => {
+                self.set_limit(limit);
+            }
+            _ => {
+                tracing::warn!("Ignoring command {:?} in Running", cmd);
+            }
+        }
+    }
+
+    async fn handle_stopped(&mut self, cmd: WorkerCommand) {
+        match cmd {
+            WorkerCommand::Start => {
+                self.transition_to_running();
+                self.handle_tick().await;
+            }
+            WorkerCommand::Resume => {
+                self.transition_to_resume();
+                //self.handle_tick().await;
+            }
+            _ => {
+                tracing::warn!("Ignoring command {:?} in Stopped", cmd);
+            }
+        }
+    }
+
+    async fn handle_rated_limit(&mut self, cmd: WorkerCommand) {
+        match cmd {
+            WorkerCommand::Start => {
+                self.transition_to_running();
+                self.handle_tick().await;
+            }
+            WorkerCommand::SetLimit(limit) => {
+                self.set_limit(limit);
+            }
+            _ => {
+                tracing::warn!("Ignoring command {:?} in RatedLimit", cmd);
+            }
         }
     }
 
