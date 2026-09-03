@@ -40,10 +40,8 @@ where
         }
     }
 
+    #[tracing::instrument(name = "poll_worker", skip_all, fields(worker_id = %self.id))]
     pub async fn run(mut self) {
-        let span = tracing::info_span!("poll_worker", worker_id = %self.id);
-        let _enter = span.enter();
-
         tracing::info!("worker started");
 
         loop {
