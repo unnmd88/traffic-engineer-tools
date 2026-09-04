@@ -1,4 +1,4 @@
-use crate::monitor::{application::config::QuerySnmpGet, task::TaskPollConfig};
+use crate::monitor::application::config::QuerySnmpGet;
 
 #[derive(Debug)]
 pub struct AppConfig {
@@ -18,7 +18,7 @@ pub struct TaskConfigDto {
     pub attempt_timings: AttemptPollTimingsDto,
     pub interval_ms: u64,
     pub limit: u64,
-    pub deep_history: u8,
+    pub deep_history: Option<u8>,
     pub query: Query,
 }
 

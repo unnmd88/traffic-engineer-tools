@@ -1,27 +1,10 @@
 use crate::monitor::formatters::constants::{LINE_DOTTED_LN, LINE_THIN_LN};
 
 use super::format_oids;
-use chrono::{DateTime, Local};
-use tools_core::DT_FMT;
+use tools_core::DT_FMT_WITH_MICROSECONDS;
 use tools_core::monitor::TaskRepository;
-use tools_core::monitor::application::{UseCaseOutput, app::ApplicationId};
+use tools_core::monitor::application::UseCaseOutput;
 use tools_core::polling::PollResult;
-
-/*
-pub fn create_header(app_id: &ApplicationId, created_at: &DateTime<Local>) -> String {
-    let mut output = String::new();
-
-    output.push_str(LINE_DOUBLE_LN);
-    output.push_str(&format!(
-        "📊 Monitor[ID: {}] created at: {}\n",
-        app_id,
-        created_at.format(DT_FMT)
-    ));
-    output.push_str(&format!("{LINE_DOUBLE_LN}\n"));
-
-    output
-}
-*/
 
 pub fn format_repository(repo: &TaskRepository) -> String {
     let mut output = String::new();
@@ -31,6 +14,7 @@ pub fn format_repository(repo: &TaskRepository) -> String {
         let task_snapshot = task.snapshot();
         let poll_config = task.poll_config();
         let m = task_snapshot.metrics();
+        let history = task.history();
 
         // Metadata
         output.push_str(&format!("{} [ID: {}]  Target: {}\n", meta.name, task.id(), meta.target,));
@@ -50,7 +34,7 @@ pub fn format_repository(repo: &TaskRepository) -> String {
 
         // Metrics
         output.push_str(&format!(
-            "Status: {}\nRequests: {} (✓{} ✗{})  |  Latency: {}ms (min: {}ms max: {}ms avg: {}ms)\n",
+            "Status: {}\nRequests: {} (✓{} ✗{})  |  Latency: {}ms (min: {}ms max: {}ms)\n",
             task_snapshot.poll_status(),
             m.total_attempts,
             m.successful,
@@ -58,8 +42,27 @@ pub fn format_repository(repo: &TaskRepository) -> String {
             m.current_latency_ms,
             m.min_latency_ms,
             m.max_latency_ms,
-            m.avg_latency_ms
         ));
+        if !history.is_empty() {
+            output.push_str(&format!("History: {}\n", history.len()));
+            for h in history.iter() {
+                output.push_str(&format!(
+                    "{} {}\n",
+                    match h.snapshot.poll_result() {
+                        PollResult::Initial => "initial".to_string(),
+                        PollResult::Success(r) => format!(
+                            "success(attempts: {}, {}ms)",
+                            r.attempts,
+                            r.elapsed.as_millis()
+                        ),
+                        PollResult::NoResponse(_) => "no response".to_string(),
+                        PollResult::Fail { message } => format!("fail: {message}"),
+                    },
+                    h.timestamp.format(DT_FMT_WITH_MICROSECONDS)
+                ));
+            }
+        }
+
         output.push_str(LINE_THIN_LN);
 
         // Response

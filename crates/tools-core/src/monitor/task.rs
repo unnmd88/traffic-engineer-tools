@@ -1,20 +1,8 @@
-use std::{
-    collections::VecDeque,
-    fmt::{self, Formatter},
-    fs::OpenOptions,
-    mem,
-};
+use std::{collections::VecDeque, mem};
 
+use crate::polling::{Metrics, PollConfig, PollResult};
 use chrono::{DateTime, Local};
 use derive_more::{Constructor, Display};
-use tokio::task::futures::TaskLocalFuture;
-use tokio::time::Duration;
-
-use crate::{
-    constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
-    polling::{AttemptConfig, Metrics, PollConfig, PollResult},
-};
-use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug, Copy, Display)]
 pub enum Protocol {
@@ -33,19 +21,25 @@ pub enum PollStatus {
     Idle,
     Active,
     Paused,
-    RateLimit,
+    RatedLimit,
+}
+
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    pub timestamp: DateTime<Local>,
+    pub snapshot: TaskSnapshot,
 }
 
 #[derive(Clone, Debug)]
 pub struct TaskHistory {
     max: usize,
-    history: VecDeque<TaskSnapshot>,
+    history: VecDeque<HistoryEntry>,
 }
 
 #[derive(Clone, Debug)]
 pub struct TaskUpdateDto {
     pub snapshot: Option<TaskSnapshot>,
-    pub poll_config: Option<TaskPollConfig>,
+    pub poll_config: Option<PollConfig>,
 }
 
 impl TaskHistory {
@@ -57,7 +51,7 @@ impl TaskHistory {
         }
     }
 
-    pub fn push(&mut self, snapshot: TaskSnapshot) {
+    pub fn push(&mut self, snapshot: HistoryEntry) {
         if self.max == 0 {
             return;
         }
@@ -68,7 +62,7 @@ impl TaskHistory {
         self.history.push_front(snapshot);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &TaskSnapshot> {
+    pub fn iter(&self) -> impl Iterator<Item = &HistoryEntry> {
         self.history.iter()
     }
 
@@ -78,6 +72,10 @@ impl TaskHistory {
 
     pub fn len(&self) -> usize {
         self.history.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.history.is_empty()
     }
 }
 
@@ -94,106 +92,6 @@ pub struct TaskMeta {
     pub name: String,
     pub target: String,
     pub subject: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskAttemptPollConfig {
-    pub timeout: Duration,
-    pub retries: u8,
-    pub retry_delay: Duration,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskPollConfig {
-    pub interval: Duration,
-    pub limit: u64,
-    pub attempt: TaskAttemptPollConfig,
-}
-
-impl Default for TaskPollConfig {
-    fn default() -> Self {
-        Self {
-            interval: Duration::new(0, 0),
-            limit: 0,
-            attempt: TaskAttemptPollConfig {
-                timeout: Duration::new(0, 0),
-                retries: 0,
-                retry_delay: Duration::new(0, 0),
-            },
-        }
-    }
-}
-
-impl From<TaskAttemptPollConfig> for AttemptConfig {
-    fn from(v: TaskAttemptPollConfig) -> Self {
-        Self {
-            timeout: v.timeout,
-            retries: v.retries,
-            retry_delay: v.retry_delay,
-        }
-    }
-}
-
-impl From<AttemptConfig> for TaskAttemptPollConfig {
-    fn from(v: AttemptConfig) -> Self {
-        Self {
-            timeout: v.timeout,
-            retries: v.retries,
-            retry_delay: v.retry_delay,
-        }
-    }
-}
-
-impl From<TaskPollConfig> for PollConfig {
-    fn from(v: TaskPollConfig) -> Self {
-        Self {
-            interval: v.interval,
-            limit: v.limit,
-            attempt: v.attempt.into(),
-        }
-    }
-}
-
-impl From<PollConfig> for TaskPollConfig {
-    fn from(v: PollConfig) -> Self {
-        Self {
-            interval: v.interval,
-            limit: v.limit,
-            attempt: v.attempt.into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskData {
-    result: PollResult,
-    metrics: Metrics,
-}
-
-impl TaskData {
-    pub fn new(result: PollResult, metrics: Option<Metrics>) -> Self {
-        Self {
-            result,
-            metrics: metrics.unwrap_or_default(),
-        }
-    }
-
-    pub fn result(&self) -> &PollResult {
-        &self.result
-    }
-
-    pub fn metrics(&self) -> &Metrics {
-        &self.metrics
-    }
-}
-
-impl Default for TaskData {
-    fn default() -> Self {
-        Self {
-            result: PollResult::Initial,
-            metrics: Metrics::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -257,7 +155,7 @@ pub struct TaskEntity {
     id: TaskId,
     meta: TaskMeta,
     snapshot: TaskSnapshot,
-    poll_config: TaskPollConfig,
+    poll_config: PollConfig,
     history: TaskHistory,
     created_at: DateTime<Local>,
     updated_at: DateTime<Local>,
@@ -268,7 +166,7 @@ impl TaskEntity {
         id: TaskId,
         meta: TaskMeta,
         snapshot: TaskSnapshot,
-        poll_config: TaskPollConfig,
+        poll_config: PollConfig,
         history: TaskHistory,
     ) -> Self {
         let dt = Local::now();
@@ -291,7 +189,7 @@ impl TaskEntity {
         &self.snapshot.poll_result
     }
 
-    pub fn poll_config(&self) -> &TaskPollConfig {
+    pub fn poll_config(&self) -> &PollConfig {
         &self.poll_config
     }
 
@@ -330,74 +228,24 @@ impl TaskEntity {
 
     pub fn update(&mut self, to_update: TaskUpdateDto) -> bool {
         let mut has_update = false;
+        let ts = Local::now();
         if let Some(snapshot) = to_update.snapshot {
             let old_snapshot = mem::replace(&mut self.snapshot, snapshot);
-            self.history.push(old_snapshot);
             has_update = true;
-            self.updated_at = Local::now();
+            self.history.push(HistoryEntry {
+                timestamp: ts.clone(),
+                snapshot: old_snapshot,
+            });
         }
-
         if let Some(poll_cfg) = to_update.poll_config {
             self.poll_config = poll_cfg;
             has_update = true;
-            self.updated_at = Local::now();
+        }
+
+        if has_update {
+            self.updated_at = ts;
         }
 
         has_update
     }
 }
-
-/*
-impl std::fmt::Display for TaskEntity {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let meta = &self.meta;
-        writeln!(
-            f,
-            "Last update: {} Created: {}",
-            self.updated_at.format(DT_FMT_WITH_MICROSECONDS),
-            self.created_at.format(DT_FMT)
-        )?;
-        writeln!(f, "Target: {} Name: '{}' Id: {}", meta.target, meta.target, self.id)?;
-        writeln!(f, "Subject: {}\n", meta.subject)?;
-
-        let data = &self.data;
-
-        let m = &data.metrics;
-        if m.total_attempts > 0 {
-            //writeln!(f, "\nMetrics:")?;
-            writeln!(
-                f,
-                "Requests: Total={} Successfull={} Errors={}",
-                m.total_attempts, m.successful, m.errors
-            )?;
-            writeln!(
-                f,
-                "Latency ms: Current={} Avg={} Min={} Max={}",
-                m.current_latency_ms,
-                m.avg_latency_ms,
-                if m.min_latency_ms == u64::MAX {
-                    0
-                } else {
-                    m.min_latency_ms
-                },
-                m.max_latency_ms
-            )?;
-        }
-
-        match &data.result {
-            PollResult::SnmpGet(response) => {
-                write!(f, "Snmp-get response:\n{response}")?;
-            }
-            PollResult::NoResponse(errors) => {
-                writeln!(f, "Timeout error after {} attempts:", errors.len())?;
-                for err in errors.iter() {
-                    write!(f, "{err}")?;
-                }
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-}
-*/

@@ -6,10 +6,9 @@ use crate::{
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
     error::TaskRepositoryError,
     monitor::task::{
-        PollStatus, TaskData, TaskEntity, TaskHistory, TaskId, TaskMeta, TaskPollConfig,
-        TaskSnapshot, TaskUpdateDto,
+        PollStatus, TaskEntity, TaskHistory, TaskId, TaskMeta, TaskSnapshot, TaskUpdateDto,
     },
-    polling::{Metrics, PollResult},
+    polling::{Metrics, PollConfig, PollResult},
     utils::format_moscow_human,
 };
 use chrono::{DateTime, Local};
@@ -89,21 +88,16 @@ impl TaskRepository {
     pub fn add_task(
         &mut self,
         meta: TaskMeta,
-        poll_config: Option<TaskPollConfig>,
+        poll_config: Option<PollConfig>,
         task_snapshot: Option<TaskSnapshot>,
         history: Option<TaskHistory>,
     ) -> TaskId {
         let id = self.id_gen.next();
         let task_snaphot = task_snapshot.unwrap_or_else(|| TaskSnapshot::new());
         let poll_config = poll_config.unwrap_or_default();
+        let history = history.unwrap_or_default();
 
-        let task = TaskEntity::new(
-            id.clone(),
-            meta,
-            task_snaphot,
-            poll_config,
-            history.unwrap_or_default(),
-        );
+        let task = TaskEntity::new(id.clone(), meta, task_snaphot, poll_config, history);
 
         self.tasks.insert(id.clone(), task);
         self.order_ids.push(id.clone());
@@ -131,7 +125,6 @@ impl TaskRepository {
         &mut self,
         task_id: &TaskId,
         to_update: TaskUpdateDto,
-        //snapshot: TaskSnapshotUpdate,
     ) -> Result<(), TaskRepositoryError> {
         let target = self
             .get_mut_task(task_id)

@@ -7,11 +7,11 @@ use crate::{
     monitor::{
         TaskRepository,
         application::{UseCase, config::TaskSpec},
-        task::{PollStatus, TaskEntity, TaskId, TaskSnapshot, TaskUpdateDto},
+        task::{PollStatus, TaskEntity, TaskHistory, TaskId, TaskSnapshot, TaskUpdateDto},
     },
-    polling::AttemptConfig,
-    polling::worker::{
-        PollWorker, WorkerCommand, WorkerEvent, WorkerHandle, WorkerId, WorkerState,
+    polling::{
+        AttemptConfig,
+        worker::{PollWorker, WorkerCommand, WorkerEvent, WorkerHandle, WorkerId, WorkerState},
     },
 };
 
@@ -127,20 +127,19 @@ impl Orchestrator {
     }
 
     async fn add_task(&mut self, spec: TaskSpec) -> Result<TaskId, OrchestratorError> {
-        let attempt: AttemptConfig = spec.poll_config.attempt.clone().into();
+        let attempt: AttemptConfig = spec.poll_config.attempt;
         let use_case = UseCase::build(spec.query.clone(), attempt).await?;
 
-        let task_id =
-            self.repository
-                .add_task(spec.meta.clone(), Some(spec.poll_config.clone()), None, None);
+        let task_id = self.repository.add_task(
+            spec.meta.clone(),
+            Some(spec.poll_config.clone()),
+            None,
+            spec.deep_history.map(|deep| TaskHistory::new(deep)),
+        );
 
         let worker_id = WorkerId(task_id.0);
-        let handle = PollWorker::spawn(
-            worker_id,
-            use_case,
-            spec.poll_config.clone().into(), // TaskPollConfig -> PollConfig
-            self.events_tx.clone(),
-        );
+        let handle =
+            PollWorker::spawn(worker_id, use_case, spec.poll_config, self.events_tx.clone());
 
         self.worker_to_task.insert(worker_id, task_id.clone());
         self.workers.insert(
@@ -187,7 +186,7 @@ impl Orchestrator {
 
         let update = TaskUpdateDto {
             snapshot: Some(snapshot),
-            poll_config: Some(event.poll_config.into()), // PollConfig -> TaskPollConfig
+            poll_config: Some(event.poll_config),
         };
 
         if self.repository.update_task(&task_id, update).is_ok()
@@ -207,7 +206,7 @@ impl From<WorkerState> for PollStatus {
             WorkerState::Idle => Self::Idle,
             WorkerState::Running => Self::Active,
             WorkerState::Stopped => Self::Paused,
-            WorkerState::RatedLimit => Self::RateLimit,
+            WorkerState::RatedLimit => Self::RatedLimit,
         }
     }
 }

@@ -7,6 +7,7 @@ pub enum PollResult {
     Fail { message: String },
     Success(Response<UseCaseOutput>),
 }
+
 impl From<Response<UseCaseOutput>> for PollResult {
     fn from(r: Response<UseCaseOutput>) -> Self {
         Self::Success(r)

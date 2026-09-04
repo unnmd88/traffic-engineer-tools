@@ -28,7 +28,7 @@ struct TaskConfigDto {
     name: String,
     interval_seconds: u64,
     limit: u64,
-    deep_history: u8,
+    deep_history: Option<u8>,
     attempt_config: PollTimingsDto,
     query: TaskDto,
 }
