@@ -6,7 +6,7 @@ use std::{
 use crate::{
     SnmpError,
     error::{PollError, UpdateError},
-    polling::{Pollable, Updateble},
+    polling::Pollable,
     snmp::{
         SnmpGetQueryItem, SnmpReadClient,
         business_value::BusinessValue,
@@ -78,25 +78,6 @@ impl SnmpReader {
             query_items,
             request,
         })
-    }
-}
-
-#[async_trait]
-impl Updateble for SnmpReader {
-    type Instance = Self;
-
-    async fn update(self) -> Result<Self::Instance, UpdateError> {
-        let config = self.client.config().clone();
-        let new_client = SnmpReadClient::new(config)
-            .await
-            .map_err(|e| UpdateError::Adapter {
-                message: format!("Fail to create snmp-read client: {e}"),
-            })?;
-        Ok(Self::new(new_client, self.request, self.profile)
-            .await
-            .map_err(|e| UpdateError::Adapter {
-                message: format!("Fail update: {e}"),
-            })?)
     }
 }
 

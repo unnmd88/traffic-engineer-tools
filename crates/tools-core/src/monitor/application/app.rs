@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use derive_more::Display;
 use itertools::Itertools;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::mpsc;
 use tokio::{
     sync::{broadcast, oneshot},
     time::Duration,
@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::error::ApplicationError;
 use crate::monitor::task::{TaskAttemptPollConfig, TaskPollConfig};
 use crate::polling::PollConfig;
-use crate::polling::worker::{PollWorker, WorkerCommand, WorkerId};
+use crate::polling::worker::{PollWorker, WorkerCommand, WorkerHandle, WorkerId};
 use crate::snmp::SnmpReadClientConfig;
 use crate::snmp::adapters::SnmpReader;
 use crate::snmp::parsers::site_id_ug405_potok;
@@ -54,15 +54,9 @@ pub enum ApplicationState {
 }
 
 #[derive(Debug)]
-struct WorkerControl {
-    cmd_tx: mpsc::Sender<WorkerCommand>,
-    join_handle: JoinHandle<()>,
-}
-
-#[derive(Debug)]
 pub struct TaskWorker {
     worker_id: WorkerId,
-    worker_control: WorkerControl,
+    worker_control: WorkerHandle,
 }
 
 pub struct Application {
@@ -108,7 +102,6 @@ impl Application {
             };
 
             let worker_id = WorkerId::new(i as u64);
-            let (worker_cmd_tx, worker_cmd_rx) = mpsc::channel(32);
 
             //let poller_factory = PollerFactory::new(poll_config);
             let task_history = TaskHistory::new(task.deep_history);
@@ -160,22 +153,12 @@ impl Application {
 
                     let adapter = SnmpReader::new(snmp_client, sanitized_oids, profile).await?;
 
-                    let worker_interval = Duration::from_millis(task.interval_ms);
-                    let worker = PollWorker::new(
+                    let worker_control = PollWorker::spawn(
                         worker_id,
                         adapter,
                         worker_poll_config,
                         worker_tx.clone(),
-                        worker_cmd_rx,
                     );
-                    let join_handle = tokio::spawn(worker.run());
-
-                    //let worker = Worker::new(worker_id, poller, worker_interval);
-                    //let join_handle = tokio::spawn(worker.run(worker_tx.clone(), worker_cmd_rx));
-                    let worker_control = WorkerControl {
-                        cmd_tx: worker_cmd_tx,
-                        join_handle,
-                    };
 
                     let meta = TaskMeta {
                         protocol: Protocol::Snmp,
@@ -217,15 +200,15 @@ impl Application {
             task_binding: tasks_binding,
             state: ApplicationState::Idle,
             tasksrepo_manager_tx: repo_cmd_tx,
-            //repository_tx,
         })
     }
 
     pub async fn start(&mut self) -> ApplicationState {
         if matches!(self.state, ApplicationState::Idle) {
             for tw in self.task_binding.values() {
-                tw.worker_control.cmd_tx.send(WorkerCommand::Start).await;
+                tw.worker_control.send(WorkerCommand::Start).await;
             }
+
             self.state = ApplicationState::Runnig;
         }
         self.state

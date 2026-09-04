@@ -3,21 +3,22 @@ use tokio::sync::mpsc;
 use crate::error::PollError;
 use crate::polling::config::PollConfig;
 use crate::polling::worker::env::WorkerEvent;
-use crate::polling::worker::{WorkerCommand, WorkerId, WorkerState};
-use crate::polling::{Metrics, PollResult, Pollable, Response, Updateble, poll};
+use crate::polling::worker::{WorkerCommand, WorkerHandle, WorkerId, WorkerState};
+use crate::polling::{Metrics, PollResult, Pollable, Response, poll::poll};
 
-pub struct PollWorker<A: Pollable + Updateble> {
+pub struct PollWorker<A: Pollable> {
     id: WorkerId,
     state: WorkerState,
     metrics: Metrics,
-    tx: mpsc::Sender<WorkerEvent>,
-    cmd_rx: mpsc::Receiver<WorkerCommand>,
+    event_tx: mpsc::Sender<WorkerEvent>,
+    tx: mpsc::Sender<WorkerCommand>,
+    mailbox: mpsc::Receiver<WorkerCommand>,
     poll_config: PollConfig,
     adapter: A,
     interval_tick: tokio::time::Interval,
 }
 
-impl<A: Pollable + Updateble<Instance = A>> PollWorker<A>
+impl<A: Pollable> PollWorker<A>
 where
     PollResult: From<Response<A::Output>>,
 {
@@ -25,9 +26,9 @@ where
         id: WorkerId,
         adapter: A,
         poll_config: PollConfig,
-        tx: mpsc::Sender<WorkerEvent>,
-        cmd_rx: mpsc::Receiver<WorkerCommand>,
+        event_tx: mpsc::Sender<WorkerEvent>,
     ) -> Self {
+        let (tx, mailbox) = mpsc::channel::<WorkerCommand>(32);
         Self {
             state: WorkerState::Idle,
             id,
@@ -35,9 +36,14 @@ where
             metrics: Metrics::default(),
             adapter,
             interval_tick: tokio::time::interval(poll_config.interval),
+            event_tx,
             tx,
-            cmd_rx,
+            mailbox,
         }
+    }
+
+    pub fn tx(&self) -> mpsc::Sender<WorkerCommand> {
+        self.tx.clone()
     }
 
     #[tracing::instrument(name = "poll_worker", skip_all, fields(worker_id = %self.id))]
@@ -46,7 +52,7 @@ where
 
         loop {
             tokio::select! {
-                cmd = self.cmd_rx.recv() => {
+                cmd = self.mailbox.recv() => {
                     let Some(cmd) = cmd else {
                         tracing::info!("mailbox closed, worker stopped");
                         break;
@@ -58,6 +64,21 @@ where
                 }
             }
         }
+    }
+
+    pub fn spawn(
+        id: WorkerId,
+        adapter: A,
+        poll_config: PollConfig,
+        events_tx: mpsc::Sender<WorkerEvent>,
+    ) -> WorkerHandle
+    where
+        A: 'static, // ← метод-level bound
+    {
+        let worker = Self::new(id, adapter, poll_config, events_tx);
+        let mailbox = worker.tx();
+        let join_handle = tokio::spawn(worker.run());
+        WorkerHandle::new(mailbox, join_handle)
     }
 
     async fn handle_tick(&mut self) {
@@ -98,7 +119,7 @@ where
             metrics: self.metrics.clone(),
             poll_result,
         };
-        if self.tx.send(event).await.is_err() {
+        if self.event_tx.send(event).await.is_err() {
             tracing::warn!("receiver dropped");
         }
     }

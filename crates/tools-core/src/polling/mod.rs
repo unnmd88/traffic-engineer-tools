@@ -5,7 +5,6 @@ mod poll_result;
 mod pollable;
 mod poller;
 mod response;
-mod updateble;
 pub mod worker;
 
 pub use config::{AttemptConfig, PollConfig};
@@ -15,4 +14,3 @@ pub use poll_result::PollResult;
 pub use pollable::Pollable;
 pub use poller::Poller;
 pub use response::Response;
-pub use updateble::Updateble;
