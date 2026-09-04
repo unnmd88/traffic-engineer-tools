@@ -1,14 +1,8 @@
 
-too_many_arguments_threshold = 10
-type_complexity_threshold = 250
-enum_variant_name_threshold = 3
-struct_field_name_threshold = 3
-large_enum_variant_threshold = 100
-[clippy.lints]
-pedantic = "warn"
-nursery = "warn"
-cargo = "warn"
-# Отключаем слишком строгие
-clippy::module_name_repetitions = "allow"
-clippy::must_use_candidate = "allow"
-clippy::missing_errors_doc = "allow"
+too-many-arguments-threshold = 5
+type-complexity-threshold = 250
+enum-variant-name-threshold = 8
+struct-field-name-threshold = 12
+enum-variant-size-threshold = 20
+
+

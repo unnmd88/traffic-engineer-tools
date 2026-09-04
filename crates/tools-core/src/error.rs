@@ -1,6 +1,33 @@
-use thiserror::Error;
+use std::{
+    fmt::{self, Display, Formatter},
+    net::{IpAddr, SocketAddr},
+};
 
-#[derive(Error, Debug)]
+use async_snmp::StorageType;
+use thiserror::Error;
+use tokio::time::Duration;
+
+#[derive(Debug, Clone)]
+pub struct PollErrorContext {
+    pub attempt: u8,
+    pub elapsed: Duration,
+    pub message: String,
+}
+
+impl Display for PollErrorContext {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "attempt: {} elapsed_ms: {} message: {}",
+            self.attempt,
+            self.elapsed.as_millis(),
+            &self.message
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Error, Debug, Clone)]
 pub enum Error {
     #[error("Invalid value: {0}")]
     InvalidValue(String),
@@ -8,24 +35,174 @@ pub enum Error {
     Ascii(#[from] AsciiError),
     #[error("SNMP error: {0}")]
     Snmp(#[from] SnmpError),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("Poll error: {0}")]
+    Poll(#[from] PollError),
+    //#[error("IO error: {0}")]
+    //Io(#[from] std::io::Error),
     #[error("Not found: {0}")]
     NotFound(String),
+    #[error("No response: {0}")]
+    NoResponse(String),
+    #[error("ParseError error: {0}")]
+    Parse(#[from] ParseError),
     #[error("Internal error: {0}")]
     Internal(String),
+    #[error("Create `Monitor` error: {0}")]
+    CreateMonitorError(#[from] CreateMonitorError),
+    #[error("Update error: {0}")]
+    Update(#[from] UpdateError),
+    #[error("{0}")]
+    Adapter(#[from] AdapterError),
+    #[error("{0}")]
+    TaskRepository(#[from] TaskRepositoryError),
+    #[error("{0}")]
+    Application(#[from] ApplicationError),
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
+pub enum UpdateError {
+    #[error("Can`t create ada adapter {message}")]
+    Adapter { message: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum ApplicationError {
+    #[error("Cat`n subscribe to for task repository updates: {reason}")]
+    RepositorySubscribe { reason: String },
+    #[error("Cat`n get snapshot of task repository: {reason}")]
+    GetSnapshot { reason: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum TaskRepositoryError {
+    #[error("Task with id={task_id} not fond in repository.")]
+    TaskNotFound { task_id: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum AdapterError {
+    #[error("{message}")]
+    Create { message: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum CreateMonitorError {
+    #[error("Can`t create snmp-driver. Try again later.")]
+    SnmpClientCreate,
+    #[error("Invalid ip-address: {ip}. Task position: {task_idx}")]
+    InvalidIpAddress { task_idx: usize, ip: String },
+    #[error("{message}")]
+    InvalidSnmpProfile { message: String },
+    #[error("Task #{task_idx}: {message}")]
+    SnmpProfileMustBeProvided { message: String, task_idx: usize },
+    #[error("Task #{task_idx}, OID at position {pos}: unknown alias '{alias}'")]
+    UnknownAlias {
+        task_idx: usize,
+        pos: usize,
+        alias: String,
+    },
+    #[error("Community string can`t be empty. Task position: {task_idx}")]
+    SnmpCommunityIsEmpty { task_idx: usize },
+    #[error("Invalid length for community string. Task position: {task_idx}")]
+    SnmpCommunityInvalidLength {
+        task_idx: usize,
+        min: usize,
+        max: usize,
+        provide: usize,
+    },
+    #[error("Invalid snmp-oid(pos: {pos}): {oid}. Task position: {task_idx}")]
+    InvalidSnmpOid {
+        task_idx: usize,
+        oid: String,
+        pos: usize,
+    },
+    #[error("Error to set scn. Profile: {profile}, Reason: {message}")]
+    ScnError { profile: String, message: String },
+    #[error("{0}")]
+    Other(String),
+}
+
+/*
+#[derive(Error, Debug, Clone)]
+pub enum SnapShotError {
+    #[error("Can`t update Snapshot(id={snapshot_id}). Worker with id: {worker_id} not found.")]
+    UpdateWorkerNotFound {
+        snapshot_id: String,
+        worker_id: String,
+    },
+}
+*/
+
+#[derive(Error, Debug, Clone)]
+pub enum ParseError {
+    #[error("Invalid length: {message} (min: {min}, max: {max}, got: {provide})")]
+    InvalidLength {
+        message: String,
+        min: usize,
+        max: usize,
+        provide: usize,
+    },
+    #[error("Expected {expected}, but got {actual}")]
+    InvalidType { expected: String, actual: String },
+    #[error("{name} can`t be empty")]
+    CantBeEmpty { name: String },
+    #[error("{message}")]
+    Common { message: String },
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum PollError {
+    #[error("\nDetails:\nRetries: {}\nErrors: {}", 
+        errors.len(),
+        /*
+        if let Some(name) = name {
+            format!("Name: {} ", name)
+        } else {
+            "".to_string()
+        },
+*/
+        errors.iter().enumerate().map(|(i, e)| {
+            format!("{}: {e}", i + 1)
+        }).collect::<Vec<String>>().join("\n")
+    )]
+    NoResponse {
+        //target: String,
+        //name: Option<String>,
+        //retries: u8,
+        errors: Vec<PollErrorContext>,
+    },
+    #[error("{message}")]
+    Other { message: String },
+}
+
+#[derive(Error, Debug, Clone)]
 pub enum SnmpError {
+    #[error("authentication failed for {target}")]
+    Auth { target: SocketAddr },
+    #[error("SNMP error: timeout error for {target} with {retries} retries")]
+    RequestTimeOut { target: SocketAddr, retries: u32 },
     #[error("Timeout while connecting to host {0}")]
     TimeOut(String),
     #[error("Host {0} is unreachable")]
     HostUnreachable(String),
     #[error("Invalid OID: {0}")]
     InvalidOid(String),
-    #[error("Unknown SNMP error: {0}")]
-    Other(String),
+    #[error("Failed to connect to {target}:{port}.")]
+    ConnectionFailed { target: IpAddr, port: u16 },
+    #[error("Error parse raw SNMP value: {0}")]
+    ParseRawValue(String),
+    #[error("Unexpected value in oid: expected: {expected} actual: {actual}")]
+    UnexpectedValueType { expected: String, actual: String },
+    #[error("Error to set scn. Profile: {profile}, Reason: {message}")]
+    ScnError { profile: String, message: String },
+    #[error("Can`t resolve oid: {0}")]
+    ResolveOid(String),
+    #[error("Internal SNMP error: {0}")]
+    Internal(String),
+    #[error("Convert bytes to scn error: {0}")]
+    ConvertScn(String),
+    #[error("Unsupported value for snmp-set: {value}")]
+    UnsupportedForSet { value: String },
 }
 
 #[derive(Debug, Clone, Error)]
