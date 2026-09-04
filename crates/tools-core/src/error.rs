@@ -47,8 +47,9 @@ pub enum Error {
     Parse(#[from] ParseError),
     #[error("Internal error: {0}")]
     Internal(String),
-    #[error("Create `Monitor` error: {0}")]
-    CreateMonitorError(#[from] CreateMonitorError),
+
+    #[error("Build `Monitor` error: {0}")]
+    BuildMonitorError(#[from] BuildMonitorError),
     #[error("Update error: {0}")]
     Update(#[from] UpdateError),
     #[error("{0}")]
@@ -57,6 +58,18 @@ pub enum Error {
     TaskRepository(#[from] TaskRepositoryError),
     #[error("{0}")]
     Application(#[from] ApplicationError),
+    #[error("{0}")]
+    Orchestrator(#[from] OrchestratorError),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum OrchestratorError {
+    #[error("build use-case failed: {0}")]
+    Build(#[from] BuildMonitorError),
+    #[error(transparent)]
+    TaskRepository(#[from] TaskRepositoryError),
+    #[error("orchestrator channel closed")]
+    ChannelClosed,
 }
 
 #[derive(Error, Debug, Clone)]
@@ -86,52 +99,30 @@ pub enum AdapterError {
 }
 
 #[derive(Error, Debug, Clone)]
-pub enum CreateMonitorError {
-    #[error("Can`t create snmp-driver. Try again later.")]
+pub enum BuildMonitorError {
+    #[error("Can't create snmp-driver. Try again later.")]
     SnmpClientCreate,
-    #[error("Invalid ip-address: {ip}. Task position: {task_idx}")]
-    InvalidIpAddress { task_idx: usize, ip: String },
+    #[error("Invalid ip-address: {ip}")]
+    InvalidIpAddress { ip: String },
     #[error("{message}")]
     InvalidSnmpProfile { message: String },
-    #[error("Task #{task_idx}: {message}")]
-    SnmpProfileMustBeProvided { message: String, task_idx: usize },
-    #[error("Task #{task_idx}, OID at position {pos}: unknown alias '{alias}'")]
-    UnknownAlias {
-        task_idx: usize,
-        pos: usize,
-        alias: String,
-    },
-    #[error("Community string can`t be empty. Task position: {task_idx}")]
-    SnmpCommunityIsEmpty { task_idx: usize },
-    #[error("Invalid length for community string. Task position: {task_idx}")]
+    #[error("{message}")]
+    SnmpProfileMustBeProvided { message: String },
+    #[error("OID at position {pos}: unknown alias '{alias}'")]
+    UnknownAlias { pos: usize, alias: String },
+    #[error("Community string can't be empty")]
+    SnmpCommunityIsEmpty,
+    #[error("Invalid length for community string (min: {min}, max: {max}, got: {provide})")]
     SnmpCommunityInvalidLength {
-        task_idx: usize,
         min: usize,
         max: usize,
         provide: usize,
     },
-    #[error("Invalid snmp-oid(pos: {pos}): {oid}. Task position: {task_idx}")]
-    InvalidSnmpOid {
-        task_idx: usize,
-        oid: String,
-        pos: usize,
-    },
-    #[error("Error to set scn. Profile: {profile}, Reason: {message}")]
-    ScnError { profile: String, message: String },
+    #[error("Invalid snmp-oid(pos: {pos}): {oid}")]
+    InvalidSnmpOid { pos: usize, oid: String },
     #[error("{0}")]
     Other(String),
 }
-
-/*
-#[derive(Error, Debug, Clone)]
-pub enum SnapShotError {
-    #[error("Can`t update Snapshot(id={snapshot_id}). Worker with id: {worker_id} not found.")]
-    UpdateWorkerNotFound {
-        snapshot_id: String,
-        worker_id: String,
-    },
-}
-*/
 
 #[derive(Error, Debug, Clone)]
 pub enum ParseError {
@@ -154,23 +145,11 @@ pub enum ParseError {
 pub enum PollError {
     #[error("\nDetails:\nRetries: {}\nErrors: {}", 
         errors.len(),
-        /*
-        if let Some(name) = name {
-            format!("Name: {} ", name)
-        } else {
-            "".to_string()
-        },
-*/
         errors.iter().enumerate().map(|(i, e)| {
             format!("{}: {e}", i + 1)
         }).collect::<Vec<String>>().join("\n")
     )]
-    NoResponse {
-        //target: String,
-        //name: Option<String>,
-        //retries: u8,
-        errors: Vec<PollErrorContext>,
-    },
+    NoResponse { errors: Vec<PollErrorContext> },
     #[error("{message}")]
     Other { message: String },
 }

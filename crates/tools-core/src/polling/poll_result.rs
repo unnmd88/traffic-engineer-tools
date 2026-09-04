@@ -1,18 +1,14 @@
-use crate::{PollErrorContext, polling::Response, snmp::SnmpGetResponse};
+use crate::{PollErrorContext, monitor::application::UseCaseOutput, polling::Response};
 
 #[derive(Clone, Debug)]
 pub enum PollResult {
     Initial,
     NoResponse(Vec<PollErrorContext>),
     Fail { message: String },
-    SnmpGet(Response<SnmpGetResponse>),
-    // остальные use-cases
+    Success(Response<UseCaseOutput>),
 }
-
-impl From<Response<SnmpGetResponse>> for PollResult {
-    fn from(response: Response<SnmpGetResponse>) -> Self {
-        PollResult::SnmpGet(response)
+impl From<Response<UseCaseOutput>> for PollResult {
+    fn from(r: Response<UseCaseOutput>) -> Self {
+        Self::Success(r)
     }
 }
-
-// Остальные реализации для каждого use-case для PollResult

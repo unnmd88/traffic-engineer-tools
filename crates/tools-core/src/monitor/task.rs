@@ -12,7 +12,7 @@ use tokio::time::Duration;
 
 use crate::{
     constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
-    polling::{AttemptConfig, Metrics, PollResult},
+    polling::{AttemptConfig, Metrics, PollConfig, PollResult},
 };
 use tracing::{debug, error, info, warn};
 
@@ -120,6 +120,46 @@ impl Default for TaskPollConfig {
                 retries: 0,
                 retry_delay: Duration::new(0, 0),
             },
+        }
+    }
+}
+
+impl From<TaskAttemptPollConfig> for AttemptConfig {
+    fn from(v: TaskAttemptPollConfig) -> Self {
+        Self {
+            timeout: v.timeout,
+            retries: v.retries,
+            retry_delay: v.retry_delay,
+        }
+    }
+}
+
+impl From<AttemptConfig> for TaskAttemptPollConfig {
+    fn from(v: AttemptConfig) -> Self {
+        Self {
+            timeout: v.timeout,
+            retries: v.retries,
+            retry_delay: v.retry_delay,
+        }
+    }
+}
+
+impl From<TaskPollConfig> for PollConfig {
+    fn from(v: TaskPollConfig) -> Self {
+        Self {
+            interval: v.interval,
+            limit: v.limit,
+            attempt: v.attempt.into(),
+        }
+    }
+}
+
+impl From<PollConfig> for TaskPollConfig {
+    fn from(v: PollConfig) -> Self {
+        Self {
+            interval: v.interval,
+            limit: v.limit,
+            attempt: v.attempt.into(),
         }
     }
 }

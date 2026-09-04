@@ -4,7 +4,7 @@ use super::format_oids;
 use chrono::{DateTime, Local};
 use tools_core::DT_FMT;
 use tools_core::monitor::TaskRepository;
-use tools_core::monitor::application::app::ApplicationId;
+use tools_core::monitor::application::{UseCaseOutput, app::ApplicationId};
 use tools_core::polling::PollResult;
 
 /*
@@ -64,10 +64,12 @@ pub fn format_repository(repo: &TaskRepository) -> String {
 
         // Response
         match task_snapshot.poll_result() {
-            PollResult::SnmpGet(response) => {
-                output.push_str("Snmp-get response:\n");
-                output.push_str(&format_oids(&response.payload.samples));
-                output.push('\n');
+            PollResult::Success(response) => {
+                if let UseCaseOutput::SnmpGet(snmp) = &response.payload {
+                    output.push_str("Snmp-get response:\n");
+                    output.push_str(&format_oids(&snmp.samples));
+                    output.push('\n');
+                }
             }
             PollResult::NoResponse(errors) => {
                 output.push_str(&format!("No response: {} attempts\n", errors.len()));
