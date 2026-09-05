@@ -2,8 +2,8 @@ use crate::monitor::formatters::constants::{LINE_DOTTED_LN, LINE_THIN_LN};
 
 use super::format_oids;
 use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::TaskRepository;
-use tools_core::monitor::application::UseCaseOutput;
+use tools_core::monitor::task::TaskRepository;
+use tools_core::monitor::usecase::UseCaseOutput;
 use tools_core::polling::PollResult;
 
 pub fn format_repository(repo: &TaskRepository) -> String {

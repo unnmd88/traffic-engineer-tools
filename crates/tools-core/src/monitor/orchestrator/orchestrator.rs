@@ -7,9 +7,8 @@ use futures_util::FutureExt;
 use crate::{
     error::OrchestratorError,
     monitor::{
-        TaskRepository,
-        application::{UseCase, config::TaskSpec},
-        task::{PollStatus, TaskEntity, TaskId, TaskSnapshot},
+        task::{PollStatus, TaskEntity, TaskId, TaskRepository, TaskSnapshot, TaskSpec},
+        usecase::UseCase,
     },
     polling::worker::{PollWorker, WorkerEvent, WorkerHandle, WorkerId},
 };

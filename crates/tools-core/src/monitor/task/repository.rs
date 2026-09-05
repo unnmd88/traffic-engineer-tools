@@ -2,10 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     error::TaskRepositoryError,
-    monitor::{
-        application::config::TaskSpec,
-        task::{PollStatus, TaskEntity, TaskId, TaskSnapshot},
-    },
+    monitor::task::{PollStatus, TaskEntity, TaskId, TaskSnapshot, TaskSpec},
 };
 use chrono::{DateTime, Local};
 use itertools::Itertools;
@@ -189,8 +186,8 @@ impl TaskRepository {
                 None => {
                     error!(
                         target: "task_repository",
-                            task_id = ?id,
-                            "TaskId has in order, but not found in `tasks`"
+                        task_id = ?id,
+                        "TaskId has in order, but not found in `tasks`"
                     );
                     None
                 }

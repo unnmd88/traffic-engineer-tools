@@ -1,31 +1,10 @@
 use std::{collections::VecDeque, mem};
 
 use crate::{
-    monitor::application::config::{TaskSpec, UseCaseQuery},
+    monitor::task::{PollStatus, TaskId, TaskSpec, UseCaseQuery},
     polling::{Metrics, PollConfig, PollResult},
 };
 use chrono::{DateTime, Local};
-use derive_more::{Constructor, Display};
-
-#[derive(Clone, Debug, Copy, Display)]
-pub enum Protocol {
-    Snmp,
-    Http,
-    Modbus,
-}
-
-#[derive(Clone, Debug, Copy, Display)]
-pub enum TypeQuery {
-    SnmpGet,
-}
-
-#[derive(Clone, Debug, Copy, Display)]
-pub enum PollStatus {
-    Idle,
-    Active,
-    Paused,
-    RatedLimit,
-}
 
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
@@ -134,9 +113,6 @@ impl Default for TaskSnapshot {
         }
     }
 }
-
-#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
-pub struct TaskId(pub u64);
 
 #[derive(Clone, Debug)]
 pub struct TaskEntity {

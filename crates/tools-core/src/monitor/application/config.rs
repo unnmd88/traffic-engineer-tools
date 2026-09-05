@@ -2,19 +2,37 @@ use tokio::time::Duration;
 
 use crate::{
     error::Error,
-    monitor::application::config::{Query, TaskConfigDto, UseCaseQuery},
+    monitor::task::{QuerySnmpGet, TaskSpec, UseCaseQuery},
     polling::{AttemptConfig, PollConfig},
 };
 
 const DEFAULT_HISTORY_DEPTH: u8 = 3;
 
-// Спека задачи — валидированное декларативное описание (Spec).
-#[derive(Clone, Debug)]
-pub struct TaskSpec {
+#[derive(Debug)]
+pub struct AppConfig {
+    pub tasks: Vec<TaskConfigDto>,
+}
+
+#[derive(Debug)]
+pub struct AttemptPollTimingsDto {
+    pub timeout_ms: u64,
+    pub retries: u8,
+    pub retry_delay_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct TaskConfigDto {
     pub name: String,
-    pub query: UseCaseQuery,
-    pub poll_config: PollConfig,
-    pub deep_history: u8,
+    pub attempt_timings: AttemptPollTimingsDto,
+    pub interval_ms: u64,
+    pub limit: u64,
+    pub deep_history: Option<u8>,
+    pub query: Query,
+}
+
+#[derive(Debug)]
+pub enum Query {
+    SnmpGet(QuerySnmpGet),
 }
 
 impl TryFrom<TaskConfigDto> for TaskSpec {

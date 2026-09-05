@@ -1,5 +1,5 @@
-mod env;
+mod types;
 mod worker;
 
-pub use env::{WorkerEvent, WorkerHandle, WorkerId};
+pub use types::{WorkerEvent, WorkerHandle, WorkerId};
 pub use worker::PollWorker;

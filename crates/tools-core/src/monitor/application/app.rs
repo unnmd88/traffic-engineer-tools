@@ -5,9 +5,9 @@ use uuid::Uuid;
 use crate::{
     error::Error,
     monitor::{
-        TaskRepository,
-        application::{Orchestrator, OrchestratorEvent, OrchestratorHandle, config::AppConfig},
-        task::TaskId,
+        application::config::AppConfig,
+        orchestrator::{Orchestrator, OrchestratorEvent, OrchestratorHandle},
+        task::{TaskId, TaskRepository},
     },
 };
 

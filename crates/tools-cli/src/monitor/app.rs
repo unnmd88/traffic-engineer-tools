@@ -1,11 +1,11 @@
 use anyhow::Context;
 use serde::Deserialize;
-use tools_core::monitor::application::{
-    app::Application,
-    config::{
-        AppConfig, AttemptPollTimingsDto, Query, QuerySnmpGet, SnmpOidItem,
-        TaskConfigDto as AppTaskConfigDto,
+use tools_core::monitor::{
+    application::{
+        app::Application,
+        config::{AppConfig, AttemptPollTimingsDto, Query, TaskConfigDto as AppTaskConfigDto},
     },
+    task::{QuerySnmpGet, SnmpOidItem},
 };
 
 use crate::monitor::queries::snmpget::SnmpGetQueryDto;

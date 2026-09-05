@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 
 use crate::error::PollError;
 use crate::polling::config::PollConfig;
-use crate::polling::worker::env::WorkerEvent;
+use crate::polling::worker::types::WorkerEvent;
 use crate::polling::worker::WorkerId;
 use crate::polling::{Metrics, PollResult, Pollable, Response, poll::poll};
 

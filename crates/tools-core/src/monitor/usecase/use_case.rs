@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::{
     error::{BuildMonitorError, ParseError, PollError},
-    monitor::application::config::{QuerySnmpGet, SnmpOidItem, UseCaseQuery},
+    monitor::task::{QuerySnmpGet, SnmpOidItem, UseCaseQuery},
     polling::{AttemptConfig, Pollable},
     snmp::{
         SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, adapters::SnmpReader,

@@ -4,7 +4,7 @@ mod cli;
 use cli::Cli;
 use tools_core::{
     DT_FMT,
-    monitor::{application::OrchestratorEvent, task::TaskId},
+    monitor::{orchestrator::OrchestratorEvent, task::TaskId},
 };
 use tracing::{error, info};
 mod logging;

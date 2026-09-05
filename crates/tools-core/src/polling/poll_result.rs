@@ -1,4 +1,4 @@
-use crate::{PollErrorContext, monitor::application::UseCaseOutput, polling::Response};
+use crate::{PollErrorContext, monitor::usecase::UseCaseOutput, polling::Response};
 
 #[derive(Clone, Debug)]
 pub enum PollResult {
