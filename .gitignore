@@ -43,3 +43,9 @@ target/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Agent/workspace instructions (local only)
+AGENTS.md
+
+# Compiled binaries
+/tctl
