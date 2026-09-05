@@ -4,7 +4,7 @@ pub mod parsers;
 mod query;
 pub mod registry;
 mod response;
-pub use client::{SnmpReadClient, SnmpReadClientConfig};
+pub use client::{SnmpClient, SnmpClientConfig};
 pub use query::SnmpGetQueryItem;
 pub mod business_value;
 pub mod community;

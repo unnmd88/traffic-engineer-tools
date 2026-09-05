@@ -8,7 +8,7 @@ use crate::{
     error::{PollError, UpdateError},
     polling::Pollable,
     snmp::{
-        SnmpGetQueryItem, SnmpReadClient,
+        SnmpGetQueryItem, SnmpClient,
         business_value::BusinessValue,
         oid::SnmpOid,
         oid_metadata::OidMetadata,
@@ -30,7 +30,7 @@ struct InnerQueryItem {
 }
 
 pub struct SnmpReader {
-    client: SnmpReadClient,
+    client: SnmpClient,
     profile: Option<SnmpProfile>,
     oids_to_request: Vec<SnmpOid>,
     query_items: Vec<InnerQueryItem>,
@@ -39,7 +39,7 @@ pub struct SnmpReader {
 
 impl SnmpReader {
     pub async fn new(
-        client: SnmpReadClient,
+        client: SnmpClient,
         request: Vec<SnmpGetQueryItem>,
         profile: Option<SnmpProfile>,
     ) -> Result<Self, SnmpError> {

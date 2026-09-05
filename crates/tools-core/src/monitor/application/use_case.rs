@@ -8,7 +8,7 @@ use crate::{
     monitor::application::config::{QuerySnmpGet, SnmpOidItem, UseCaseQuery},
     polling::{AttemptConfig, Pollable},
     snmp::{
-        SnmpGetQueryItem, SnmpGetResponse, SnmpReadClient, SnmpReadClientConfig,
+        SnmpGetQueryItem, SnmpGetResponse, SnmpClient, SnmpClientConfig,
         adapters::SnmpReader, community::Community, oid::SnmpOid, profiles::SnmpProfile,
     },
 };
@@ -57,7 +57,7 @@ impl UseCase {
         let community = parse_community(&q.community)?;
         let profile = parse_profile(q.profile)?;
 
-        let client_config = SnmpReadClientConfig {
+        let client_config = SnmpClientConfig {
             target,
             port: q.port,
             community,
@@ -68,7 +68,7 @@ impl UseCase {
             retry_delay: attempt.retry_delay,
         };
 
-        let client = SnmpReadClient::new(client_config)
+        let client = SnmpClient::new(client_config)
             .await
             .map_err(|_| BuildMonitorError::SnmpClientCreate)?;
 

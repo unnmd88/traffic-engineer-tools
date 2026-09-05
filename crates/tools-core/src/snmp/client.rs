@@ -1,9 +1,7 @@
-use anyhow::Result;
 use std::net::{IpAddr, SocketAddr};
-use tokio::time::Duration;
 
-use async_snmp::{Auth, Client, Oid, Retry, VarBind};
-use serde::Serialize;
+use async_snmp::{Auth, Client, Retry};
+use tokio::time::Duration;
 
 use crate::{
     SnmpError,
@@ -11,7 +9,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct SnmpReadClientConfig {
+pub struct SnmpClientConfig {
     pub target: IpAddr,
     pub port: u16,
     pub community: Community,
@@ -20,64 +18,40 @@ pub struct SnmpReadClientConfig {
     pub retry_delay: Duration,
 }
 
-async fn create_inner_client(
-    target: IpAddr,
-    port: u16,
-    community: Community,
-    timeout: Duration,
-    retries: u32,
-    retry_delay: Duration,
-) -> Result<Client, SnmpError> {
-    let client = Client::builder((target.to_string(), port), Auth::v2c(community))
-        .timeout(timeout)
-        .retry(if retries > 0 {
-            Retry::fixed(retries, retry_delay)
-        } else {
-            Retry::none()
-        })
-        .connect()
-        .await
-        .map_err(|e| {
-            tracing::warn!(target: "Create snmp client", "{}", e);
-            SnmpError::ConnectionFailed { target, port }
-        })?;
-    Ok(client)
+impl SnmpClientConfig {
+    pub async fn connect(&self) -> Result<Client, SnmpError> {
+        Client::builder((self.target.to_string(), self.port), Auth::v2c(self.community.clone()))
+            .timeout(self.timeout)
+            .retry(if self.retries > 0 {
+                Retry::fixed(self.retries, self.retry_delay)
+            } else {
+                Retry::none()
+            })
+            .connect()
+            .await
+            .map_err(|e| {
+                tracing::warn!(target: "create snmp client", "{e}");
+                SnmpError::ConnectionFailed {
+                    target: self.target,
+                    port: self.port,
+                }
+            })
+    }
 }
 
 #[derive(Clone)]
-pub struct SnmpReadClient {
+pub struct SnmpClient {
     client: Client,
-    config: SnmpReadClientConfig,
+    config: SnmpClientConfig,
 }
 
-#[derive(Clone)]
-pub struct SnmpWriteClient {
-    // !TODO
-    client: Client,
-}
-
-#[derive(Clone)]
-pub struct SnmpReadWriteClient {
-    // !TODO
-    read_client: SnmpReadClient,
-    write_client: SnmpWriteClient,
-}
-
-impl SnmpReadClient {
-    pub async fn new(config: SnmpReadClientConfig) -> Result<Self, SnmpError> {
-        let client = create_inner_client(
-            config.target,
-            config.port,
-            config.community.clone(),
-            config.timeout,
-            config.retries,
-            config.retry_delay,
-        )
-        .await?;
+impl SnmpClient {
+    pub async fn new(config: SnmpClientConfig) -> Result<Self, SnmpError> {
+        let client = config.connect().await?;
         Ok(Self { client, config })
     }
 
-    pub fn config(&self) -> &SnmpReadClientConfig {
+    pub fn config(&self) -> &SnmpClientConfig {
         &self.config
     }
 
@@ -86,7 +60,7 @@ impl SnmpReadClient {
             .await?
             .into_iter()
             .next()
-            .ok_or(SnmpError::Internal("Ошибка выполнения запроса".to_string()))
+            .ok_or_else(|| SnmpError::Internal("Ошибка выполнения запроса".to_string()))
     }
 
     pub async fn get_many(&self, oids: &[SnmpOid]) -> Result<Vec<SnmpVarbind>, SnmpError> {
@@ -114,13 +88,16 @@ impl SnmpReadClient {
 
 fn map_snmp_error(e: async_snmp::Error) -> SnmpError {
     match e {
-        async_snmp::Error::Network { target, source } => SnmpError::ConnectionFailed {
-            target: target.ip(),
-            port: target.port(),
-        },
-        async_snmp::Error::Timeout {
-            target, retries, ..
-        } => SnmpError::RequestTimeOut { target, retries },
+        async_snmp::Error::Network { target, source } => {
+            tracing::warn!(target: "snmp network error", "{source}");
+            SnmpError::ConnectionFailed {
+                target: target.ip(),
+                port: target.port(),
+            }
+        }
+        async_snmp::Error::Timeout { target, retries, .. } => {
+            SnmpError::RequestTimeOut { target, retries }
+        }
         async_snmp::Error::Auth { target } => SnmpError::Auth { target },
         _ => SnmpError::Internal(e.to_string()),
     }

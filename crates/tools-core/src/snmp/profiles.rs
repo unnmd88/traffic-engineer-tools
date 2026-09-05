@@ -7,7 +7,7 @@ use crate::{
     AsciiError, Error, SnmpError,
     domain::ascii::Ascii,
     snmp::{
-        SnmpReadClient,
+        SnmpClient,
         oid::SnmpOid,
         oid_metadata::{OidMetadata, Requirenment},
         parsers::{OidValueParserFn, parse_ug405_stage, site_id_ug405_potok},
@@ -30,7 +30,7 @@ pub enum SnmpProfile {
 }
 
 impl SnmpProfile {
-    pub async fn get_scn(&self, client: &SnmpReadClient) -> Result<Option<Ascii>, SnmpError> {
+    pub async fn get_scn(&self, client: &SnmpClient) -> Result<Option<Ascii>, SnmpError> {
         match self {
             Self::PotokUg405 => {
                 let bytes = fetch_site_id_potok_ug405(client).await?;
@@ -44,7 +44,7 @@ impl SnmpProfile {
 
     pub async fn resolve_oids(
         &self,
-        client: &SnmpReadClient,
+        client: &SnmpClient,
         to_resolve: &[SnmpOid],
     ) -> Result<Vec<SnmpOid>, SnmpError> {
         let needs_scn = self
