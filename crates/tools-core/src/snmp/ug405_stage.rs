@@ -1,7 +1,7 @@
 use std::fmt::{self, format};
 
 use crate::{
-    domain::stage::Stage,
+    stage::Stage,
     error::ParseError,
     snmp::{parsers::bit_mask_ug405::parse_utc_bitmask, value::SnmpValue},
     utils::encode_to_hex,

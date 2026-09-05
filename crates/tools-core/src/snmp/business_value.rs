@@ -2,7 +2,7 @@ use std::fmt::{self, Display, Formatter, write};
 
 use tokio::time::error::Elapsed;
 
-use crate::domain::stage::Stage;
+use crate::stage::Stage;
 
 #[derive(Debug, Clone)]
 pub enum BusinessValue {

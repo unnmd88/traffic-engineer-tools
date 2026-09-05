@@ -5,7 +5,7 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::{
     AsciiError, Error, SnmpError,
-    domain::ascii::Ascii,
+    ascii::Ascii,
     snmp::{
         SnmpClient,
         oid::SnmpOid,

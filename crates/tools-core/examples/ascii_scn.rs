@@ -1,4 +1,4 @@
-use tools_core::domain::ascii::Ascii;
+use tools_core::ascii::Ascii;
 
 fn main() -> anyhow::Result<()> {
     let engine = Ascii::from_str("CO101")?;

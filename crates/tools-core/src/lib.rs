@@ -5,7 +5,8 @@ pub mod polling;
 
 pub mod monitor;
 
-pub mod domain;
+pub mod ascii;
+pub mod stage;
 pub mod error;
 
 pub mod snmp;

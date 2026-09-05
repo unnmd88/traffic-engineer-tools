@@ -1,7 +1,7 @@
 use async_snmp::value;
 
 use crate::{
-    domain::stage::Stage,
+    stage::Stage,
     error::ParseError,
     snmp::{
         business_value::BusinessValue,
