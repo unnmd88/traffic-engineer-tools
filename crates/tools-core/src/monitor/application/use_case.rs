@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use tokio::time::Duration;
 
 use async_trait::async_trait;
 
@@ -8,12 +9,11 @@ use crate::{
     polling::{AttemptConfig, Pollable},
     snmp::{
         SnmpGetQueryItem, SnmpGetResponse, SnmpReadClient, SnmpReadClientConfig,
-        adapters::SnmpReader,
-        community::Community,
-        oid::SnmpOid,
-        profiles::SnmpProfile,
+        adapters::SnmpReader, community::Community, oid::SnmpOid, profiles::SnmpProfile,
     },
 };
+
+const CLIENT_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
 
 pub enum UseCase {
     SnmpGet(SnmpReader),
@@ -61,8 +61,10 @@ impl UseCase {
             target,
             port: q.port,
             community,
-            timeout: attempt.timeout,
-            retries: attempt.retries as u32,
+            // добавить, чтобы внутренний таймаут не наступил раньше чем в async poll.
+            timeout: attempt.timeout.saturating_add(CLIENT_TIMEOUT_MARGIN),
+            // Ретраями управляет async poll
+            retries: 0,
             retry_delay: attempt.retry_delay,
         };
 
@@ -134,13 +136,16 @@ fn resolve_oid(
         message: "SNMP profile is required for auto search oid by name".to_string(),
     })?;
 
-    let meta = profile
-        .get_metadata_by_name_or_alias(&raw)
-        .ok_or(BuildMonitorError::UnknownAlias {
-            pos,
-            alias: raw.clone(),
-        })?;
+    let meta =
+        profile
+            .get_metadata_by_name_or_alias(&raw)
+            .ok_or(BuildMonitorError::UnknownAlias {
+                pos,
+                alias: raw.clone(),
+            })?;
 
-    SnmpOid::parse(meta.oid)
-        .map_err(|_| BuildMonitorError::InvalidSnmpOid { pos, oid: meta.oid.to_string() })
+    SnmpOid::parse(meta.oid).map_err(|_| BuildMonitorError::InvalidSnmpOid {
+        pos,
+        oid: meta.oid.to_string(),
+    })
 }
