@@ -1,40 +1,28 @@
-use std::{
-    net::SocketAddr,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use async_trait::async_trait;
 
 use crate::{
     SnmpError,
-    error::{PollError, UpdateError},
+    error::PollError,
     polling::Pollable,
     snmp::{
         SnmpGetQueryItem, SnmpClient,
         business_value::BusinessValue,
         oid::SnmpOid,
-        oid_metadata::OidMetadata,
         parsers::OidValueParserFn,
         profiles::SnmpProfile,
         response::{SnmpGetResponse, SnmpGetSample},
     },
 };
-use async_snmp::value;
-use async_trait::async_trait;
-use chrono::{Utc, naive};
-use serde::de::IntoDeserializer;
-use tokio::time::Instant;
-use tracing::warn;
 
-struct InnerQueryItem {
+struct ResolvedItem {
+    oid: SnmpOid,
     name: Option<String>,
     parser: Option<OidValueParserFn>,
 }
 
 pub struct SnmpReader {
     client: SnmpClient,
-    profile: Option<SnmpProfile>,
-    oids_to_request: Vec<SnmpOid>,
-    query_items: Vec<InnerQueryItem>,
-    request: Vec<SnmpGetQueryItem>,
+    items: Vec<ResolvedItem>,
 }
 
 impl SnmpReader {
@@ -43,14 +31,9 @@ impl SnmpReader {
         request: Vec<SnmpGetQueryItem>,
         profile: Option<SnmpProfile>,
     ) -> Result<Self, SnmpError> {
-        let capacity = request.len();
+        let mut items = Vec::with_capacity(request.len());
 
-        let mut oids = Vec::with_capacity(capacity);
-        let mut query_items = Vec::with_capacity(capacity);
-
-        for item in request.iter() {
-            oids.push(item.oid.clone());
-
+        for item in request {
             let metadata = profile
                 .as_ref()
                 .and_then(|p| p.get_metadata_by_oid(&item.oid));
@@ -60,24 +43,26 @@ impl SnmpReader {
                 .or_else(|| metadata.as_ref().and_then(|m| m.parser));
             let name = item
                 .name
-                .clone()
                 .or_else(|| metadata.as_ref().map(|m| m.name.to_string()));
-            query_items.push(InnerQueryItem { name, parser });
+
+            items.push(ResolvedItem {
+                oid: item.oid,
+                name,
+                parser,
+            });
         }
 
-        // Resolved oids. If profile has SCN - create new oids with SCN.
+        // SCN-резолюция: если профиль требует, дополняем OID идентификатором контроллера.
+        let oids: Vec<SnmpOid> = items.iter().map(|i| i.oid.clone()).collect();
         let resolved_oids = match &profile {
             Some(profile) => profile.resolve_oids(&client, &oids).await?,
             None => oids,
         };
+        for (item, oid) in items.iter_mut().zip(resolved_oids) {
+            item.oid = oid;
+        }
 
-        Ok(Self {
-            client,
-            profile,
-            oids_to_request: resolved_oids,
-            query_items,
-            request,
-        })
+        Ok(Self { client, items })
     }
 }
 
@@ -86,28 +71,28 @@ impl Pollable for SnmpReader {
     type Output = SnmpGetResponse;
 
     async fn poll(&self) -> Result<Self::Output, PollError> {
+        let oids: Vec<SnmpOid> = self.items.iter().map(|i| i.oid.clone()).collect();
+
         let samples = self
             .client
-            .get_many(&self.oids_to_request)
+            .get_many(&oids)
             .await
             .map_err(|e| PollError::Other {
                 message: e.to_string(),
             })?
             .into_iter()
-            .zip(&self.query_items)
-            .map(|(vb, query_item)| {
-                let parsed_value = match query_item.parser {
-                    Some(parser) => match parser(&vb.value) {
-                        Ok(val) => Some(val),
-                        Err(e) => {
-                            tracing::error!(target: "CustomReader", value = ?&vb.value, "{e}");
-                            Some(BusinessValue::Text("parse error".to_string()))
-                        }
-                    },
-                    None => None,
-                };
+            .zip(&self.items)
+            .map(|(vb, item)| {
+                let parsed_value = item.parser.map(|parser| match parser(&vb.value) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        tracing::error!(target: "snmp_reader", value = ?&vb.value, "{e}");
+                        BusinessValue::Text("parse error".to_string())
+                    }
+                });
+
                 SnmpGetSample {
-                    oid_name: query_item.name.clone(),
+                    oid_name: item.name.clone(),
                     oid: vb.oid,
                     raw_value: vb.value,
                     value: parsed_value,
@@ -115,6 +100,6 @@ impl Pollable for SnmpReader {
             })
             .collect();
 
-        return Ok(SnmpGetResponse { samples });
+        Ok(SnmpGetResponse { samples })
     }
 }
