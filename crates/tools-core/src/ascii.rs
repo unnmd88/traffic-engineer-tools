@@ -504,15 +504,9 @@ impl TryFrom<&str> for Ascii {
     }
 }
 
-// ================================================================
-// ТЕСТЫ
-// ================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- ТЕСТЫ КОНСТРУКТОРОВ ----
 
     #[test]
     fn from_str_basic() {
@@ -594,8 +588,6 @@ mod tests {
         assert_eq!(s.as_bytes(), &[10, 9, 65, 66, 67]);
     }
 
-    // ---- ТЕСТЫ ФОРМАТТЕРОВ ----
-
     #[test]
     fn to_dotted() {
         let s = Ascii::from_str("ABC").unwrap();
@@ -621,8 +613,6 @@ mod tests {
         assert_eq!(s.to_delimited("-"), "65-66-67");
         assert_eq!(s.to_delimited(""), "656667");
     }
-
-    // ---- ТЕСТЫ ПАРСЕРОВ ----
 
     #[test]
     fn parse_dotted_basic() {
