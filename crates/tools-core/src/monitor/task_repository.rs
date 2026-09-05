@@ -1,22 +1,15 @@
-use core::task;
 use std::collections::HashMap;
 
 use crate::{
-    Error,
-    constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS},
     error::TaskRepositoryError,
-    monitor::task::{
-        PollStatus, TaskEntity, TaskHistory, TaskId, TaskMeta, TaskSnapshot, TaskUpdateDto,
+    monitor::{
+        application::config::TaskSpec,
+        task::{PollStatus, TaskEntity, TaskId, TaskSnapshot},
     },
-    polling::{Metrics, PollConfig, PollResult},
-    utils::format_moscow_human,
 };
 use chrono::{DateTime, Local};
-use constcat::concat;
-use derive_more::Display;
 use itertools::Itertools;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct TaskIdGenerator {
@@ -32,13 +25,6 @@ impl TaskIdGenerator {
         self.current += 1;
         TaskId::new(self.current)
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskSnapshotUpdate {
-    pub poll_result: PollResult,
-    pub poll_status: PollStatus,
-    pub metrics: Metrics,
 }
 
 #[derive(Clone, Debug)]
@@ -85,19 +71,9 @@ impl TaskRepository {
         }
     }
 
-    pub fn add_task(
-        &mut self,
-        meta: TaskMeta,
-        poll_config: Option<PollConfig>,
-        task_snapshot: Option<TaskSnapshot>,
-        history: Option<TaskHistory>,
-    ) -> TaskId {
+    pub fn add_task(&mut self, spec: TaskSpec) -> TaskId {
         let id = self.id_gen.next();
-        let task_snaphot = task_snapshot.unwrap_or_else(|| TaskSnapshot::new());
-        let poll_config = poll_config.unwrap_or_default();
-        let history = history.unwrap_or_default();
-
-        let task = TaskEntity::new(id.clone(), meta, task_snaphot, poll_config, history);
+        let task = TaskEntity::new(id.clone(), spec);
 
         self.tasks.insert(id.clone(), task);
         self.order_ids.push(id.clone());
@@ -105,9 +81,9 @@ impl TaskRepository {
 
         info!(
             target: "TaskRepository",
-                task_id = ?id,
-                task_name = %self.get_task(&id).map_or_else(|| "".to_string(), |t| t.meta().name.clone()),
-                "New task added successfuly."
+            task_id = ?id,
+            task_name = %self.get_task(&id).map_or_else(|| "".to_string(), |t| t.name().to_string()),
+            "New task added successfuly."
         );
 
         id
@@ -121,10 +97,10 @@ impl TaskRepository {
         self.tasks.get_mut(&id)
     }
 
-    pub fn update_task(
+    pub fn update_snapshot(
         &mut self,
         task_id: &TaskId,
-        to_update: TaskUpdateDto,
+        snapshot: TaskSnapshot,
     ) -> Result<(), TaskRepositoryError> {
         let target = self
             .get_mut_task(task_id)
@@ -132,7 +108,43 @@ impl TaskRepository {
                 task_id: task_id.to_string(),
             })?;
 
-        if target.update(to_update) {
+        if target.update_snapshot(snapshot) {
+            self.updated_at = Local::now();
+        }
+
+        Ok(())
+    }
+
+    pub fn update_spec(
+        &mut self,
+        task_id: &TaskId,
+        spec: TaskSpec,
+    ) -> Result<(), TaskRepositoryError> {
+        let target = self
+            .get_mut_task(task_id)
+            .ok_or(TaskRepositoryError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })?;
+
+        if target.update_spec(spec) {
+            self.updated_at = Local::now();
+        }
+
+        Ok(())
+    }
+
+    pub fn update_status(
+        &mut self,
+        task_id: &TaskId,
+        status: PollStatus,
+    ) -> Result<(), TaskRepositoryError> {
+        let target = self
+            .get_mut_task(task_id)
+            .ok_or(TaskRepositoryError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })?;
+
+        if target.set_status(status) {
             self.updated_at = Local::now();
         }
 

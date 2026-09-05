@@ -1841,6 +1841,7 @@ dependencies = [
  "chrono",
  "constcat",
  "derive_more",
+ "futures-util",
  "itertools 0.15.0",
  "serde",
  "serde_json",

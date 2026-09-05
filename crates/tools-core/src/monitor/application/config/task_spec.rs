@@ -2,20 +2,19 @@ use tokio::time::Duration;
 
 use crate::{
     error::Error,
-    monitor::{
-        application::config::{Query, TaskConfigDto, UseCaseQuery},
-        task::{Protocol, TaskMeta, TypeQuery},
-    },
+    monitor::application::config::{Query, TaskConfigDto, UseCaseQuery},
     polling::{AttemptConfig, PollConfig},
 };
 
-// Спека задачи (готовая к сборке)
+const DEFAULT_HISTORY_DEPTH: u8 = 3;
+
+// Спека задачи — валидированное декларативное описание (Spec).
 #[derive(Clone, Debug)]
 pub struct TaskSpec {
-    pub meta: TaskMeta,
-    pub poll_config: PollConfig,
-    pub deep_history: Option<u8>,
+    pub name: String,
     pub query: UseCaseQuery,
+    pub poll_config: PollConfig,
+    pub deep_history: u8,
 }
 
 impl TryFrom<TaskConfigDto> for TaskSpec {
@@ -33,43 +32,15 @@ impl TryFrom<TaskConfigDto> for TaskSpec {
             attempt,
         };
 
-        let (query, protocol, type_query, target, subject) = match dto.query {
-            Query::SnmpGet(q) => {
-                let target = format!("{}:{}", q.host, q.port);
-                let subject = format!(
-                    "Snmp-get request. Oids to request({}):\n{}",
-                    q.oids.len(),
-                    q.oids
-                        .iter()
-                        .map(|o| {
-                            format!(
-                                " - {}{}",
-                                o.oid,
-                                o.name
-                                    .clone()
-                                    .map_or_else(String::new, |n| format!(" [{n}]"))
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
-                (UseCaseQuery::SnmpGet(q), Protocol::Snmp, TypeQuery::SnmpGet, target, subject)
-            }
-        };
-
-        let meta = TaskMeta {
-            protocol,
-            type_query,
-            name: dto.name,
-            target,
-            subject,
+        let query = match dto.query {
+            Query::SnmpGet(q) => UseCaseQuery::SnmpGet(q),
         };
 
         Ok(TaskSpec {
-            meta,
-            deep_history: dto.deep_history,
-            poll_config,
+            name: dto.name,
             query,
+            poll_config,
+            deep_history: dto.deep_history.unwrap_or(DEFAULT_HISTORY_DEPTH),
         })
     }
 }

@@ -8,8 +8,8 @@ use crate::{
     monitor::application::config::{QuerySnmpGet, SnmpOidItem, UseCaseQuery},
     polling::{AttemptConfig, Pollable},
     snmp::{
-        SnmpGetQueryItem, SnmpGetResponse, SnmpClient, SnmpClientConfig,
-        adapters::SnmpReader, community::Community, oid::SnmpOid, profiles::SnmpProfile,
+        SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, adapters::SnmpReader,
+        community::Community, oid::SnmpOid, profiles::SnmpProfile,
     },
 };
 
@@ -61,7 +61,7 @@ impl UseCase {
             target,
             port: q.port,
             community,
-            // добавить, чтобы внутренний таймаут не наступил раньше чем в async poll.
+            // добавить CLIENT_TIMEOUT_MARGIN, чтобы внутренний таймаут не наступил раньше чем в async poll.
             timeout: attempt.timeout.saturating_add(CLIENT_TIMEOUT_MARGIN),
             // Ретраями управляет async poll
             retries: 0,

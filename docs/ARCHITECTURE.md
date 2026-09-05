@@ -27,19 +27,25 @@
 ## 2. Идея
 
 Есть набор независимых примитивов: **клиенты** (snmp/http/modbus/…), **адаптер-юскейс**
-(реализует `Pollable`), **воркер-актор**, **task/repository**, **Orchestrator**. Любой, кто
-реализует `Pollable`, передаётся воркеру: воркер периодически вызывает `poll`, шлёт результат
-в канал и принимает команды.
+(реализует `Pollable`), **воркер**, **task/repository**, **Orchestrator**. Любой, кто реализует
+`Pollable`, передаётся воркеру: воркер периодически вызывает `poll` и шлёт результат в канал.
 
 `Orchestrator` — **единственный источник правды** по задачам и их воркерам: владеет
-репозиторием, хендлами воркеров и маппингом, принимает команды через один канал и рассылает
-обновления подписчикам. `Application` — тонкий клиент поверх него: читает конфиг, готовит
-`TaskSpec` и шлёт команды.
+репозиторием и хендлами воркеров, принимает команды через один канал, слушает события,
+пересоздаёт упавшие воркеры (supervisor) и рассылает обновления. `Application` — тонкий
+клиент поверх него: читает конфиг, готовит `TaskSpec` и шлёт команды.
+
+Модель данных — **Spec / Status / Control**:
+
+- **Spec** (желаемое): `TaskSpec` внутри `TaskEntity` (`name + query + poll_config + deep_history`).
+- **Status** (фактическое): `snapshot` + `history` в `TaskEntity`.
+- **Control** (управление): хендлы воркеров и счётчики рестартов — только в `Orchestrator`.
 
 Сочетание паттернов:
 
 1. **Ports & Adapters (hexagonal)** — core не зависит от транспорта; протоколы за адаптерами.
-2. **Actor model + Supervisor** — воркеры как акторы, Orchestrator как супервизор.
+2. **Actor model + Supervisor** — воркеры как легковесные задачи, Orchestrator как супервизор
+   (spawn/abort/пересоздание + backoff).
 3. **Закрытые enum'ы** — `UseCase` (адаптеры), `UseCaseOutput` (результаты), `PollResult` (итог)
    как единый «язык» между воркером, репозиторием и UI.
 
@@ -54,13 +60,13 @@
 | **`Pollable`** | Трейт адаптера: `async fn poll(&self) -> Result<Output, PollError>` с ассоциированным `type Output: Send`. |
 | **`UseCase`** | Закрытый enum адаптеров (`SnmpGet(SnmpReader)`, …). Сам реализует `Pollable`, объединяя все адаптеры в один тип. |
 | **`UseCaseOutput`** | Закрытый enum результатов адаптера (`SnmpGet(SnmpGetResponse)`, …). |
-| **`UseCaseQuery`** | Закрытый enum валидированного запроса (часть `TaskSpec`). |
-| **`TaskSpec`** | Готовая к сборке спека задачи: `meta + poll_config + query`. Из неё фабрика строит адаптер. |
-| **Worker (актор)** | Владелец адаптера; исполняет расписание опроса, команды, метрики. Протокол-агностичен. |
-| **`WorkerHandle`** | «Пульт» воркера: mailbox (`send`), `abort`, `is_finished`. |
-| **Orchestrator** | Супервизор и рантайм: владеет репозиторием, хендлами воркеров, спеками и маппингом; принимает команды, слушает события, рассылает обновления. |
-| **`OrchestratorHandle`** | Пульт оркестратора: `add_task`, `remove_task`, `start/stop/set_limit`, `get_snapshot`, `subscribe`. |
-| **Task** | Логическая задача мониторинга = адаптер + расписание + история. |
+| **`UseCaseQuery`** | Закрытый enum валидированного запроса (часть `TaskSpec`). Источник `protocol`/`type_query`/`target`. |
+| **`TaskSpec`** | Декларативная спека (Spec): `name + query + poll_config + deep_history`. `TryFrom<TaskConfigDto>`. |
+| **Worker** | Stateless исполнитель: ритм опроса, ретраи, метрики, события. Без mailbox и машины состояний. Протокол-агностичен. |
+| **`WorkerHandle`** | Ручка остановки воркера: `abort()`, `id()`. |
+| **Orchestrator** | Контроль-слой + супервизор: владеет хендлами воркеров и backoff-рестартами; команды/события/broadcast. |
+| **`OrchestratorHandle`** | Пульт оркестратора: `add_task`, `remove_task`, `start/stop/update_task`, `get_snapshot`, `subscribe`. |
+| **Task** | Логическая задача мониторинга = спека + расписание + история. |
 | **Snapshot** | Снимок состояния задачи (результат + метрики + статус). |
 | **Repository** | In-memory хранилище задач и их снапшотов. |
 | **Application** | Тонкий клиент: конфиг-слой (валидация в `TaskSpec`) + обёртка над `OrchestratorHandle`. |
@@ -87,6 +93,11 @@
    воркер и UI получают нормализованные данные.
 8. **Сборка адаптера — в фабрике (`UseCase::build`), а не в Orchestrator'е.** Orchestrator
    остаётся протокол-агностичным.
+9. **Spec/Status/Control.** Конфигурация (`spec`) и фактическое состояние (`snapshot`) живут
+   в `TaskEntity` (данные); хендлы/счётчики рестартов — только в `Orchestrator` (control).
+   Воркер — расходный исполнитель, восстанавливается из Spec+Status.
+10. **Supervisor через жизненный цикл.** Изменение конфигурации или падение воркера
+    обрабатывается пересозданием (`spawn`/`abort`), а не командами в живой воркер.
 
 ---
 
@@ -98,8 +109,8 @@
 |---|---|---|
 | **CLI** (`tctl`) | входная точка: парсит YAML, запускает, рендерит | `main.rs`, `AppBuilder`, formatters |
 | **Application** | конфиг-слой + тонкий клиент: валидация конфига → `TaskSpec`, отправка команд | `Application`, `ApplicationId`, `ApplicationState` |
-| **Orchestrator** | супервизор/рантайм: единственный владелец задач, воркеров и маппинга | `Orchestrator`, `OrchestratorHandle`, `OrchestratorCommand`, `OrchestratorEvent` |
-| **PollWorker** | актор-исполнитель: расписание, ретраи, метрики, команды | `PollWorker<A>`, `WorkerHandle`, `WorkerCommand`, `WorkerEvent`, `WorkerState` |
+| **Orchestrator** | контроль-слой + супервизор: хендлы воркеров, backoff-рестарты | `Orchestrator`, `OrchestratorHandle`, `OrchestratorCommand`, `OrchestratorEvent` |
+| **PollWorker** | stateless исполнитель: ритм опроса, ретраи, метрики | `PollWorker<A>`, `WorkerHandle`, `WorkerEvent` |
 | **UseCase (адаптер)** | «один опрос → типизированный результат» | `UseCase`, `UseCaseOutput`, `UseCaseQuery` |
 | **TaskRepository** | in-memory хранилище состояния задач | `TaskRepository`, `TaskEntity`, `TaskSnapshot`, `TaskHistory` |
 
@@ -107,12 +118,12 @@
 
 | Сущность | Что хранит |
 |---|---|
-| `TaskSpec` | `meta + poll_config + query` — всё для сборки адаптера и задачи |
-| `TaskEntity` | задача: id, meta, snapshot, poll_config, history, created/updated |
+| `TaskSpec` | `name + query + poll_config + deep_history` — Spec (желаемое) |
+| `TaskEntity` | `spec` (Spec) + `snapshot`/`history` (Status) + created/updated |
 | `TaskSnapshot` | `poll_result + metrics + poll_status` на момент времени |
-| `Metrics` | счётчики попыток и латентность (total/success/errors, min/avg/max) |
+| `Metrics` | счётчики попыток и латентность (total/success/errors, current/min/max) |
 | `PollResult` | результат опроса: `Success(Response<UseCaseOutput>)` или ошибка |
-| `WorkerEvent` | сообщение воркера: `worker_id + state + metrics + poll_result` |
+| `WorkerEvent` | факты воркера: `{ id, metrics, poll_result }` |
 
 ---
 
@@ -129,15 +140,14 @@
 │                                                                                │
 │  monitor::application                                                         │
 │   Application (тонкий клиент) ── команды ──► Orchestrator ── владеет ──► TaskRepository
-│        │  валидация конфига            ▲   (workers + specs + mapping)      │
+│        │  валидация конфига            ▲   (хендлы + backoff-рестарты)  (spec+snapshot)
 │        │                               │                                     │
 │        │                    WorkerEvent (events канал)                        │
 │        │                               │                                     │
 │  ┌─────▼───────────────────────────────┴──────┐                             │
 │  │ polling::worker                            │                             │
-│  │   PollWorker<UseCase> (актор)              │                             │
-│  │     mailbox (cmd_rx)  outbox (events_tx)   │                             │
-│  │     WorkerHandle                           │                             │
+│  │   PollWorker<UseCase> (stateless)          │                             │
+│  │     outbox (events_tx), WorkerHandle       │                             │
 │  └─────┬──────────────────────────────────────┘                             │
 │        │ poll(&use_case) + метрики/ретраи/таймауты                           │
 │  ┌─────▼──────────────────────────────┐                                      │
@@ -166,10 +176,7 @@ YAML → AppBuilder → AppConfig
          Orchestrator::new() → (orchestrator, handle); tokio::spawn(orchestrator.run())
          handle.add_task(spec) — на каждую спеку
      → Orchestrator.handle_command(AddTask):
-         UseCase::build(spec.query, attempt)  → адаптер (async: коннект)
-         TaskRepository.add_task(...)         → task_id
-         PollWorker::spawn(worker_id, use_case, poll_config, events_tx) → WorkerHandle
-         маппинг worker_id ↔ task_id; хранит spec (для будущего рестарта)
+         TaskRepository.add_task(spec)  → task_id   (задача в Idle, без коннекта)
 ```
 
 ### 7.2 Запуск
@@ -177,24 +184,26 @@ YAML → AppBuilder → AppConfig
 ```
 Application::start()
   → handle.start_task(task_id) для каждой задачи
-  → Orchestrator → WorkerHandle.send(WorkerCommand::Start)
-  → воркер: Idle → Running, первый опрос сразу
+  → Orchestrator.handle_command(StartTask):
+      UseCase::build(spec.query, spec.poll_config.attempt) → адаптер (async: коннект)
+      PollWorker::new(worker_id, use_case, poll_config, events_tx, seed_metrics)
+      join_set.spawn(catch_unwind(run)) → WorkerHandle (abort)
 ```
 
 ### 7.3 Цикл опроса (горячий путь)
 
 ```
 интервал сработал
-  → PollWorker.handle_tick:
+  → PollWorker.run:
       poll(&attempt, &use_case) — с таймаутом/ретраями
       адаптер: устройство → сырые данные → UseCaseOutput
       Response { timestamp, attempts, errors, elapsed, payload }
       → PollResult::Success(...)  (или NoResponse/Fail)
       метрики обновляются
-  → WorkerEvent { worker_id, state, metrics, poll_result }
+  → WorkerEvent { id, metrics, poll_result }
   → events_tx (mpsc) → Orchestrator.handle_worker_event:
-      worker_id → task_id (маппинг)
-      TaskSnapshot → TaskRepository.update_task
+      poll_status = f(metrics vs limit): Active | RatedLimit
+      TaskSnapshot → TaskRepository.update_snapshot
       broadcast OrchestratorEvent::Update { snapshot, task_id }
   → UI: rx.recv() → format_repository(snapshot)
 ```
@@ -202,22 +211,30 @@ Application::start()
 ### 7.4 Горячее управление
 
 ```
-SetLimit / Start / Stop:
-  handle.set_limit / start_task / stop_task
-  → OrchestratorCommand → Orchestrator → WorkerHandle.send(WorkerCommand)
+Start / Stop / Update:
+  handle.start_task / stop_task / update_task
+  → OrchestratorCommand → Orchestrator
+
+StartTask:   build use_case → spawn_worker (если ещё не запущена)
+StopTask:    worker_control.abort() → poll_status = Paused
+UpdateTask:  TaskRepository.update_spec(spec) → пересоздать воркера (если запущена)
 
 RemoveTask:
-  Orchestrator: WorkerHandle.abort() + чистка workers/worker_to_task/specs
-              + TaskRepository.remove_task
+  Orchestrator: worker_control.abort() + TaskRepository.remove_task
   → возвращает удалённую TaskEntity (oneshot)
 ```
 
-### 7.5 Супервизия (планируется)
+### 7.5 Супервизия (реализовано)
 
 ```
-периодически (health_interval):
-  Orchestrator проходит по workers, ищет handle.is_finished()
-  умерший воркер → rebuild из сохранённого spec → PollWorker::spawn → подмена handle
+воркер завершился → JoinSet.join_next():
+  Ok(WorkerExit{ outcome: Ok(()) })      — rate limit: poll_status = RatedLimit, не рестартуем
+  Ok(WorkerExit{ outcome: Err(panic) })  — panic: планируем рестарт (backoff 1s/2s/4s/…/60s)
+  Err(JoinError::cancelled)              — наш abort(): не рестартуем
+
+supervisor_tick (1s):
+  для задач с истёкшим restart.next_at:
+    UseCase::build(spec) → spawn_worker (seed-метрики из snapshot) — восстановление
 ```
 
 ---
@@ -228,24 +245,24 @@ RemoveTask:
 
 | От → Кому | Канал | Что передаёт |
 |---|---|---|
-| Application → Orchestrator | `mpsc<OrchestratorCommand>` + `oneshot` (ответ) | AddTask/RemoveTask/Start/Stop/SetLimit/GetSnapshot/Subscribe |
-| Orchestrator → Worker | `mpsc<WorkerCommand>` (через `WorkerHandle.send`) | Start/Stop/Resume/SetLimit |
-| Worker → Orchestrator | `mpsc<WorkerEvent>` (общий, fan-in) | результаты опросов, состояние, метрики |
+| Application → Orchestrator | `mpsc<OrchestratorCommand>` + `oneshot` (ответ) | AddTask/RemoveTask/StartTask/StopTask/UpdateTask/GetSnapshot/Subscribe |
+| Worker → Orchestrator | `mpsc<WorkerEvent>` (общий, fan-in) | факты опросов: metrics, poll_result |
 | Orchestrator → UI | `broadcast<OrchestratorEvent>` | снапшоты (обновления) |
 | Orchestrator → history-sink (будущее) | `mpsc<HistoryRecord>` (надёжный, не broadcast) | записи истории |
 
 Правила:
 
 - **Команды — запрос-ответ** там, где нужен результат (`add_task` возвращает `TaskId`,
-  `remove_task` — `TaskEntity`, `get_snapshot`/`subscribe` — через `oneshot`).
+  `start_task`/`update_task` — `Result`, `remove_task` — `TaskEntity`, `get_snapshot`/`subscribe` — через `oneshot`).
 - **События воркеров — fan-in** в один `events`-канал оркестратора.
+- **Воркер не получает команд** — управление через жизненный цикл (`spawn`/`abort`).
 - **UI получает lossy `broadcast`** (отстающий подписчик теряет промежуточные кадры — для экрана ок).
 - **История (если появится) — отдельный lossless `mpsc`** + writer-актор, чтобы медленный диск
   не тормозил горячий путь и данные не терялись.
 
 ---
 
-## 9. Модель актора (Worker)
+## 9. Модель воркера (stateless)
 
 ```rust
 // Адаптер
@@ -255,44 +272,31 @@ pub trait Pollable: Send + Sync {
     async fn poll(&self) -> Result<Self::Output, PollError>;
 }
 
-// Воркер — generic, создаёт свой mailbox сам
-pub struct PollWorker<A: Pollable> { /* … */ }
+// Воркер — generic, без mailbox/команд/FSM
+pub struct PollWorker<A: Pollable> { /* id, poll_config, metrics, adapter, event_tx, tick */ }
 
 impl<A: Pollable> PollWorker<A>
 where PollResult: From<Response<A::Output>>
 {
-    // конструкция: создаёт mailbox, возвращает (Self, Sender<WorkerCommand>)
-    pub fn new(id, adapter, poll_config, events_tx) -> (Self, mpsc::Sender<WorkerCommand>);
-
-    // удобство: new + tokio::spawn(run) → WorkerHandle (требует A: 'static)
-    pub fn spawn(id, adapter, poll_config, events_tx) -> WorkerHandle;
+    pub fn new(id, adapter, poll_config, event_tx, metrics: Metrics) -> Self;
 
     #[tracing::instrument(name = "poll_worker", skip_all, fields(worker_id = %self.id))]
-    pub async fn run(self) { /* select! { cmd | tick } */ }
+    pub async fn run(self) { /* loop { tick; poll; send event; if limit → break } */ }
 }
 
-// Пульт воркера
-pub struct WorkerHandle {
-    mailbox: mpsc::Sender<WorkerCommand>,
-    join_handle: JoinHandle<()>,
-}
+// Ручка остановки
+pub struct WorkerHandle { abort: tokio::task::AbortHandle }
 impl WorkerHandle {
-    pub async fn send(&self, cmd) -> Result<(), SendError>;
     pub fn abort(&self);
-    pub fn is_finished(&self) -> bool;
+    pub fn id(&self) -> tokio::task::Id;
 }
+
+// Факты воркера
+pub struct WorkerEvent { pub id: WorkerId, pub metrics: Metrics, pub poll_result: PollResult }
 ```
 
-Состояния и команды:
-
-```rust
-pub enum WorkerState { Idle, Running, Stopped, RatedLimit }
-pub enum WorkerCommand { Start, Resume, Stop, SetLimit(u64) }
-pub struct WorkerEvent { pub id, pub state, pub poll_config, pub metrics, pub poll_result }
-```
-
-Переходы: `Idle → Running` (`Start`), `Running → Stopped` (`Stop`),
-`Running → RatedLimit` (исчерпан `limit`), `Stopped → Running` (`Resume`).
+Воркер опрашивает, пока `total_attempts < limit`; при достижении лимита шлёт финальное
+событие и завершается. Остановка — `abort()`; изменение конфига — пересоздание.
 
 ---
 
@@ -301,7 +305,7 @@ pub struct WorkerEvent { pub id, pub state, pub poll_config, pub metrics, pub po
 1. **Адаптер** — новый тип с `impl Pollable` (образец: `snmp/adapters/reader.rs`).
 2. **`UseCase`** — новый вариант + arm в `poll()`.
 3. **`UseCaseOutput`** — новый вариант.
-4. **`UseCaseQuery`** — новый вариант + DTO в `config/`.
+4. **`UseCaseQuery`** — новый вариант + DTO в `config/` + arm в `protocol()`/`type_query()`/`target()`.
 5. **`UseCase::build`** — arm, собирающий адаптер из query.
 6. **Форматтер** — ветка в `match resp.payload` (`tools-cli/.../formatters/repository.rs`).
 
@@ -333,7 +337,7 @@ pub enum PollResult {
 }
 
 // метрики
-pub struct Metrics { /* total/success/errors, current/avg/min/max latency */ }
+pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 ```
 
 ---
@@ -344,7 +348,7 @@ pub struct Metrics { /* total/success/errors, current/avg/min/max latency */ }
 - **`SnmpError`** — протокол (таймаут, auth, OID, разбор).
 - **`ParseError`** — интерпретация сырого значения в `BusinessValue`.
 - **`BuildMonitorError`** — сборка адаптера в `UseCase::build`.
-- **`OrchestratorError`** — команды/оркестрация (`Build`, `TaskRepository`, `ChannelClosed`).
+- **`OrchestratorError`** — команды/оркестрация (`Build`, `TaskRepository`, `TaskNotFound`, `ChannelClosed`).
 
 Правило: ошибка интерпретации одного OID **не роняет** весь опрос — в `SnmpReader` она
 превращается в `BusinessValue::Text("parse error")`, остальные OID доставляются.
@@ -355,12 +359,13 @@ pub struct Metrics { /* total/success/errors, current/avg/min/max latency */ }
 
 - **O-1. `PollResult`/`UseCase` — закрытый enum.** Ок для своих use-case'ов; `dyn` — только на
   внешних точках расширения (history-sink и т.п.).
-- **O-2. Ответы команд актора.** Воркер пока fire-and-forget; `WorkerResponse` не используется.
-  При необходимости — `oneshot` в `WorkerCommand`.
-- **O-3. Супервизия.** Нужны health-check (`is_finished`/`JoinSet`), backoff и лимит рестартов,
-  различение паники (`JoinError::is_panic`). `specs` уже хранятся.
+- **O-2. Лимит рестартов.** Сейчас backoff бесконечный (до cap 60s). Нужен ли `max_restarts`
+  + статус `Failed` для задачи, падающей детерминированно.
+- **O-3. Graceful shutdown.** Нет штатной остановки Orchestrator'а/воркеров — `CancellationToken`
+  / `TaskTracker` вместо грубого `abort()`.
 - **O-4. Семантика `limit`.** Считает попытки (`total_attempts`), не успешные опросы/интервалы.
-- **O-5. `Query` vs `UseCaseQuery`.** Дублирование на границе конфига; свести к одному набору.
+- **O-5. `Query` vs `UseCaseQuery`.** Дублирование на границе конфига; свести к одному набору
+  (домен хранит `IpAddr`/`Community`/`SnmpOid`, DTO — сырые строки).
 - **O-6. Персистентность истории.** `TaskHistory` в памяти; нужен ли history-sink (файл/sqlite)
   через отдельный writer-актор + `mpsc`.
 - **O-7. Автокорреляция между задачами.** Группировка уже есть; автоматическое сравнение
@@ -371,11 +376,11 @@ pub struct Metrics { /* total/success/errors, current/avg/min/max latency */ }
 
 ## 14. Дорожная карта
 
-1. **Супервизия**: health-check + backoff/лимит рестартов + различение паники (O-3).
-2. **History-sink** (O-6): `LogWriter` trait (`dyn`) + writer-актор + `mpsc`.
-3. **Второй use-case** (http-read или icmp-ping) — проверить рецепт §10.
-4. **snmp-set** — отдельный «командный» путь (не периодический опрос).
-5. **Свести `Query`/`UseCaseQuery`/`TaskPollConfig`/`PollConfig`** (убрать дубли).
+1. **History-sink** (O-6): `LogWriter` trait (`dyn`) + writer-актор + `mpsc`.
+2. **Второй use-case** (http-read или icmp-ping) — проверить рецепт §10.
+3. **snmp-set** — отдельный «командный» путь (не периодический опрос).
+4. **Свести `Query`/`UseCaseQuery`** (убрать дубли, доменные типы в query) — O-5.
+5. **Лимит рестартов + статус `Failed`** (O-2) и graceful shutdown (O-3).
 6. **Web-интерфейс** поверх `OrchestratorHandle` (subscribe уже есть).
 7. **Параллельно**: самостоятельные инструменты `tools-core` (расчёты фаз/циклов/тактов,
    конвертеры, парсеры логов) — чистые функции, вне акторной модели.

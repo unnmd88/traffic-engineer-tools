@@ -68,6 +68,8 @@ pub enum OrchestratorError {
     Build(#[from] BuildMonitorError),
     #[error(transparent)]
     TaskRepository(#[from] TaskRepositoryError),
+    #[error("task not found: {task_id}")]
+    TaskNotFound { task_id: String },
     #[error("orchestrator channel closed")]
     ChannelClosed,
 }

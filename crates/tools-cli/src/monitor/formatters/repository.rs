@@ -10,16 +10,18 @@ pub fn format_repository(repo: &TaskRepository) -> String {
     let mut output = String::new();
 
     for task in repo.tasks_sorted_by_id() {
-        let meta = task.meta();
         let task_snapshot = task.snapshot();
         let poll_config = task.poll_config();
         let m = task_snapshot.metrics();
         let history = task.history();
 
         // Metadata
-        output.push_str(&format!("{} [ID: {}]  Target: {}\n", meta.name, task.id(), meta.target,));
-
-        output.push_str(&format!("{}\n", meta.subject));
+        output.push_str(&format!(
+            "{} [ID: {}]  Target: {}\n",
+            task.name(),
+            task.id(),
+            task.query().target(),
+        ));
 
         let limit = match poll_config.limit {
             0 => "infinity",

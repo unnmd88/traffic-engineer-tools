@@ -1,6 +1,9 @@
 use std::{collections::VecDeque, mem};
 
-use crate::polling::{Metrics, PollConfig, PollResult};
+use crate::{
+    monitor::application::config::{TaskSpec, UseCaseQuery},
+    polling::{Metrics, PollConfig, PollResult},
+};
 use chrono::{DateTime, Local};
 use derive_more::{Constructor, Display};
 
@@ -34,12 +37,6 @@ pub struct HistoryEntry {
 pub struct TaskHistory {
     max: usize,
     history: VecDeque<HistoryEntry>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskUpdateDto {
-    pub snapshot: Option<TaskSnapshot>,
-    pub poll_config: Option<PollConfig>,
 }
 
 impl TaskHistory {
@@ -83,15 +80,6 @@ impl Default for TaskHistory {
     fn default() -> Self {
         Self::new(3)
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskMeta {
-    pub protocol: Protocol,
-    pub type_query: TypeQuery,
-    pub name: String,
-    pub target: String,
-    pub subject: String,
 }
 
 #[derive(Clone, Debug)]
@@ -153,32 +141,44 @@ pub struct TaskId(pub u64);
 #[derive(Clone, Debug)]
 pub struct TaskEntity {
     id: TaskId,
-    meta: TaskMeta,
+    spec: TaskSpec,
     snapshot: TaskSnapshot,
-    poll_config: PollConfig,
     history: TaskHistory,
     created_at: DateTime<Local>,
     updated_at: DateTime<Local>,
 }
 
 impl TaskEntity {
-    pub fn new(
-        id: TaskId,
-        meta: TaskMeta,
-        snapshot: TaskSnapshot,
-        poll_config: PollConfig,
-        history: TaskHistory,
-    ) -> Self {
+    pub fn new(id: TaskId, spec: TaskSpec) -> Self {
         let dt = Local::now();
         Self {
             id,
-            meta,
-            snapshot,
-            poll_config,
-            history,
+            snapshot: TaskSnapshot::default(),
+            history: TaskHistory::new(spec.deep_history),
+            spec,
             created_at: dt.clone(),
             updated_at: dt,
         }
+    }
+
+    pub fn id(&self) -> &TaskId {
+        &self.id
+    }
+
+    pub fn spec(&self) -> &TaskSpec {
+        &self.spec
+    }
+
+    pub fn name(&self) -> &str {
+        &self.spec.name
+    }
+
+    pub fn query(&self) -> &UseCaseQuery {
+        &self.spec.query
+    }
+
+    pub fn poll_config(&self) -> &PollConfig {
+        &self.spec.poll_config
     }
 
     pub fn snapshot(&self) -> &TaskSnapshot {
@@ -187,10 +187,6 @@ impl TaskEntity {
 
     pub fn poll_result(&self) -> &PollResult {
         &self.snapshot.poll_result
-    }
-
-    pub fn poll_config(&self) -> &PollConfig {
-        &self.poll_config
     }
 
     pub fn status(&self) -> &PollStatus {
@@ -209,43 +205,30 @@ impl TaskEntity {
         &self.updated_at
     }
 
-    pub fn meta(&self) -> &TaskMeta {
-        &self.meta
-    }
-
-    pub fn id(&self) -> &TaskId {
-        &self.id
-    }
-
     pub fn history(&self) -> &TaskHistory {
         &self.history
     }
 
-    pub fn update_meta(&mut self, meta: TaskMeta) {
-        self.meta = meta;
-        self.updated_at = Local::now();
+    pub fn update_snapshot(&mut self, snapshot: TaskSnapshot) -> bool {
+        let ts = Local::now();
+        let old_snapshot = mem::replace(&mut self.snapshot, snapshot);
+        self.history.push(HistoryEntry {
+            timestamp: ts.clone(),
+            snapshot: old_snapshot,
+        });
+        self.updated_at = ts;
+        true
     }
 
-    pub fn update(&mut self, to_update: TaskUpdateDto) -> bool {
-        let mut has_update = false;
-        let ts = Local::now();
-        if let Some(snapshot) = to_update.snapshot {
-            let old_snapshot = mem::replace(&mut self.snapshot, snapshot);
-            has_update = true;
-            self.history.push(HistoryEntry {
-                timestamp: ts.clone(),
-                snapshot: old_snapshot,
-            });
-        }
-        if let Some(poll_cfg) = to_update.poll_config {
-            self.poll_config = poll_cfg;
-            has_update = true;
-        }
+    pub fn update_spec(&mut self, spec: TaskSpec) -> bool {
+        self.spec = spec;
+        self.updated_at = Local::now();
+        true
+    }
 
-        if has_update {
-            self.updated_at = ts;
-        }
-
-        has_update
+    pub fn set_status(&mut self, status: PollStatus) -> bool {
+        self.snapshot.poll_status = status;
+        self.updated_at = Local::now();
+        true
     }
 }
