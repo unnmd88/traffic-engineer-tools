@@ -5,9 +5,8 @@ use uuid::Uuid;
 use crate::{
     error::Error,
     monitor::{
-        application::config::AppConfig,
         orchestrator::{Orchestrator, OrchestratorEvent, OrchestratorHandle},
-        task::{TaskId, TaskRepository},
+        task::{TaskId, TaskRepository, TaskSpec},
     },
 };
 
@@ -34,13 +33,12 @@ pub struct Application {
 }
 
 impl Application {
-    pub async fn new(config: AppConfig) -> Result<Self, Error> {
+    pub async fn new(specs: Vec<TaskSpec>) -> Result<Self, Error> {
         let (orchestrator, handle) = Orchestrator::new();
         tokio::spawn(orchestrator.run());
 
         let mut task_ids = Vec::new();
-        for task in config.tasks {
-            let spec = task.try_into()?;
+        for spec in specs {
             let id = handle.add_task(spec).await?;
             task_ids.push(id);
         }

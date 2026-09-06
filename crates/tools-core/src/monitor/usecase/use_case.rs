@@ -1,15 +1,13 @@
-use std::net::IpAddr;
 use tokio::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::{
-    error::{BuildMonitorError, ParseError},
-    monitor::task::{QuerySnmpGet, SnmpOidItem, UseCaseQuery},
+    error::BuildMonitorError,
+    monitor::task::{QuerySnmpGet, UseCaseQuery},
     polling::{AttemptConfig, AttemptError, Pollable},
     snmp::{
         SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, adapters::SnmpReader,
-        community::Community, oid::SnmpOid, profiles::SnmpProfile,
     },
 };
 
@@ -53,14 +51,10 @@ impl UseCase {
         q: QuerySnmpGet,
         attempt: AttemptConfig,
     ) -> Result<Self, BuildMonitorError> {
-        let target = parse_ip(&q.host)?;
-        let community = parse_community(&q.community)?;
-        let profile = parse_profile(q.profile)?;
-
         let client_config = SnmpClientConfig {
-            target,
+            target: q.host,
             port: q.port,
-            community,
+            community: q.community,
             // добавить CLIENT_TIMEOUT_MARGIN, чтобы внутренний таймаут не наступил раньше чем в async poll.
             timeout: attempt.timeout.saturating_add(CLIENT_TIMEOUT_MARGIN),
             // Ретраями управляет async poll
@@ -72,80 +66,20 @@ impl UseCase {
             .await
             .map_err(|_| BuildMonitorError::SnmpClientCreate)?;
 
-        let oids = sanitize_oids(&q.oids, profile.as_ref())?;
-        let reader = SnmpReader::new(client, oids, profile)
+        let oids = q
+            .oids
+            .into_iter()
+            .map(|item| SnmpGetQueryItem {
+                name: item.name,
+                oid: item.oid,
+                business_value_parser: None,
+            })
+            .collect();
+
+        let reader = SnmpReader::new(client, oids, q.profile)
             .await
             .map_err(|e| BuildMonitorError::Other(e.to_string()))?;
 
         Ok(Self::SnmpGet(reader))
     }
-}
-
-fn parse_ip(ip: &str) -> Result<IpAddr, BuildMonitorError> {
-    ip.parse::<IpAddr>()
-        .map_err(|_| BuildMonitorError::InvalidIpAddress { ip: ip.to_string() })
-}
-
-fn parse_community(community: &str) -> Result<Community, BuildMonitorError> {
-    Community::parse(community.to_string()).map_err(|e| match e {
-        ParseError::CantBeEmpty { .. } => BuildMonitorError::SnmpCommunityIsEmpty,
-        ParseError::InvalidLength {
-            min, max, provide, ..
-        } => BuildMonitorError::SnmpCommunityInvalidLength { min, max, provide },
-        ParseError::Common { message } => BuildMonitorError::Other(message),
-        _ => BuildMonitorError::Other("Can't parse community string".to_string()),
-    })
-}
-
-fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, BuildMonitorError> {
-    profile
-        .map(|p| p.parse::<SnmpProfile>())
-        .transpose()
-        .map_err(|e| BuildMonitorError::InvalidSnmpProfile { message: e })
-}
-
-fn sanitize_oids(
-    oids: &[SnmpOidItem],
-    profile: Option<&SnmpProfile>,
-) -> Result<Vec<SnmpGetQueryItem>, BuildMonitorError> {
-    oids.iter()
-        .enumerate()
-        .map(|(pos, item)| {
-            let oid = resolve_oid(&item.oid, profile, pos)?;
-            Ok(SnmpGetQueryItem {
-                name: item.name.clone(),
-                oid,
-                business_value_parser: None,
-            })
-        })
-        .collect()
-}
-
-fn resolve_oid(
-    raw: &str,
-    profile: Option<&SnmpProfile>,
-    pos: usize,
-) -> Result<SnmpOid, BuildMonitorError> {
-    let raw = raw.trim().to_lowercase();
-
-    if let Ok(oid) = SnmpOid::parse(&raw) {
-        return Ok(oid);
-    }
-
-    let profile = profile.ok_or(BuildMonitorError::SnmpProfileMustBeProvided {
-        message: "SNMP profile is required for auto search oid by name".to_string(),
-    })?;
-
-    let meta =
-        profile
-            .get_metadata_by_name_or_alias(&raw)
-            .ok_or(BuildMonitorError::UnknownAlias {
-                pos,
-                alias: raw.clone(),
-            })?;
-
-    SnmpOid::parse(meta.oid).map_err(|_| BuildMonitorError::InvalidSnmpOid {
-        pos,
-        oid: meta.oid.to_string(),
-    })
 }
