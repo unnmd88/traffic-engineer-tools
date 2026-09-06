@@ -97,24 +97,31 @@ impl Orchestrator {
     async fn handle_command(&mut self, cmd: OrchestratorCommand) {
         match cmd {
             OrchestratorCommand::AddTask { spec, reply } => {
+                tracing::info!(name = %spec.name, target = %spec.query.target(), "command: add_task");
                 let _ = reply.send(self.add_task(spec).await);
             }
             OrchestratorCommand::RemoveTask { task_id, reply } => {
+                tracing::info!(task_id = %task_id, "command: remove_task");
                 let _ = reply.send(self.remove_task(&task_id));
             }
             OrchestratorCommand::StartTask { task_id, reply } => {
+                tracing::info!(task_id = %task_id, "command: start_task");
                 let _ = reply.send(self.start_task(&task_id).await);
             }
             OrchestratorCommand::StopTask(task_id) => {
+                tracing::info!(task_id = %task_id, "command: stop_task");
                 self.stop_task(&task_id).await;
             }
             OrchestratorCommand::UpdateTask { task_id, spec, reply } => {
+                tracing::info!(task_id = %task_id, name = %spec.name, "command: update_task");
                 let _ = reply.send(self.update_task(&task_id, spec).await);
             }
             OrchestratorCommand::GetSnapshot { reply } => {
+                tracing::debug!("command: get_snapshot");
                 let _ = reply.send(self.repository.clone());
             }
             OrchestratorCommand::Subscribe { reply } => {
+                tracing::debug!("command: subscribe");
                 let _ = reply.send(self.broadcast_tx.subscribe());
             }
         }
@@ -245,17 +252,12 @@ impl Orchestrator {
                 tracing::info!(task_id = %task_id, "worker completed");
             }
             WorkerFinished::Failed(message) => {
-                let Some((attempt, delay)) = self.supervisor.schedule_restart(&task_id) else {
+                if self.supervisor.schedule_restart(&task_id).is_none() {
                     return;
-                };
+                }
                 self.set_status(&task_id, PollStatus::Restarting);
                 self.broadcast_update(task_id.clone());
-                tracing::error!(
-                    task_id = %task_id,
-                    attempt,
-                    delay_ms = delay.as_millis() as u64,
-                    "worker failed ({message}), scheduling restart"
-                );
+                tracing::error!(task_id = %task_id, "worker failed ({message})");
             }
         }
     }

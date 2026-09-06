@@ -48,6 +48,7 @@ impl Supervisor {
         }
     }
 
+    #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
     pub fn spawn(
         &mut self,
         task_id: TaskId,
@@ -55,6 +56,7 @@ impl Supervisor {
         poll_config: PollConfig,
         metrics: Metrics,
     ) {
+        tracing::info!("worker spawned");
         let worker_id = WorkerId(task_id.0);
         let worker =
             PollWorker::new(worker_id, use_case, poll_config, self.events_tx.clone(), metrics);
@@ -81,10 +83,12 @@ impl Supervisor {
         );
     }
 
+    #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
     pub fn stop(&mut self, task_id: &TaskId) {
         if let Some(rt) = self.runtimes.get_mut(task_id) {
             if let Some(handle) = rt.worker.take() {
                 handle.abort();
+                tracing::info!("worker stopped");
             }
         }
     }
@@ -106,19 +110,27 @@ impl Supervisor {
 
     /// Воркер упал (Fatal/panic): пометить и запланировать рестарт.
     /// Возвращает (attempt, delay) для лога.
+    #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
     pub fn schedule_restart(&mut self, task_id: &TaskId) -> Option<(u32, Duration)> {
         let rt = self.runtimes.get_mut(task_id)?;
         rt.worker = None;
         rt.restart.attempts += 1;
         let delay = self.policy.delay(rt.restart.attempts);
         rt.restart.next_at = Some(Instant::now() + delay);
+        tracing::info!(
+            attempt = rt.restart.attempts,
+            delay_ms = delay.as_millis() as u64,
+            "restart scheduled"
+        );
         Some((rt.restart.attempts, delay))
     }
 
     /// Воркер завершился штатно (rate limit) — просто пометить остановленным.
+    #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
     pub fn mark_stopped(&mut self, task_id: &TaskId) {
         if let Some(rt) = self.runtimes.get_mut(task_id) {
             rt.worker = None;
+            tracing::info!("worker marked stopped");
         }
     }
 
@@ -130,11 +142,17 @@ impl Supervisor {
     }
 
     /// Ошибка сборки при рестарте — отложить ещё раз.
+    #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
     pub fn retry_later(&mut self, task_id: &TaskId) {
         if let Some(rt) = self.runtimes.get_mut(task_id) {
             rt.restart.attempts += 1;
             let delay = self.policy.delay(rt.restart.attempts);
             rt.restart.next_at = Some(Instant::now() + delay);
+            tracing::warn!(
+                attempt = rt.restart.attempts,
+                delay_ms = delay.as_millis() as u64,
+                "restart postponed"
+            );
         }
     }
 
