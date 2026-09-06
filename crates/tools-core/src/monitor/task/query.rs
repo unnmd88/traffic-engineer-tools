@@ -1,14 +1,15 @@
-use crate::monitor::task::{Protocol, TypeQuery};
+use serde::Deserialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SnmpOidItem {
+    #[serde(default)]
     pub name: Option<String>,
     pub oid: String,
-    pub value: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct QuerySnmpGet {
+    #[serde(default)]
     pub profile: Option<String>,
     pub host: String,
     pub port: u16,
@@ -16,27 +17,17 @@ pub struct QuerySnmpGet {
     pub oids: Vec<SnmpOidItem>,
 }
 
-// Валидированный запрос (Application превращает YAML в это)
-#[derive(Clone, Debug)]
+/// Запрос задачи (десериализуется из YAML; валидация host/community/OID —
+/// на этапе `UseCase::build`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "query_type", rename_all = "lowercase")]
 pub enum UseCaseQuery {
-    SnmpGet(QuerySnmpGet), // IpAddr, port, Community, SnmpProfile, Vec<SnmpOid>
-                           // SnmpSet(QuerySnmpSet),
-                           // HttpRead(QueryHttpRead), // url, парсер режима, ...
+    SnmpGet(QuerySnmpGet),
+    // SnmpSet(QuerySnmpSet),
+    // HttpRead(QueryHttpRead),
 }
 
 impl UseCaseQuery {
-    pub fn protocol(&self) -> Protocol {
-        match self {
-            Self::SnmpGet(_) => Protocol::Snmp,
-        }
-    }
-
-    pub fn type_query(&self) -> TypeQuery {
-        match self {
-            Self::SnmpGet(_) => TypeQuery::SnmpGet,
-        }
-    }
-
     pub fn target(&self) -> String {
         match self {
             Self::SnmpGet(q) => format!("{}:{}", q.host, q.port),

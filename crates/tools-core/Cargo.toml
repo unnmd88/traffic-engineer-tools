@@ -24,10 +24,6 @@ futures-util = { workspace = true }
 
 
 [[example]]
-name = "snmp-example"
-path = "examples/snmp-example.rs"
-
-[[example]]
 name = "ascii-scn"
 path = "examples/ascii_scn.rs"
 

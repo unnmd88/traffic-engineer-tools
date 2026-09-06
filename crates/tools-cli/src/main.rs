@@ -2,10 +2,7 @@ use chrono::Local;
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use tools_core::{
-    DT_FMT,
-    monitor::{orchestrator::OrchestratorEvent, task::TaskId},
-};
+use tools_core::{DT_FMT, monitor::orchestrator::OrchestratorEvent};
 use tracing::{error, info};
 mod logging;
 mod monitor;
@@ -45,12 +42,6 @@ async fn main() -> anyhow::Result<()> {
                 let mut rx = app.subscribe().await.unwrap_or_else(|e| {
                     panic!("{}", e);
                 });
-                let ordered_tasks_ids: Vec<TaskId> = app
-                    .get_snapshot()
-                    .await
-                    .expect("Failed to get snapshot") // TODO tracing
-                    .sorted_task_ids()
-                    .collect();
 
                 while let Ok(update) = rx.recv().await {
                     clear_screen();
