@@ -107,11 +107,19 @@ impl Orchestrator {
         match cmd {
             OrchestratorCommand::AddTask { spec, reply } => {
                 tracing::info!(name = %spec.name, target = %spec.query.target(), "command: add_task");
-                let _ = reply.send(self.add_task(spec).await);
+                let result = self.add_task(spec).await;
+                if let Ok(task_id) = &result {
+                    self.broadcast_update(*task_id);
+                }
+                let _ = reply.send(result);
             }
             OrchestratorCommand::RemoveTask { task_id, reply } => {
                 tracing::info!(task_id = %task_id, "command: remove_task");
-                let _ = reply.send(self.remove_task(&task_id));
+                let result = self.remove_task(&task_id);
+                if result.is_ok() {
+                    self.broadcast_update(task_id);
+                }
+                let _ = reply.send(result);
             }
             OrchestratorCommand::StartTask { task_id, reply } => {
                 tracing::info!(task_id = %task_id, "command: start_task");

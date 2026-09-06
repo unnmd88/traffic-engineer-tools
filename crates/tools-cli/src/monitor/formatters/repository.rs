@@ -12,7 +12,7 @@ pub fn format_repository(repo: &TaskRepository) -> String {
     for task in repo.tasks_sorted_by_id() {
         let task_snapshot = task.snapshot();
         let poll_config = task.poll_config();
-        let m = task_snapshot.metrics();
+        let metrics = task_snapshot.metrics();
         let history = task.history();
 
         // Metadata
@@ -24,10 +24,12 @@ pub fn format_repository(repo: &TaskRepository) -> String {
         ));
 
         let limit = match poll_config.limit {
-            0 => "infinity",
-            _ => {
-                &format!("{}({} remained)", poll_config.limit, poll_config.limit - m.total_attempts)
-            }
+            0 => "infinity".to_string(),
+            _ => format!(
+                "{}({} remained)",
+                poll_config.limit,
+                poll_config.limit.saturating_sub(metrics.total_attempts)
+            ),
         };
 
         output.push_str(&format!("Interval: {} Limit: {limit}\n", poll_config.interval.as_secs()));
@@ -35,15 +37,21 @@ pub fn format_repository(repo: &TaskRepository) -> String {
         output.push_str(LINE_THIN_LN);
 
         // Metrics
+        let latency = if metrics.successful > 0 {
+            format!(
+                "{}ms (min: {}ms max: {}ms)",
+                metrics.current_latency_ms, metrics.min_latency_ms, metrics.max_latency_ms
+            )
+        } else {
+            "n/a".to_string()
+        };
         output.push_str(&format!(
-            "Status: {}\nRequests: {} (✓{} ✗{})  |  Latency: {}ms (min: {}ms max: {}ms)\n",
+            "Status: {}\nRequests: {} (✓{} ✗{})  |  Latency: {}\n",
             task_snapshot.poll_status(),
-            m.total_attempts,
-            m.successful,
-            m.errors,
-            m.current_latency_ms,
-            m.min_latency_ms,
-            m.max_latency_ms,
+            metrics.total_attempts,
+            metrics.successful,
+            metrics.errors,
+            latency,
         ));
         if !history.is_empty() {
             output.push_str(&format!("History: {}\n", history.len()));
