@@ -1,8 +1,11 @@
 use std::{collections::VecDeque, mem};
 
 use crate::{
-    monitor::task::{PollStatus, TaskId, TaskSpec, UseCaseQuery},
-    polling::{Metrics, PollConfig, PollResult},
+    monitor::{
+        task::{PollStatus, TaskId, TaskSpec, UseCaseQuery},
+        usecase::UseCaseOutput,
+    },
+    polling::{Metrics, PollConfig, Response},
 };
 use chrono::{DateTime, Local};
 
@@ -63,7 +66,7 @@ impl Default for TaskHistory {
 
 #[derive(Clone, Debug)]
 pub struct TaskSnapshot {
-    poll_result: PollResult,
+    poll_result: Option<Response<UseCaseOutput>>,
     metrics: Metrics,
     poll_status: PollStatus,
 }
@@ -73,9 +76,9 @@ impl TaskSnapshot {
         Self::default()
     }
 
-    pub fn with_poll_result(self, poll_result: PollResult) -> Self {
+    pub fn with_poll_result(self, poll_result: Response<UseCaseOutput>) -> Self {
         Self {
-            poll_result,
+            poll_result: Some(poll_result),
             ..self
         }
     }
@@ -91,8 +94,8 @@ impl TaskSnapshot {
         Self { metrics, ..self }
     }
 
-    pub fn poll_result(&self) -> &PollResult {
-        &self.poll_result
+    pub fn poll_result(&self) -> Option<&Response<UseCaseOutput>> {
+        self.poll_result.as_ref()
     }
 
     pub fn poll_status(&self) -> &PollStatus {
@@ -108,7 +111,7 @@ impl Default for TaskSnapshot {
     fn default() -> Self {
         Self {
             poll_status: PollStatus::Idle,
-            poll_result: PollResult::Initial,
+            poll_result: None,
             metrics: Metrics::default(),
         }
     }
@@ -161,8 +164,8 @@ impl TaskEntity {
         &self.snapshot
     }
 
-    pub fn poll_result(&self) -> &PollResult {
-        &self.snapshot.poll_result
+    pub fn poll_result(&self) -> Option<&Response<UseCaseOutput>> {
+        self.snapshot.poll_result()
     }
 
     pub fn status(&self) -> &PollStatus {

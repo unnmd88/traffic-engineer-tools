@@ -4,7 +4,7 @@ use super::format_oids;
 use tools_core::DT_FMT_WITH_MICROSECONDS;
 use tools_core::monitor::task::TaskRepository;
 use tools_core::monitor::usecase::UseCaseOutput;
-use tools_core::polling::PollResult;
+use tools_core::polling::Response;
 
 pub fn format_repository(repo: &TaskRepository) -> String {
     let mut output = String::new();
@@ -51,14 +51,11 @@ pub fn format_repository(repo: &TaskRepository) -> String {
                 output.push_str(&format!(
                     "{} {}\n",
                     match h.snapshot.poll_result() {
-                        PollResult::Initial => "initial".to_string(),
-                        PollResult::Success(r) => format!(
-                            "success(attempts: {}, {}ms)",
-                            r.attempts,
-                            r.elapsed.as_millis()
-                        ),
-                        PollResult::NoResponse(_) => "no response".to_string(),
-                        PollResult::Fail { message } => format!("fail: {message}"),
+                        None => "initial".to_string(),
+                        Some(Response::Success {
+                            attempts, elapsed, ..
+                        }) => format!("success(attempts: {attempts}, {}ms)", elapsed.as_millis()),
+                        Some(Response::NoResponse { .. }) => "no response".to_string(),
                     },
                     h.timestamp.format(DT_FMT_WITH_MICROSECONDS)
                 ));
@@ -69,17 +66,16 @@ pub fn format_repository(repo: &TaskRepository) -> String {
 
         // Response
         match task_snapshot.poll_result() {
-            PollResult::Success(response) => {
-                if let UseCaseOutput::SnmpGet(snmp) = &response.payload {
-                    output.push_str("Snmp-get response:\n");
-                    output.push_str(&format_oids(&snmp.samples));
-                    output.push('\n');
-                }
+            Some(Response::Success { payload, .. }) => {
+                let UseCaseOutput::SnmpGet(snmp) = payload;
+                output.push_str("Snmp-get response:\n");
+                output.push_str(&format_oids(&snmp.samples));
+                output.push('\n');
             }
-            PollResult::NoResponse(errors) => {
+            Some(Response::NoResponse { errors, .. }) => {
                 output.push_str(&format!("No response: {} attempts\n", errors.len()));
             }
-            _ => {}
+            None => {}
         }
 
         output.push_str(LINE_DOTTED_LN);

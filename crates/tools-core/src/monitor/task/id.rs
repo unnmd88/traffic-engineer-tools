@@ -18,6 +18,7 @@ pub enum PollStatus {
     Active,
     Paused,
     RatedLimit,
+    Restarting,
 }
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]

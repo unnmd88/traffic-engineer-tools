@@ -4,9 +4,9 @@ use tokio::time::Duration;
 use async_trait::async_trait;
 
 use crate::{
-    error::{BuildMonitorError, ParseError, PollError},
+    error::{BuildMonitorError, ParseError},
     monitor::task::{QuerySnmpGet, SnmpOidItem, UseCaseQuery},
-    polling::{AttemptConfig, Pollable},
+    polling::{AttemptConfig, AttemptError, Pollable},
     snmp::{
         SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, adapters::SnmpReader,
         community::Community, oid::SnmpOid, profiles::SnmpProfile,
@@ -32,7 +32,7 @@ pub enum UseCaseOutput {
 impl Pollable for UseCase {
     type Output = UseCaseOutput;
 
-    async fn poll(&self) -> Result<UseCaseOutput, PollError> {
+    async fn poll(&self) -> Result<UseCaseOutput, AttemptError> {
         match self {
             Self::SnmpGet(a) => a.poll().await.map(UseCaseOutput::SnmpGet),
         }

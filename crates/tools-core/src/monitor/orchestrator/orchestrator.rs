@@ -8,9 +8,9 @@ use crate::{
     error::OrchestratorError,
     monitor::{
         task::{PollStatus, TaskEntity, TaskId, TaskRepository, TaskSnapshot, TaskSpec},
-        usecase::UseCase,
+        usecase::{UseCase, UseCaseOutput},
     },
-    polling::worker::{PollWorker, WorkerEvent, WorkerHandle, WorkerId},
+    polling::worker::{PollWorker, WorkerEvent, WorkerFinished, WorkerHandle, WorkerId},
 };
 
 // Команды извне (Application/API)
@@ -64,7 +64,7 @@ struct RestartState {
 
 struct WorkerExit {
     task_id: TaskId,
-    outcome: Result<(), Box<dyn std::any::Any + Send>>,
+    outcome: Result<WorkerFinished, Box<dyn std::any::Any + Send>>,
 }
 
 pub struct Orchestrator {
@@ -72,8 +72,8 @@ pub struct Orchestrator {
     tasks: HashMap<TaskId, TaskRuntime>,
     join_set: JoinSet<WorkerExit>,
     cmd_rx: mpsc::Receiver<OrchestratorCommand>,
-    events_tx: mpsc::Sender<WorkerEvent>,
-    events_rx: mpsc::Receiver<WorkerEvent>,
+    events_tx: mpsc::Sender<WorkerEvent<UseCaseOutput>>,
+    events_rx: mpsc::Receiver<WorkerEvent<UseCaseOutput>>,
     broadcast_tx: broadcast::Sender<OrchestratorEvent>,
     supervisor_tick: tokio::time::Interval,
 }
@@ -91,7 +91,7 @@ fn backoff_delay(attempt: u32) -> Duration {
 impl Orchestrator {
     pub fn new() -> (Self, OrchestratorHandle) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
-        let (events_tx, events_rx) = mpsc::channel(32);
+        let (events_tx, events_rx) = mpsc::channel::<WorkerEvent<UseCaseOutput>>(32);
         let (broadcast_tx, _) = broadcast::channel(16);
         (
             Self {
@@ -162,6 +162,7 @@ impl Orchestrator {
 
         let use_case = self.build_use_case(task_id).await?;
         self.spawn_worker(task_id.clone(), use_case);
+        self.set_status(task_id, PollStatus::Active);
         self.broadcast_update(task_id.clone());
         Ok(())
     }
@@ -272,7 +273,7 @@ impl Orchestrator {
         let _ = self.repository.update_status(task_id, status);
     }
 
-    fn handle_worker_event(&mut self, event: WorkerEvent) {
+    fn handle_worker_event(&mut self, event: WorkerEvent<UseCaseOutput>) {
         let task_id = TaskId(event.id.0);
         let Some(task) = self.repository.get_task(&task_id) else {
             tracing::warn!(worker_id = ?event.id, "task for worker not found");
@@ -287,7 +288,7 @@ impl Orchestrator {
         };
 
         let snapshot = TaskSnapshot::new()
-            .with_poll_result(event.poll_result)
+            .with_poll_result(event.result)
             .with_poll_status(status)
             .with_metrics(event.metrics);
 
@@ -308,13 +309,16 @@ impl Orchestrator {
     fn handle_worker_exit(&mut self, result: Result<WorkerExit, tokio::task::JoinError>) {
         match result {
             Ok(exit) => match exit.outcome {
-                Ok(()) => {
+                Ok(WorkerFinished::Completed) => {
                     if let Some(runtime) = self.tasks.get_mut(&exit.task_id) {
                         runtime.worker_control = None;
                     }
                     self.set_status(&exit.task_id, PollStatus::RatedLimit);
                     self.broadcast_update(exit.task_id);
-                    tracing::info!(task_id = %exit.task_id, "worker finished (rate limit)");
+                    tracing::info!(task_id = %exit.task_id, "worker completed");
+                }
+                Ok(WorkerFinished::Failed(message)) => {
+                    self.schedule_restart(exit.task_id, message);
                 }
                 Err(panic) => {
                     let message = panic
@@ -322,26 +326,34 @@ impl Orchestrator {
                         .map(|s| (*s).to_string())
                         .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
                         .unwrap_or_else(|| "unknown panic".to_string());
-
-                    let Some(runtime) = self.tasks.get_mut(&exit.task_id) else {
-                        return;
-                    };
-                    runtime.worker_control = None;
-                    runtime.restart.attempts += 1;
-                    let delay = backoff_delay(runtime.restart.attempts);
-                    runtime.restart.next_at = Some(Instant::now() + delay);
-                    tracing::error!(
-                        task_id = %exit.task_id,
-                        attempt = runtime.restart.attempts,
-                        delay_ms = delay.as_millis() as u64,
-                        "worker panicked ({message}), scheduling restart"
-                    );
+                    self.schedule_restart(exit.task_id, message);
                 }
             },
             Err(join_err) => {
                 tracing::debug!(error = %join_err, "worker task cancelled");
             }
         }
+    }
+
+    fn schedule_restart(&mut self, task_id: TaskId, message: String) {
+        let (attempt, delay) = {
+            let Some(runtime) = self.tasks.get_mut(&task_id) else {
+                return;
+            };
+            runtime.worker_control = None;
+            runtime.restart.attempts += 1;
+            let delay = backoff_delay(runtime.restart.attempts);
+            (runtime.restart.attempts, delay)
+        };
+
+        self.set_status(&task_id, PollStatus::Restarting);
+        self.broadcast_update(task_id.clone());
+        tracing::error!(
+            task_id = %task_id,
+            attempt,
+            delay_ms = delay.as_millis() as u64,
+            "worker failed ({message}), scheduling restart"
+        );
     }
 
     async fn supervise_due_restarts(&mut self) {
@@ -366,6 +378,7 @@ impl Orchestrator {
         match self.build_use_case(&task_id).await {
             Ok(use_case) => {
                 self.spawn_worker(task_id.clone(), use_case);
+                self.set_status(&task_id, PollStatus::Active);
                 self.broadcast_update(task_id);
             }
             Err(e) => {
