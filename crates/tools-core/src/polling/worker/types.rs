@@ -1,6 +1,6 @@
 use derive_more::{Constructor, Display, Into};
 
-use crate::polling::{Metrics, PollResult};
+use crate::polling::{Metrics, Response};
 
 #[derive(Debug, Display, Into, Clone, Copy, Hash, Eq, PartialEq, Constructor)]
 pub struct WorkerId(pub u64);
@@ -24,9 +24,19 @@ impl WorkerHandle {
     }
 }
 
+// Периодическое событие воркера: штатный итог опроса (value).
 #[derive(Clone)]
-pub struct WorkerEvent {
+pub struct WorkerEvent<T> {
     pub id: WorkerId,
     pub metrics: Metrics,
-    pub poll_result: PollResult,
+    pub result: Response<T>,
+}
+
+// Финальный итог завершения воркера (через JoinHandle).
+#[derive(Debug)]
+pub enum WorkerFinished {
+    /// Дошёл до лимита / потребитель ушёл.
+    Completed,
+    /// Фатальная ошибка.
+    Failed(String),
 }

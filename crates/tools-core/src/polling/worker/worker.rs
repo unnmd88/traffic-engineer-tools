@@ -1,29 +1,25 @@
 use tokio::sync::mpsc;
 
-use crate::error::PollError;
 use crate::polling::config::PollConfig;
-use crate::polling::worker::types::WorkerEvent;
+use crate::polling::worker::types::{WorkerEvent, WorkerFinished};
 use crate::polling::worker::WorkerId;
-use crate::polling::{Metrics, PollResult, Pollable, Response, poll::poll};
+use crate::polling::{Metrics, Pollable, Response, poll::poll};
 
 pub struct PollWorker<A: Pollable> {
     id: WorkerId,
     poll_config: PollConfig,
     metrics: Metrics,
     adapter: A,
-    event_tx: mpsc::Sender<WorkerEvent>,
+    event_tx: mpsc::Sender<WorkerEvent<A::Output>>,
     interval_tick: tokio::time::Interval,
 }
 
-impl<A: Pollable> PollWorker<A>
-where
-    PollResult: From<Response<A::Output>>,
-{
+impl<A: Pollable> PollWorker<A> {
     pub fn new(
         id: WorkerId,
         adapter: A,
         poll_config: PollConfig,
-        event_tx: mpsc::Sender<WorkerEvent>,
+        event_tx: mpsc::Sender<WorkerEvent<A::Output>>,
         metrics: Metrics,
     ) -> Self {
         Self {
@@ -37,7 +33,7 @@ where
     }
 
     #[tracing::instrument(name = "poll_worker", skip_all, fields(worker_id = %self.id))]
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> WorkerFinished {
         tracing::info!("worker started");
 
         loop {
@@ -45,33 +41,30 @@ where
 
             // seed-метрики (после рестарта) могли уже исчерпать лимит
             if self.limit_reached() {
-                break;
+                return WorkerFinished::Completed;
             }
 
-            let poll_result = match poll(&self.poll_config.attempt, &self.adapter).await {
+            match poll(&self.poll_config.attempt, &self.adapter).await {
                 Ok(response) => {
-                    self.metrics = self.metrics.with_success(response.elapsed);
-                    response.into()
+                    self.metrics = update_metrics(self.metrics, &response);
+                    let event = WorkerEvent {
+                        id: self.id,
+                        metrics: self.metrics,
+                        result: response,
+                    };
+                    if self.event_tx.send(event).await.is_err() {
+                        tracing::warn!("receiver dropped");
+                        return WorkerFinished::Completed;
+                    }
                 }
-                Err(e) => {
-                    self.metrics = self.metrics.with_error();
-                    convert_error(e)
+                Err(fatal) => {
+                    return WorkerFinished::Failed(fatal.message);
                 }
-            };
-
-            let event = WorkerEvent {
-                id: self.id,
-                metrics: self.metrics,
-                poll_result,
-            };
-            if self.event_tx.send(event).await.is_err() {
-                tracing::warn!("receiver dropped");
-                break;
             }
 
             if self.limit_reached() {
                 tracing::info!(limit = self.poll_config.limit, "rate limit reached");
-                break;
+                return WorkerFinished::Completed;
             }
         }
     }
@@ -81,9 +74,9 @@ where
     }
 }
 
-fn convert_error(e: PollError) -> PollResult {
-    match e {
-        PollError::NoResponse { errors } => PollResult::NoResponse(errors),
-        PollError::Other { message } => PollResult::Fail { message },
+fn update_metrics<T>(metrics: Metrics, response: &Response<T>) -> Metrics {
+    match response {
+        Response::Success { elapsed, .. } => metrics.with_success(*elapsed),
+        Response::NoResponse { .. } => metrics.with_error(),
     }
 }

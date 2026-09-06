@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 
-use crate::error::PollError;
+use crate::polling::error::AttemptError;
 
 #[async_trait]
 pub trait Pollable: Send + Sync {
     type Output: Send;
 
-    async fn poll(&self) -> Result<Self::Output, PollError>;
+    async fn poll(&self) -> Result<Self::Output, AttemptError>;
 }

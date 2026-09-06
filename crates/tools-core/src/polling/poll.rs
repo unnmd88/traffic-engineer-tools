@@ -1,15 +1,13 @@
-use crate::{
-    PollErrorContext,
-    error::PollError,
-    polling::{AttemptConfig, Pollable, Response},
+use crate::polling::{
+    AttemptConfig, AttemptError, FatalError, PollErrorContext, Pollable, Response,
 };
-use chrono::{Local, Utc};
-use tokio::time::{Duration, Instant, error::Elapsed, sleep, timeout};
+use chrono::Local;
+use tokio::time::{Instant, sleep, timeout};
 
 pub async fn poll<A: Pollable>(
     config: &AttemptConfig,
     adapter: &A,
-) -> Result<Response<A::Output>, PollError> {
+) -> Result<Response<A::Output>, FatalError> {
     let start = Instant::now();
     let mut errors = Vec::with_capacity(config.retries as usize);
 
@@ -19,19 +17,22 @@ pub async fn poll<A: Pollable>(
 
         match attempt_result {
             Ok(Ok(payload)) => {
-                return Ok(Response {
-                    elapsed,
+                return Ok(Response::Success {
                     timestamp: Local::now(),
-                    errors,
                     attempts: attempt,
+                    errors,
+                    elapsed,
                     payload,
                 });
             }
-            Ok(Err(e)) => {
+            Ok(Err(AttemptError::Fatal(message))) => {
+                return Err(FatalError { message });
+            }
+            Ok(Err(AttemptError::Transient(message))) => {
                 errors.push(PollErrorContext {
                     attempt,
                     elapsed,
-                    message: e.to_string(),
+                    message,
                 });
             }
             Err(_) => {
@@ -47,5 +48,11 @@ pub async fn poll<A: Pollable>(
             sleep(config.retry_delay).await;
         }
     }
-    Err(PollError::NoResponse { errors })
+
+    Ok(Response::NoResponse {
+        timestamp: Local::now(),
+        attempts: config.retries,
+        errors,
+        elapsed: start.elapsed(),
+    })
 }
