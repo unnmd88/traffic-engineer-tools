@@ -56,10 +56,10 @@ impl UseCase {
             port: q.port,
             community: q.community,
             // добавить CLIENT_TIMEOUT_MARGIN, чтобы внутренний таймаут не наступил раньше чем в async poll.
-            timeout: attempt.timeout.saturating_add(CLIENT_TIMEOUT_MARGIN),
+            timeout: attempt.timeout().saturating_add(CLIENT_TIMEOUT_MARGIN),
             // Ретраями управляет async poll
             retries: 0,
-            retry_delay: attempt.retry_delay,
+            retry_delay: attempt.retry_delay(),
         };
 
         let client = SnmpClient::new(client_config)

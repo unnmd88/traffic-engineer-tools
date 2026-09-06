@@ -12,12 +12,12 @@ pub async fn poll<A: Pollable>(
 ) -> Result<Response<A::Output>, FatalError> {
     let started_at = Instant::now();
     // `retries` — число повторов ПОСЛЕ первой попытки.
-    let total_attempts = config.retries.saturating_add(1);
+    let total_attempts = config.retries().saturating_add(1);
     let mut errors = Vec::with_capacity(total_attempts as usize);
 
     for attempt in 1..=total_attempts {
         let attempt_started_at = Instant::now();
-        let attempt_result = timeout(config.timeout, adapter.poll()).await;
+        let attempt_result = timeout(config.timeout(), adapter.poll()).await;
 
         match attempt_result {
             Ok(Ok(payload)) => {
@@ -49,7 +49,7 @@ pub async fn poll<A: Pollable>(
         }
 
         if attempt < total_attempts {
-            sleep(config.retry_delay).await;
+            sleep(config.retry_delay()).await;
         }
     }
 
@@ -102,11 +102,12 @@ mod tests {
     }
 
     fn cfg(retries: u8) -> AttemptConfig {
-        AttemptConfig {
-            timeout: Duration::from_millis(100),
+        AttemptConfig::try_new(
+            Duration::from_millis(100),
             retries,
-            retry_delay: Duration::from_millis(1),
-        }
+            Duration::from_millis(1),
+        )
+        .unwrap()
     }
 
     #[tokio::test]

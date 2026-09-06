@@ -33,6 +33,8 @@ pub enum Error {
     Application(#[from] ApplicationError),
     #[error("{0}")]
     Orchestrator(#[from] OrchestratorError),
+    #[error("{0}")]
+    Config(#[from] ConfigError),
 }
 
 #[derive(Error, Debug, Clone)]
@@ -45,6 +47,22 @@ pub enum OrchestratorError {
     TaskNotFound { task_id: String },
     #[error("orchestrator channel closed")]
     ChannelClosed,
+}
+
+/// Ошибка валидации конфигурации задачи (бизнес-правила значений).
+#[derive(Error, Debug, Clone)]
+pub enum ConfigError {
+    #[error("task name must not be empty")]
+    EmptyTaskName,
+    #[error("poll interval must be greater than zero")]
+    IntervalMustBePositive,
+    #[error("attempt timeout must be greater than zero")]
+    TimeoutMustBePositive,
+    #[error(
+        "poll interval ({interval_ms} ms) must be >= total attempt budget \
+         ({budget_ms} ms = timeout * (retries + 1) + retry_delay * retries)"
+    )]
+    IntervalShorterThanAttemptBudget { interval_ms: u64, budget_ms: u64 },
 }
 
 #[derive(Error, Debug, Clone)]

@@ -77,16 +77,16 @@ impl TryFrom<TaskConfigDto> for TaskSpec {
     type Error = Error;
 
     fn try_from(dto: TaskConfigDto) -> Result<Self, Self::Error> {
-        let attempt = AttemptConfig {
-            timeout: Duration::from_millis(dto.attempt_config.timeout_ms),
-            retries: dto.attempt_config.retries,
-            retry_delay: Duration::from_millis(dto.attempt_config.retry_delay_ms),
-        };
-        let poll_config = PollConfig {
-            interval: Duration::from_secs(dto.interval_seconds),
-            limit: dto.limit,
+        let attempt = AttemptConfig::try_new(
+            Duration::from_millis(dto.attempt_config.timeout_ms),
+            dto.attempt_config.retries,
+            Duration::from_millis(dto.attempt_config.retry_delay_ms),
+        )?;
+        let poll_config = PollConfig::try_new(
+            Duration::from_secs(dto.interval_seconds),
+            dto.limit,
             attempt,
-        };
+        )?;
 
         let query = match dto.query {
             QueryDto::SnmpGet(q) => {
@@ -108,12 +108,12 @@ impl TryFrom<TaskConfigDto> for TaskSpec {
             }
         };
 
-        Ok(TaskSpec {
-            name: dto.name,
+        Ok(TaskSpec::try_new(
+            dto.name,
             query,
             poll_config,
-            deep_history: dto.deep_history.unwrap_or(DEFAULT_HISTORY_DEPTH),
-        })
+            dto.deep_history.unwrap_or(DEFAULT_HISTORY_DEPTH),
+        )?)
     }
 }
 
@@ -150,7 +150,7 @@ tasks:
             .unwrap();
 
         assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "T-1");
-        assert_eq!(specs[0].poll_config.interval, Duration::from_secs(5));
+        assert_eq!(specs[0].name(), "T-1");
+        assert_eq!(specs[0].poll_config().interval(), Duration::from_secs(5));
     }
 }

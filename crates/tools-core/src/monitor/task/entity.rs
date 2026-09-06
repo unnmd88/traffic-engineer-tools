@@ -133,7 +133,7 @@ impl TaskEntity {
         Self {
             id,
             snapshot: TaskSnapshot::default(),
-            history: TaskHistory::new(spec.deep_history),
+            history: TaskHistory::new(spec.deep_history()),
             spec,
             created_at: dt.clone(),
             updated_at: dt,
@@ -149,15 +149,15 @@ impl TaskEntity {
     }
 
     pub fn name(&self) -> &str {
-        &self.spec.name
+        self.spec.name()
     }
 
     pub fn query(&self) -> &UseCaseQuery {
-        &self.spec.query
+        self.spec.query()
     }
 
     pub fn poll_config(&self) -> &PollConfig {
-        &self.spec.poll_config
+        self.spec.poll_config()
     }
 
     pub fn snapshot(&self) -> &TaskSnapshot {

@@ -28,7 +28,7 @@ impl<A: Pollable> PollWorker<A> {
             metrics,
             adapter,
             event_tx,
-            interval_tick: tokio::time::interval(poll_config.interval),
+            interval_tick: tokio::time::interval(poll_config.interval()),
         }
     }
 
@@ -44,7 +44,7 @@ impl<A: Pollable> PollWorker<A> {
                 return WorkerFinished::Completed;
             }
 
-            match poll(&self.poll_config.attempt, &self.adapter).await {
+            match poll(&self.poll_config.attempt(), &self.adapter).await {
                 Ok(response) => {
                     self.metrics = update_metrics(self.metrics, &response);
                     let event = WorkerEvent {
@@ -63,14 +63,14 @@ impl<A: Pollable> PollWorker<A> {
             }
 
             if self.limit_reached() {
-                tracing::info!(limit = self.poll_config.limit, "rate limit reached");
+                tracing::info!(limit = self.poll_config.limit(), "rate limit reached");
                 return WorkerFinished::Completed;
             }
         }
     }
 
     fn limit_reached(&self) -> bool {
-        self.poll_config.limit > 0 && self.metrics.total_attempts >= self.poll_config.limit
+        self.poll_config.limit() > 0 && self.metrics.total_attempts >= self.poll_config.limit()
     }
 }
 

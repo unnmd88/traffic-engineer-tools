@@ -23,16 +23,16 @@ pub fn format_repository(repo: &TaskRepository) -> String {
             task.query().target(),
         ));
 
-        let limit = match poll_config.limit {
+        let limit = match poll_config.limit() {
             0 => "infinity".to_string(),
             _ => format!(
                 "{}({} remained)",
-                poll_config.limit,
-                poll_config.limit.saturating_sub(metrics.total_attempts)
+                poll_config.limit(),
+                poll_config.limit().saturating_sub(metrics.total_attempts)
             ),
         };
 
-        output.push_str(&format!("Interval: {} Limit: {limit}\n", poll_config.interval.as_secs()));
+        output.push_str(&format!("Interval: {} Limit: {limit}\n", poll_config.interval().as_secs()));
 
         output.push_str(LINE_THIN_LN);
 

@@ -139,7 +139,7 @@ impl Orchestrator {
     fn handle_command(&mut self, cmd: OrchestratorCommand) -> bool {
         match cmd {
             OrchestratorCommand::AddTask { spec, reply } => {
-                tracing::info!(name = %spec.name, target = %spec.query.target(), "command: add_task");
+                tracing::info!(name = %spec.name(), target = %spec.query().target(), "command: add_task");
                 let task_id = self.add_task(spec);
                 self.broadcast_update(task_id);
                 let _ = reply.send(Ok(task_id));
@@ -161,7 +161,7 @@ impl Orchestrator {
                 self.stop_task(&task_id);
             }
             OrchestratorCommand::UpdateTask { task_id, spec, reply } => {
-                tracing::info!(task_id = %task_id, name = %spec.name, "command: update_task");
+                tracing::info!(task_id = %task_id, name = %spec.name(), "command: update_task");
                 let _ = reply.send(self.update_task(&task_id, spec));
             }
             OrchestratorCommand::GetSnapshot { reply } => {
@@ -248,7 +248,7 @@ impl Orchestrator {
         let Some((query, attempt)) = self
             .repository
             .get_task(&task_id)
-            .map(|t| (t.spec().query.clone(), t.spec().poll_config.attempt))
+            .map(|t| (t.spec().query().clone(), t.spec().poll_config().attempt()))
         else {
             tracing::warn!(task_id = %task_id, "cannot schedule build: task not found");
             return false;
@@ -351,7 +351,7 @@ impl Orchestrator {
         // успешного poll) — сбрасываем backoff.
         self.supervisor.reset_restart(&task_id);
 
-        let limit = task.poll_config().limit;
+        let limit = task.poll_config().limit();
         let status = if limit > 0 && event.metrics.total_attempts >= limit {
             PollStatus::RatedLimit
         } else {
