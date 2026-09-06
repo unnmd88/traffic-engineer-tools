@@ -32,7 +32,7 @@ impl<A: Pollable> PollWorker<A> {
         }
     }
 
-    #[tracing::instrument(name = "poll_worker", skip_all, fields(worker_id = %self.id))]
+    #[tracing::instrument(name = "worker", skip_all, fields(worker_id = %self.id))]
     pub async fn run(mut self) -> WorkerFinished {
         tracing::info!("worker started");
 

@@ -65,7 +65,7 @@ impl Supervisor {
                 Ok(finished) => finished,
                 Err(panic) => WorkerFinished::Failed(format!("panic: {}", panic_message(panic))),
             };
-            tracing::info!(task_id = %task_id, ?finished, "worker task finished");
+            tracing::info!(target: "supervisor", task_id = %task_id, ?finished, "worker task finished");
             let _ = exit_tx.send((task_id, finished)).await;
         });
 

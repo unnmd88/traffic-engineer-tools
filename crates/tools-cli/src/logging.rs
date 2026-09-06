@@ -20,7 +20,7 @@ pub fn init_file_logging(log_dir: &str, file_prefix: &str) -> anyhow::Result<Wor
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::Layer::new().with_writer(non_blocking).with_ansi(false))
+        .with(fmt::Layer::new().with_writer(non_blocking).with_ansi(false).with_target(false))
         .init();
 
     Ok(guard)
