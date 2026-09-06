@@ -23,7 +23,9 @@ pub struct FatalError {
 // Контекст одной неудачной попытки.
 #[derive(Debug, Clone)]
 pub struct PollErrorContext {
+    /// Номер попытки (1-based).
     pub attempt: u8,
+    /// Длительность именно этой попытки (не суммарная).
     pub elapsed: Duration,
     pub message: String,
 }
