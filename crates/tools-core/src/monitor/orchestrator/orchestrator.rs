@@ -1,8 +1,6 @@
-use std::{collections::HashMap, panic::AssertUnwindSafe, sync::Arc, time::{Duration, Instant}};
+use std::{sync::Arc, time::{Duration, Instant}};
 
-use tokio::{sync::{broadcast, mpsc, oneshot}, task::JoinSet};
-
-use futures_util::FutureExt;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
     error::OrchestratorError,
@@ -10,8 +8,10 @@ use crate::{
         task::{PollStatus, TaskEntity, TaskId, TaskRepository, TaskSnapshot, TaskSpec},
         usecase::{UseCase, UseCaseOutput},
     },
-    polling::worker::{PollWorker, WorkerEvent, WorkerFinished, WorkerHandle, WorkerId},
+    polling::worker::{WorkerEvent, WorkerFinished},
 };
+
+use super::supervisor::Supervisor;
 
 // Команды извне (Application/API)
 pub enum OrchestratorCommand {
@@ -50,42 +50,13 @@ pub enum OrchestratorEvent {
     },
 }
 
-#[derive(Debug)]
-struct TaskRuntime {
-    worker_control: Option<WorkerHandle>,
-    restart: RestartState,
-}
-
-#[derive(Debug, Default)]
-struct RestartState {
-    attempts: u32,
-    next_at: Option<Instant>,
-}
-
-struct WorkerExit {
-    task_id: TaskId,
-    outcome: Result<WorkerFinished, Box<dyn std::any::Any + Send>>,
-}
-
 pub struct Orchestrator {
     repository: TaskRepository,
-    tasks: HashMap<TaskId, TaskRuntime>,
-    join_set: JoinSet<WorkerExit>,
+    supervisor: Supervisor,
     cmd_rx: mpsc::Receiver<OrchestratorCommand>,
-    events_tx: mpsc::Sender<WorkerEvent<UseCaseOutput>>,
     events_rx: mpsc::Receiver<WorkerEvent<UseCaseOutput>>,
     broadcast_tx: broadcast::Sender<OrchestratorEvent>,
     supervisor_tick: tokio::time::Interval,
-}
-
-const RESTART_BACKOFF_BASE: Duration = Duration::from_secs(1);
-const RESTART_BACKOFF_MAX: Duration = Duration::from_secs(60);
-
-fn backoff_delay(attempt: u32) -> Duration {
-    let shift = attempt.saturating_sub(1).min(6);
-    RESTART_BACKOFF_BASE
-        .saturating_mul(1u32 << shift)
-        .min(RESTART_BACKOFF_MAX)
 }
 
 impl Orchestrator {
@@ -96,10 +67,8 @@ impl Orchestrator {
         (
             Self {
                 repository: TaskRepository::new_empty(),
-                tasks: HashMap::new(),
-                join_set: JoinSet::new(),
+                supervisor: Supervisor::new(events_tx),
                 cmd_rx,
-                events_tx,
                 events_rx,
                 broadcast_tx,
                 supervisor_tick: tokio::time::interval(Duration::from_secs(1)),
@@ -115,7 +84,11 @@ impl Orchestrator {
             tokio::select! {
                 Some(cmd) = self.cmd_rx.recv() => self.handle_command(cmd).await,
                 Some(ev)  = self.events_rx.recv() => self.handle_worker_event(ev),
-                Some(res) = self.join_set.join_next() => self.handle_worker_exit(res),
+                exit = self.supervisor.next_exit() => {
+                    if let Some((task_id, finished)) = exit {
+                        self.handle_worker_exit(task_id, finished);
+                    }
+                }
                 _ = self.supervisor_tick.tick() => self.supervise_due_restarts().await,
             }
         }
@@ -152,11 +125,7 @@ impl Orchestrator {
     }
 
     async fn start_task(&mut self, task_id: &TaskId) -> Result<(), OrchestratorError> {
-        let already_running = self
-            .tasks
-            .get(task_id)
-            .is_some_and(|rt| rt.worker_control.is_some());
-        if already_running {
+        if self.supervisor.is_running(task_id) {
             return Ok(());
         }
 
@@ -168,7 +137,7 @@ impl Orchestrator {
     }
 
     async fn stop_task(&mut self, task_id: &TaskId) {
-        self.stop_worker(task_id);
+        self.supervisor.stop(task_id);
         self.set_status(task_id, PollStatus::Paused);
         self.broadcast_update(task_id.clone());
     }
@@ -186,12 +155,8 @@ impl Orchestrator {
 
         self.repository.update_spec(task_id, spec)?;
 
-        let is_running = self
-            .tasks
-            .get(task_id)
-            .is_some_and(|rt| rt.worker_control.is_some());
-        if is_running {
-            self.stop_worker(task_id);
+        if self.supervisor.is_running(task_id) {
+            self.supervisor.stop(task_id);
             match self.build_use_case(task_id).await {
                 Ok(use_case) => self.spawn_worker(task_id.clone(), use_case),
                 Err(e) => {
@@ -205,11 +170,8 @@ impl Orchestrator {
     }
 
     fn remove_task(&mut self, task_id: &TaskId) -> Result<TaskEntity, OrchestratorError> {
-        if let Some(runtime) = self.tasks.remove(task_id) {
-            if let Some(worker) = runtime.worker_control {
-                worker.abort();
-            }
-        }
+        self.supervisor.stop(task_id);
+        self.supervisor.remove(task_id);
         self.repository.remove_task(task_id).map_err(Into::into)
     }
 
@@ -233,40 +195,8 @@ impl Orchestrator {
         else {
             return;
         };
-
-        let worker_id = WorkerId(task_id.0);
-        let worker = PollWorker::new(
-            worker_id,
-            use_case,
-            poll_config,
-            self.events_tx.clone(),
-            metrics,
-        );
-
-        let exit_task_id = task_id.clone();
-        let abort = self.join_set.spawn(async move {
-            let outcome = AssertUnwindSafe(worker.run()).catch_unwind().await;
-            WorkerExit {
-                task_id: exit_task_id,
-                outcome,
-            }
-        });
-
-        self.tasks.insert(
-            task_id,
-            TaskRuntime {
-                worker_control: Some(WorkerHandle::new(abort)),
-                restart: RestartState::default(),
-            },
-        );
-    }
-
-    fn stop_worker(&mut self, task_id: &TaskId) {
-        if let Some(runtime) = self.tasks.get_mut(task_id) {
-            if let Some(worker) = runtime.worker_control.take() {
-                worker.abort();
-            }
-        }
+        self.supervisor
+            .spawn(task_id, use_case, poll_config, metrics);
     }
 
     fn set_status(&mut self, task_id: &TaskId, status: PollStatus) {
@@ -306,74 +236,39 @@ impl Orchestrator {
         }
     }
 
-    fn handle_worker_exit(&mut self, result: Result<WorkerExit, tokio::task::JoinError>) {
-        match result {
-            Ok(exit) => match exit.outcome {
-                Ok(WorkerFinished::Completed) => {
-                    if let Some(runtime) = self.tasks.get_mut(&exit.task_id) {
-                        runtime.worker_control = None;
-                    }
-                    self.set_status(&exit.task_id, PollStatus::RatedLimit);
-                    self.broadcast_update(exit.task_id);
-                    tracing::info!(task_id = %exit.task_id, "worker completed");
-                }
-                Ok(WorkerFinished::Failed(message)) => {
-                    self.schedule_restart(exit.task_id, message);
-                }
-                Err(panic) => {
-                    let message = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| (*s).to_string())
-                        .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
-                        .unwrap_or_else(|| "unknown panic".to_string());
-                    self.schedule_restart(exit.task_id, message);
-                }
-            },
-            Err(join_err) => {
-                tracing::debug!(error = %join_err, "worker task cancelled");
+    fn handle_worker_exit(&mut self, task_id: TaskId, finished: WorkerFinished) {
+        match finished {
+            WorkerFinished::Completed => {
+                self.supervisor.mark_stopped(&task_id);
+                self.set_status(&task_id, PollStatus::RatedLimit);
+                self.broadcast_update(task_id);
+                tracing::info!(task_id = %task_id, "worker completed");
+            }
+            WorkerFinished::Failed(message) => {
+                let Some((attempt, delay)) = self.supervisor.schedule_restart(&task_id) else {
+                    return;
+                };
+                self.set_status(&task_id, PollStatus::Restarting);
+                self.broadcast_update(task_id.clone());
+                tracing::error!(
+                    task_id = %task_id,
+                    attempt,
+                    delay_ms = delay.as_millis() as u64,
+                    "worker failed ({message}), scheduling restart"
+                );
             }
         }
     }
 
-    fn schedule_restart(&mut self, task_id: TaskId, message: String) {
-        let (attempt, delay) = {
-            let Some(runtime) = self.tasks.get_mut(&task_id) else {
-                return;
-            };
-            runtime.worker_control = None;
-            runtime.restart.attempts += 1;
-            let delay = backoff_delay(runtime.restart.attempts);
-            (runtime.restart.attempts, delay)
-        };
-
-        self.set_status(&task_id, PollStatus::Restarting);
-        self.broadcast_update(task_id.clone());
-        tracing::error!(
-            task_id = %task_id,
-            attempt,
-            delay_ms = delay.as_millis() as u64,
-            "worker failed ({message}), scheduling restart"
-        );
-    }
-
     async fn supervise_due_restarts(&mut self) {
-        let now = Instant::now();
-        let due: Vec<TaskId> = self
-            .tasks
-            .iter()
-            .filter(|(_, rt)| rt.restart.next_at.is_some_and(|t| t <= now))
-            .map(|(id, _)| id.clone())
-            .collect();
-
+        let due = self.supervisor.due_restarts(Instant::now());
         for task_id in due {
             self.restart_task(task_id).await;
         }
     }
 
     async fn restart_task(&mut self, task_id: TaskId) {
-        if let Some(runtime) = self.tasks.get_mut(&task_id) {
-            runtime.restart.next_at = None;
-        }
+        self.supervisor.reset_restart(&task_id);
 
         match self.build_use_case(&task_id).await {
             Ok(use_case) => {
@@ -383,11 +278,7 @@ impl Orchestrator {
             }
             Err(e) => {
                 tracing::warn!(task_id = %task_id, error = %e, "rebuild failed, will retry");
-                if let Some(runtime) = self.tasks.get_mut(&task_id) {
-                    runtime.restart.attempts += 1;
-                    let delay = backoff_delay(runtime.restart.attempts);
-                    runtime.restart.next_at = Some(Instant::now() + delay);
-                }
+                self.supervisor.retry_later(&task_id);
             }
         }
     }
