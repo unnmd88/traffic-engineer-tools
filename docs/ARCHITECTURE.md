@@ -46,8 +46,8 @@
 1. **Ports & Adapters (hexagonal)** — core не зависит от транспорта; протоколы за адаптерами.
 2. **Actor model + Supervisor** — воркеры как легковесные задачи, Orchestrator как супервизор
    (spawn/abort/пересоздание + backoff).
-3. **Закрытые enum'ы** — `UseCase` (адаптеры), `UseCaseOutput` (результаты), `PollResult` (итог)
-   как единый «язык» между воркером, репозиторием и UI.
+3. **Закрытые enum'ы** — `UseCase` (адаптеры), `UseCaseOutput` (результаты), `Response<T>` (итог
+   опроса) как единый «язык» между воркером, репозиторием и UI.
 
 ---
 
@@ -57,7 +57,7 @@
 |---|---|
 | **Клиент** | Обёртка над протоколом: `SnmpReadClient`, далее `HttpClient`, `ModbusClient`. Знает протокол, не знает расписание/задачи. |
 | **Use-case / адаптер** | Тип запроса: `snmp-get` (реализован), далее `http-read`, `modbus-read`, `snmp-set`, `ping`. Реализует `Pollable`. |
-| **`Pollable`** | Трейт адаптера: `async fn poll(&self) -> Result<Output, PollError>` с ассоциированным `type Output: Send`. |
+| **`Pollable`** | Трейт адаптера: `async fn poll(&self) -> Result<Output, AttemptError>` с ассоциированным `type Output: Send`. |
 | **`UseCase`** | Закрытый enum адаптеров (`SnmpGet(SnmpReader)`, …). Сам реализует `Pollable`, объединяя все адаптеры в один тип. |
 | **`UseCaseOutput`** | Закрытый enum результатов адаптера (`SnmpGet(SnmpGetResponse)`, …). |
 | **`UseCaseQuery`** | Закрытый enum валидированного запроса (часть `TaskSpec`). Источник `protocol`/`type_query`/`target`. |
@@ -70,7 +70,10 @@
 | **Snapshot** | Снимок состояния задачи (результат + метрики + статус). |
 | **Repository** | In-memory хранилище задач и их снапшотов. |
 | **Application** | Тонкий клиент: конфиг-слой (валидация в `TaskSpec`) + обёртка над `OrchestratorHandle`. |
-| **`PollResult`** | Итог воркера: `Initial / NoResponse / Fail / Success(Response<UseCaseOutput>)`. |
+| **`Response<T>`** | Итог одной итерации опроса: `Success { payload, … }` / `NoResponse { … }` — оба штатные (value). |
+| **`AttemptError`** | Ошибка одной попытки: `Transient` (ретраится) / `Fatal` (не ретраится). |
+| **`FatalError`** | Фатальная ошибка итерации — единственный возможный `Err` из `poll()`. |
+| **`WorkerFinished`** | Итог завершения воркера: `Completed` / `Failed`. |
 | **SCN** | Site Code Number — ASCII-идентификатор контроллера, встраиваемый в OID (`.1.<len>.<bytes>`). |
 | **Profile** | Вендор/протокол контроллера (Swarco, PotokS, PotokUg405, …). |
 | **Stage / фаза / такт** | Текущая фаза светофорного объекта. |
@@ -84,9 +87,8 @@
 2. **`Application` — тонкий клиент, а не обязательный путь.** Низкоуровневые сценарии
    (проверка OID, тест устройства) собираются напрямую из примитивов, минуя `Application`.
 3. **Core не зависит от UI.** Вывод/форматирование живут в `tctl` (`tools-cli/src/monitor/formatters/`).
-4. **Worker не знает протоколов.** Параметризован только `Pollable` и мостом
-   `PollResult: From<Response<A::Output>>`.
-5. **Закрытые enum'ы вместо `dyn` в ядре.** `UseCase`/`UseCaseOutput`/`PollResult` — закрытые
+4. **Worker не знает протоколов.** Параметризован только `Pollable`; generic по `A::Output`.
+5. **Закрытые enum'ы вместо `dyn` в ядре.** `UseCase`/`UseCaseOutput`/`Response<T>` — закрытые
    множества; `dyn` допустим только на внешних точках расширения (например, history-sink).
 6. **Оркестрация написана один раз.** Таймауты/ретраи/метрики/история — в core, не в адаптерах.
 7. **Адаптер отвечает за интерпретацию.** Сырые байты → `BusinessValue` делает адаптер;
@@ -122,8 +124,8 @@
 | `TaskEntity` | `spec` (Spec) + `snapshot`/`history` (Status) + created/updated |
 | `TaskSnapshot` | `poll_result + metrics + poll_status` на момент времени |
 | `Metrics` | счётчики попыток и латентность (total/success/errors, current/min/max) |
-| `PollResult` | результат опроса: `Success(Response<UseCaseOutput>)` или ошибка |
-| `WorkerEvent` | факты воркера: `{ id, metrics, poll_result }` |
+| `Response<UseCaseOutput>` | итог опроса: `Success` / `NoResponse` |
+| `WorkerEvent<T>` | факты воркера: `{ id, metrics, result: Response<T> }` |
 
 ---
 
@@ -195,12 +197,13 @@ Application::start()
 ```
 интервал сработал
   → PollWorker.run:
-      poll(&attempt, &use_case) — с таймаутом/ретраями
+      poll(&attempt, &use_case) — ретраит только Transient
       адаптер: устройство → сырые данные → UseCaseOutput
-      Response { timestamp, attempts, errors, elapsed, payload }
-      → PollResult::Success(...)  (или NoResponse/Fail)
-      метрики обновляются
-  → WorkerEvent { id, metrics, poll_result }
+      → Response::Success { payload, attempts, errors, elapsed }
+         Response::NoResponse { attempts, errors, elapsed }   (все попытки Transient)
+         Err(FatalError) → WorkerFinished::Failed
+      метрики обновляются (min/max агрегирует репо)
+  → WorkerEvent { id, metrics, result: Response<UseCaseOutput> }
   → events_tx (mpsc) → Orchestrator.handle_worker_event:
       poll_status = f(metrics vs limit): Active | RatedLimit
       TaskSnapshot → TaskRepository.update_snapshot
@@ -228,13 +231,14 @@ RemoveTask:
 
 ```
 воркер завершился → JoinSet.join_next():
-  Ok(WorkerExit{ outcome: Ok(()) })      — rate limit: poll_status = RatedLimit, не рестартуем
-  Ok(WorkerExit{ outcome: Err(panic) })  — panic: планируем рестарт (backoff 1s/2s/4s/…/60s)
-  Err(JoinError::cancelled)              — наш abort(): не рестартуем
+  Ok(WorkerFinished::Completed)   — rate limit: poll_status = RatedLimit, не рестартуем
+  Ok(WorkerFinished::Failed(msg)) — фатально: Restarting + backoff (1s/2s/4s/…/60s) + broadcast
+  Err(panic)                      — паника: то же, что Failed
+  Err(JoinError::cancelled)       — наш abort(): не рестартуем
 
 supervisor_tick (1s):
   для задач с истёкшим restart.next_at:
-    UseCase::build(spec) → spawn_worker (seed-метрики из snapshot) — восстановление
+    UseCase::build(spec) → spawn_worker (seed-метрики из snapshot) → Active + broadcast
 ```
 
 ---
@@ -265,38 +269,43 @@ supervisor_tick (1s):
 ## 9. Модель воркера (stateless)
 
 ```rust
-// Адаптер
+// Адаптер: классифицирует природу ошибки одной попытки
 #[async_trait]
 pub trait Pollable: Send + Sync {
     type Output: Send;
-    async fn poll(&self) -> Result<Self::Output, PollError>;
+    async fn poll(&self) -> Result<Self::Output, AttemptError>;
+}
+
+pub enum AttemptError {
+    Transient(String),   // сеть/таймаут — ретраится
+    Fatal(String),       // баг/конфиг — не ретраится
+}
+
+// Итог итерации опроса (value): оба исхода штатные
+pub enum Response<T> {
+    Success { timestamp, attempts, errors, elapsed, payload: T },
+    NoResponse { timestamp, attempts, errors, elapsed },
 }
 
 // Воркер — generic, без mailbox/команд/FSM
 pub struct PollWorker<A: Pollable> { /* id, poll_config, metrics, adapter, event_tx, tick */ }
 
-impl<A: Pollable> PollWorker<A>
-where PollResult: From<Response<A::Output>>
-{
-    pub fn new(id, adapter, poll_config, event_tx, metrics: Metrics) -> Self;
-
-    #[tracing::instrument(name = "poll_worker", skip_all, fields(worker_id = %self.id))]
-    pub async fn run(self) { /* loop { tick; poll; send event; if limit → break } */ }
+impl<A: Pollable> PollWorker<A> {
+    pub fn new(id, adapter, poll_config, event_tx: Sender<WorkerEvent<A::Output>>, metrics: Metrics) -> Self;
+    pub async fn run(self) -> WorkerFinished;   // Completed | Failed
 }
 
 // Ручка остановки
 pub struct WorkerHandle { abort: tokio::task::AbortHandle }
-impl WorkerHandle {
-    pub fn abort(&self);
-    pub fn id(&self) -> tokio::task::Id;
-}
 
 // Факты воркера
-pub struct WorkerEvent { pub id: WorkerId, pub metrics: Metrics, pub poll_result: PollResult }
+pub struct WorkerEvent<T> { pub id: WorkerId, pub metrics: Metrics, pub result: Response<T> }
+pub enum WorkerFinished { Completed, Failed(String) }
 ```
 
-Воркер опрашивает, пока `total_attempts < limit`; при достижении лимита шлёт финальное
-событие и завершается. Остановка — `abort()`; изменение конфига — пересоздание.
+Воркер опрашивает, пока `total_attempts < limit`; при достижении лимита завершается
+`Completed`. Фатальная ошибка (`AttemptError::Fatal`) → `Failed`. Остановка — `abort()`;
+изменение конфига — пересоздание.
 
 ---
 
@@ -318,23 +327,22 @@ pub struct WorkerEvent { pub id: WorkerId, pub metrics: Metrics, pub poll_result
 pub struct AttemptConfig { pub timeout: Duration, pub retries: u8, pub retry_delay: Duration }
 pub struct PollConfig  { pub interval: Duration, pub limit: u64, pub attempt: AttemptConfig }
 
-// обёртка успешного ответа
-pub struct Response<T> {
-    pub timestamp: DateTime<Local>, pub attempts: u8,
-    pub errors: Vec<PollErrorContext>, pub elapsed: Duration, pub payload: T,
+// ошибки polling
+pub enum AttemptError { Transient(String), Fatal(String) }
+pub struct FatalError { pub message: String }
+
+// итог итерации опроса (value)
+pub enum Response<T> {
+    Success { timestamp, attempts, errors, elapsed, payload: T },
+    NoResponse { timestamp, attempts, errors, elapsed },
 }
 
-// один опрос с ретраями (в core, один раз)
+// один опрос с ретраями (в core, один раз): ретраит Transient, Fatal -> Err
 pub async fn poll<A: Pollable>(config: &AttemptConfig, adapter: &A)
-    -> Result<Response<A::Output>, PollError>;
+    -> Result<Response<A::Output>, FatalError>;
 
-// итог воркера
-pub enum PollResult {
-    Initial,
-    NoResponse(Vec<PollErrorContext>),
-    Fail { message: String },
-    Success(Response<UseCaseOutput>),
-}
+// итог завершения воркера
+pub enum WorkerFinished { Completed, Failed(String) }
 
 // метрики
 pub struct Metrics { /* total/success/errors, current/min/max latency */ }
@@ -344,8 +352,9 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 
 ## 12. Обработка ошибок
 
-- **`PollError`** — сбой опроса (`NoResponse` / `Other`) → `PollResult::NoResponse/Fail`.
-- **`SnmpError`** — протокол (таймаут, auth, OID, разбор).
+- **`AttemptError`** (`polling`) — ошибка одной попытки: `Transient` (ретраится) / `Fatal` (не ретраится).
+- **`FatalError`** (`polling`) — фатальная ошибка итерации, единственный `Err` из `poll()`.
+- **`SnmpError`** (`snmp`) — протокол: `Network`/`Timeout` (transient), `Auth`/`Protocol`/`InvalidOid`/парсерные (fatal).
 - **`ParseError`** — интерпретация сырого значения в `BusinessValue`.
 - **`BuildMonitorError`** — сборка адаптера в `UseCase::build`.
 - **`OrchestratorError`** — команды/оркестрация (`Build`, `TaskRepository`, `TaskNotFound`, `ChannelClosed`).
@@ -357,8 +366,8 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 
 ## 13. Открытые вопросы
 
-- **O-1. `PollResult`/`UseCase` — закрытый enum.** Ок для своих use-case'ов; `dyn` — только на
-  внешних точках расширения (history-sink и т.п.).
+- **O-1. `UseCase`/`UseCaseOutput`/`Response` — закрытые enum'ы.** Ок для своих use-case'ов;
+  `dyn` — только на внешних точках расширения (history-sink и т.п.).
 - **O-2. Лимит рестартов.** Сейчас backoff бесконечный (до cap 60s). Нужен ли `max_restarts`
   + статус `Failed` для задачи, падающей детерминированно.
 - **O-3. Graceful shutdown.** Нет штатной остановки Orchestrator'а/воркеров — `CancellationToken`
@@ -392,14 +401,14 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 | Компонент | Файл |
 |---|---|
 | Трейт адаптера | `crates/tools-core/src/polling/pollable.rs` |
-| Опрос/расписание | `crates/tools-core/src/polling/{poll.rs, config.rs, metrics.rs}` |
-| Воркер | `crates/tools-core/src/polling/worker/{worker.rs, env.rs}` |
-| Итог воркера | `crates/tools-core/src/polling/poll_result.rs` |
-| UseCase (адаптер/фабрика) | `crates/tools-core/src/monitor/application/use_case.rs` |
-| Orchestrator | `crates/tools-core/src/monitor/application/orchestrator.rs` |
-| Application (тонкий клиент) | `crates/tools-core/src/monitor/application/app.rs` |
-| Конфиг/спеки | `crates/tools-core/src/monitor/application/config/{config.rs, snmp.rs, task_spec.rs, use_case_query.rs}` |
-| Задачи/репозиторий | `crates/tools-core/src/monitor/{task.rs, task_repository.rs}` |
-| SNMP-адаптер | `crates/tools-core/src/snmp/adapters/reader.rs` |
+| Опрос/расписание | `crates/tools-core/src/polling/{poll.rs, config.rs, metrics.rs, error.rs}` |
+| Воркер | `crates/tools-core/src/polling/worker/{worker.rs, types.rs}` |
+| UseCase (адаптер/фабрика) | `crates/tools-core/src/monitor/usecase/use_case.rs` |
+| Orchestrator | `crates/tools-core/src/monitor/orchestrator/orchestrator.rs` |
+| Application (тонкий клиент) | `crates/tools-core/src/monitor/application/{app.rs, config.rs}` |
+| Задачи/репозиторий | `crates/tools-core/src/monitor/task/{spec.rs, query.rs, entity.rs, id.rs, repository.rs}` |
+| SNMP-адаптер/клиент | `crates/tools-core/src/snmp/{adapters/reader.rs, client.rs, error.rs}` |
 | Профили/реестр/парсеры | `crates/tools-core/src/snmp/{profiles.rs, registry/, parsers/}` |
+| SCN/ASCII | `crates/tools-core/src/ascii.rs` |
+| Stage (фаза) | `crates/tools-core/src/stage.rs` |
 | CLI | `crates/tools-cli/src/{main.rs, monitor/app.rs, monitor/queries/, monitor/formatters/}` |
