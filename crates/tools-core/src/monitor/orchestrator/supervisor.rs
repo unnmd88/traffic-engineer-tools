@@ -147,6 +147,15 @@ impl Supervisor {
         }
     }
 
+    /// Пометить, что для задачи запущена асинхронная сборка адаптера:
+    /// снимает отложенный таймер рестарта, чтобы не планировать повторно
+    /// (воркер появится, когда придёт результат сборки). attempts сохраняем.
+    pub fn mark_building(&mut self, task_id: &TaskId) {
+        if let Some(rt) = self.runtimes.get_mut(task_id) {
+            rt.restart.next_at = None;
+        }
+    }
+
     /// Ошибка сборки при рестарте — отложить ещё раз.
     #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
     pub fn retry_later(&mut self, task_id: &TaskId) {

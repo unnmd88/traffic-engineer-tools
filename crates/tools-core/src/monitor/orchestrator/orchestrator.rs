@@ -1,4 +1,8 @@
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -53,6 +57,22 @@ pub enum OrchestratorEvent {
     },
 }
 
+/// Зачем запускается сборка адаптера: влияет на обработку ошибки сборки.
+enum BuildIntent {
+    /// Ручной `start_task`: при ошибке — возврат в Idle, без ретраев.
+    Start,
+    /// Пересоздание (update/restart): при ошибке — Restarting + backoff.
+    Rebuild,
+}
+
+/// Исход сборки адаптера, приходящий из отдельной таски.
+struct BuildOutcome {
+    task_id: TaskId,
+    intent: BuildIntent,
+    generation: u64,
+    result: Result<UseCase, OrchestratorError>,
+}
+
 pub struct Orchestrator {
     repository: TaskRepository,
     supervisor: Supervisor,
@@ -60,12 +80,20 @@ pub struct Orchestrator {
     events_rx: mpsc::Receiver<WorkerEvent<UseCaseOutput>>,
     broadcast_tx: broadcast::Sender<OrchestratorEvent>,
     supervisor_tick: tokio::time::Interval,
+    build_tx: mpsc::Sender<BuildOutcome>,
+    build_rx: mpsc::Receiver<BuildOutcome>,
+    /// Сборки в полёте (не даём запускать дубликат на тот же task_id).
+    pending_builds: HashSet<TaskId>,
+    /// Поколение спеки: инкрементируется при update_spec, чтобы отбрасывать
+    /// сборки, начатые до обновления (результат которых уже устарел).
+    build_generation: HashMap<TaskId, u64>,
 }
 
 impl Orchestrator {
     pub fn new() -> (Self, OrchestratorHandle) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (events_tx, events_rx) = mpsc::channel::<WorkerEvent<UseCaseOutput>>(32);
+        let (build_tx, build_rx) = mpsc::channel::<BuildOutcome>(32);
         let (broadcast_tx, _) = broadcast::channel(16);
         (
             Self {
@@ -75,6 +103,10 @@ impl Orchestrator {
                 events_rx,
                 broadcast_tx,
                 supervisor_tick: tokio::time::interval(Duration::from_secs(1)),
+                build_tx,
+                build_rx,
+                pending_builds: HashSet::new(),
+                build_generation: HashMap::new(),
             },
             OrchestratorHandle { cmd_tx },
         )
@@ -86,32 +118,31 @@ impl Orchestrator {
         loop {
             tokio::select! {
                 Some(cmd) = self.cmd_rx.recv() => {
-                    if !self.handle_command(cmd).await {
+                    if !self.handle_command(cmd) {
                         break;
                     }
                 }
                 Some(ev)  = self.events_rx.recv() => self.handle_worker_event(ev),
+                Some(outcome) = self.build_rx.recv() => self.handle_build_outcome(outcome),
                 exit = self.supervisor.next_exit() => {
                     if let Some((task_id, finished)) = exit {
                         self.handle_worker_exit(task_id, finished);
                     }
                 }
-                _ = self.supervisor_tick.tick() => self.supervise_due_restarts().await,
+                _ = self.supervisor_tick.tick() => self.supervise_due_restarts(),
             }
         }
         tracing::info!("orchestrator stopped");
     }
 
     /// Возвращает `false`, когда оркестратор должен завершиться (Shutdown).
-    async fn handle_command(&mut self, cmd: OrchestratorCommand) -> bool {
+    fn handle_command(&mut self, cmd: OrchestratorCommand) -> bool {
         match cmd {
             OrchestratorCommand::AddTask { spec, reply } => {
                 tracing::info!(name = %spec.name, target = %spec.query.target(), "command: add_task");
-                let result = self.add_task(spec).await;
-                if let Ok(task_id) = &result {
-                    self.broadcast_update(*task_id);
-                }
-                let _ = reply.send(result);
+                let task_id = self.add_task(spec);
+                self.broadcast_update(task_id);
+                let _ = reply.send(Ok(task_id));
             }
             OrchestratorCommand::RemoveTask { task_id, reply } => {
                 tracing::info!(task_id = %task_id, "command: remove_task");
@@ -123,15 +154,15 @@ impl Orchestrator {
             }
             OrchestratorCommand::StartTask { task_id, reply } => {
                 tracing::info!(task_id = %task_id, "command: start_task");
-                let _ = reply.send(self.start_task(&task_id).await);
+                let _ = reply.send(self.start_task(&task_id));
             }
             OrchestratorCommand::StopTask(task_id) => {
                 tracing::info!(task_id = %task_id, "command: stop_task");
-                self.stop_task(&task_id).await;
+                self.stop_task(&task_id);
             }
             OrchestratorCommand::UpdateTask { task_id, spec, reply } => {
                 tracing::info!(task_id = %task_id, name = %spec.name, "command: update_task");
-                let _ = reply.send(self.update_task(&task_id, spec).await);
+                let _ = reply.send(self.update_task(&task_id, spec));
             }
             OrchestratorCommand::GetSnapshot { reply } => {
                 tracing::debug!("command: get_snapshot");
@@ -151,35 +182,33 @@ impl Orchestrator {
         true
     }
 
-    async fn add_task(&mut self, spec: TaskSpec) -> Result<TaskId, OrchestratorError> {
-        Ok(self.repository.add_task(spec))
+    fn add_task(&mut self, spec: TaskSpec) -> TaskId {
+        self.repository.add_task(spec)
     }
 
-    async fn start_task(&mut self, task_id: &TaskId) -> Result<(), OrchestratorError> {
-        if self.supervisor.is_running(task_id) {
-            return Ok(());
+    fn start_task(&mut self, task_id: &TaskId) -> Result<(), OrchestratorError> {
+        if self.supervisor.is_running(task_id) || self.pending_builds.contains(task_id) {
+            return Ok(()); // уже запущена или сборка в полёте
+        }
+        if self.repository.get_task(task_id).is_none() {
+            return Err(OrchestratorError::TaskNotFound {
+                task_id: task_id.to_string(),
+            });
         }
 
-        let use_case = self.build_use_case(task_id).await?;
         // Явный ручной старт — сбрасываем накопленный backoff.
         self.supervisor.reset_restart(task_id);
-        self.spawn_worker(task_id.clone(), use_case);
-        self.set_status(task_id, PollStatus::Active);
-        self.broadcast_update(task_id.clone());
+        self.schedule_build(*task_id, BuildIntent::Start);
         Ok(())
     }
 
-    async fn stop_task(&mut self, task_id: &TaskId) {
+    fn stop_task(&mut self, task_id: &TaskId) {
         self.supervisor.stop(task_id);
         self.set_status(task_id, PollStatus::Paused);
-        self.broadcast_update(task_id.clone());
+        self.broadcast_update(*task_id);
     }
 
-    async fn update_task(
-        &mut self,
-        task_id: &TaskId,
-        spec: TaskSpec,
-    ) -> Result<(), OrchestratorError> {
+    fn update_task(&mut self, task_id: &TaskId, spec: TaskSpec) -> Result<(), OrchestratorError> {
         if self.repository.get_task(task_id).is_none() {
             return Err(OrchestratorError::TaskNotFound {
                 task_id: task_id.to_string(),
@@ -187,43 +216,112 @@ impl Orchestrator {
         }
 
         self.repository.update_spec(task_id, spec)?;
+        // Инвалидируем сборки, начатые до обновления спеки.
+        *self.build_generation.entry(*task_id).or_insert(0) += 1;
 
         if self.supervisor.is_running(task_id) {
             self.supervisor.stop(task_id);
-            match self.build_use_case(task_id).await {
-                Ok(use_case) => self.spawn_worker(task_id.clone(), use_case),
-                Err(e) => {
-                    tracing::warn!(task_id = %task_id, error = %e, "rebuild after update failed");
-                    // Не оставляем задачу «Active без воркера»: планируем рестарт
-                    // с backoff и честно возвращаем ошибку наружу.
-                    self.supervisor.retry_later(task_id);
-                    self.set_status(task_id, PollStatus::Restarting);
-                    self.broadcast_update(task_id.clone());
-                    return Err(e);
-                }
-            }
+            // Сборка асинхронная; воркер появится, когда придёт BuildOutcome.
+            self.schedule_build(*task_id, BuildIntent::Rebuild);
         }
 
-        self.broadcast_update(task_id.clone());
+        self.broadcast_update(*task_id);
         Ok(())
     }
 
     fn remove_task(&mut self, task_id: &TaskId) -> Result<TaskEntity, OrchestratorError> {
         self.supervisor.stop(task_id);
         self.supervisor.remove(task_id);
+        self.pending_builds.remove(task_id);
+        self.build_generation.remove(task_id);
         self.repository.remove_task(task_id).map_err(Into::into)
     }
 
-    async fn build_use_case(&self, task_id: &TaskId) -> Result<UseCase, OrchestratorError> {
-        let Some(task) = self.repository.get_task(task_id) else {
-            return Err(OrchestratorError::TaskNotFound {
-                task_id: task_id.to_string(),
-            });
+    /// Запланировать сборку адаптера в отдельной таске (не блокируя цикл).
+    /// Возвращает `false`, если задача не найдена или сборка уже в полёте.
+    fn schedule_build(&mut self, task_id: TaskId, intent: BuildIntent) -> bool {
+        if self.pending_builds.contains(&task_id) {
+            tracing::debug!(task_id = %task_id, "build already in flight, skipping");
+            return false;
+        }
+
+        let Some((query, attempt)) = self
+            .repository
+            .get_task(&task_id)
+            .map(|t| (t.spec().query.clone(), t.spec().poll_config.attempt))
+        else {
+            tracing::warn!(task_id = %task_id, "cannot schedule build: task not found");
+            return false;
         };
-        let spec = task.spec().clone();
-        UseCase::build(spec.query.clone(), spec.poll_config.attempt)
-            .await
-            .map_err(Into::into)
+
+        let generation = self.build_generation.get(&task_id).copied().unwrap_or(0);
+        self.pending_builds.insert(task_id);
+        // Таймер рестарта израсходован: воркер появится после сборки.
+        self.supervisor.mark_building(&task_id);
+
+        let build_tx = self.build_tx.clone();
+        tokio::spawn(async move {
+            let result = UseCase::build(query, attempt).await.map_err(Into::into);
+            if build_tx
+                .send(BuildOutcome {
+                    task_id,
+                    intent,
+                    generation,
+                    result,
+                })
+                .await
+                .is_err()
+            {
+                tracing::warn!(task_id = %task_id, "build outcome receiver dropped");
+            }
+        });
+
+        true
+    }
+
+    fn handle_build_outcome(&mut self, outcome: BuildOutcome) {
+        let BuildOutcome {
+            task_id,
+            intent,
+            generation,
+            result,
+        } = outcome;
+        self.pending_builds.remove(&task_id);
+
+        // Спека изменилась, пока шла сборка → результат устарел, пересобираем.
+        let current_generation = self.build_generation.get(&task_id).copied().unwrap_or(0);
+        if generation != current_generation {
+            tracing::warn!(
+                task_id = %task_id,
+                generation,
+                current_generation,
+                "stale build discarded; rescheduling"
+            );
+            self.schedule_build(task_id, intent);
+            return;
+        }
+
+        match result {
+            Ok(use_case) => {
+                tracing::info!(task_id = %task_id, "adapter built, spawning worker");
+                self.spawn_worker(task_id, use_case);
+                self.set_status(&task_id, PollStatus::Active);
+                self.broadcast_update(task_id);
+            }
+            Err(e) => match intent {
+                BuildIntent::Start => {
+                    tracing::warn!(task_id = %task_id, error = %e, "build failed on manual start");
+                    self.set_status(&task_id, PollStatus::Idle);
+                    self.broadcast_update(task_id);
+                }
+                BuildIntent::Rebuild => {
+                    tracing::warn!(task_id = %task_id, error = %e, "build failed on rebuild; will retry");
+                    self.supervisor.retry_later(&task_id);
+                    self.set_status(&task_id, PollStatus::Restarting);
+                    self.broadcast_update(task_id);
+                }
+            },
+        }
     }
 
     fn spawn_worker(&mut self, task_id: TaskId, use_case: UseCase) {
@@ -292,31 +390,22 @@ impl Orchestrator {
                     return;
                 }
                 self.set_status(&task_id, PollStatus::Restarting);
-                self.broadcast_update(task_id.clone());
+                self.broadcast_update(task_id);
                 tracing::error!(task_id = %task_id, "worker failed ({message})");
             }
         }
     }
 
-    async fn supervise_due_restarts(&mut self) {
+    fn supervise_due_restarts(&mut self) {
         let due = self.supervisor.due_restarts(Instant::now());
         for task_id in due {
-            self.restart_task(task_id).await;
+            self.restart_task(task_id);
         }
     }
 
-    async fn restart_task(&mut self, task_id: TaskId) {
-        match self.build_use_case(&task_id).await {
-            Ok(use_case) => {
-                self.spawn_worker(task_id.clone(), use_case);
-                self.set_status(&task_id, PollStatus::Active);
-                self.broadcast_update(task_id);
-            }
-            Err(e) => {
-                tracing::warn!(task_id = %task_id, error = %e, "rebuild failed, will retry");
-                self.supervisor.retry_later(&task_id);
-            }
-        }
+    fn restart_task(&mut self, task_id: TaskId) {
+        // Сборка адаптера — в отдельной таске; воркер появится по BuildOutcome.
+        self.schedule_build(task_id, BuildIntent::Rebuild);
     }
 }
 
