@@ -25,6 +25,7 @@ pub struct Supervisor {
     exit_rx: mpsc::Receiver<(TaskId, WorkerFinished)>,
 }
 
+#[derive(Default)]
 struct WorkerRuntime {
     worker: Option<WorkerHandle>,
     restart: RestartState,
@@ -74,13 +75,17 @@ impl Supervisor {
         let abort = join.abort_handle();
         drop(join); // detached: итог приходит через exit-канал
 
-        self.runtimes.insert(
-            task_id,
-            WorkerRuntime {
-                worker: Some(WorkerHandle::new(abort)),
-                restart: RestartState::default(),
-            },
-        );
+        let rt = self.runtimes.entry(task_id).or_default();
+        // Защита от утечки: если по этому task_id уже жил воркер — гасим его,
+        // а не молча затираем хендл (drop хендла не отменяет задачу).
+        if let Some(previous) = rt.worker.take() {
+            previous.abort();
+            tracing::warn!("replacing a live worker (previous one aborted)");
+        }
+        rt.worker = Some(WorkerHandle::new(abort));
+        // Таймер рестарта израсходован (воркер снова запущен); attempts НЕ сбрасываем,
+        // чтобы backoff нарастал, если новый воркер упадёт до первого успешного опроса.
+        rt.restart.next_at = None;
     }
 
     #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
@@ -134,7 +139,8 @@ impl Supervisor {
         }
     }
 
-    /// Сбросить счётчик/таймер при успешном перезапуске.
+    /// Сбросить счётчик/таймер backoff после того, как воркер пережил хотя бы один
+    /// опрос, либо при явном ручном старте задачи.
     pub fn reset_restart(&mut self, task_id: &TaskId) {
         if let Some(rt) = self.runtimes.get_mut(task_id) {
             rt.restart = RestartState::default();
@@ -163,6 +169,24 @@ impl Supervisor {
             .filter(|(_, rt)| rt.restart.next_at.is_some_and(|t| t <= now))
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// Остановить всех воркеров и сбросить отложенные рестарты (graceful shutdown).
+    pub fn stop_all(&mut self) {
+        for rt in self.runtimes.values_mut() {
+            if let Some(handle) = rt.worker.take() {
+                handle.abort();
+            }
+            rt.restart = RestartState::default();
+        }
+    }
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        // Безопасность: отвязанные воркеры живут на рантайме независимо от
+        // Supervisor, поэтому при дропе обязательно гасим все хендлы.
+        self.stop_all();
     }
 }
 

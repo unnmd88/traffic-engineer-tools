@@ -39,6 +39,9 @@ pub enum OrchestratorCommand {
     Subscribe {
         reply: oneshot::Sender<broadcast::Receiver<OrchestratorEvent>>,
     },
+    Shutdown {
+        reply: oneshot::Sender<()>,
+    },
 }
 
 // События наружу (UI/API)
@@ -82,7 +85,11 @@ impl Orchestrator {
         tracing::info!("orchestrator started");
         loop {
             tokio::select! {
-                Some(cmd) = self.cmd_rx.recv() => self.handle_command(cmd).await,
+                Some(cmd) = self.cmd_rx.recv() => {
+                    if !self.handle_command(cmd).await {
+                        break;
+                    }
+                }
                 Some(ev)  = self.events_rx.recv() => self.handle_worker_event(ev),
                 exit = self.supervisor.next_exit() => {
                     if let Some((task_id, finished)) = exit {
@@ -92,9 +99,11 @@ impl Orchestrator {
                 _ = self.supervisor_tick.tick() => self.supervise_due_restarts().await,
             }
         }
+        tracing::info!("orchestrator stopped");
     }
 
-    async fn handle_command(&mut self, cmd: OrchestratorCommand) {
+    /// Возвращает `false`, когда оркестратор должен завершиться (Shutdown).
+    async fn handle_command(&mut self, cmd: OrchestratorCommand) -> bool {
         match cmd {
             OrchestratorCommand::AddTask { spec, reply } => {
                 tracing::info!(name = %spec.name, target = %spec.query.target(), "command: add_task");
@@ -124,7 +133,14 @@ impl Orchestrator {
                 tracing::debug!("command: subscribe");
                 let _ = reply.send(self.broadcast_tx.subscribe());
             }
+            OrchestratorCommand::Shutdown { reply } => {
+                tracing::info!("command: shutdown");
+                self.supervisor.stop_all();
+                let _ = reply.send(());
+                return false;
+            }
         }
+        true
     }
 
     async fn add_task(&mut self, spec: TaskSpec) -> Result<TaskId, OrchestratorError> {
@@ -137,6 +153,8 @@ impl Orchestrator {
         }
 
         let use_case = self.build_use_case(task_id).await?;
+        // Явный ручной старт — сбрасываем накопленный backoff.
+        self.supervisor.reset_restart(task_id);
         self.spawn_worker(task_id.clone(), use_case);
         self.set_status(task_id, PollStatus::Active);
         self.broadcast_update(task_id.clone());
@@ -168,6 +186,12 @@ impl Orchestrator {
                 Ok(use_case) => self.spawn_worker(task_id.clone(), use_case),
                 Err(e) => {
                     tracing::warn!(task_id = %task_id, error = %e, "rebuild after update failed");
+                    // Не оставляем задачу «Active без воркера»: планируем рестарт
+                    // с backoff и честно возвращаем ошибку наружу.
+                    self.supervisor.retry_later(task_id);
+                    self.set_status(task_id, PollStatus::Restarting);
+                    self.broadcast_update(task_id.clone());
+                    return Err(e);
                 }
             }
         }
@@ -216,6 +240,10 @@ impl Orchestrator {
             tracing::warn!(worker_id = ?event.id, "task for worker not found");
             return;
         };
+
+        // Воркер пережил хотя бы один опрос (событие приходит только после
+        // успешного poll) — сбрасываем backoff.
+        self.supervisor.reset_restart(&task_id);
 
         let limit = task.poll_config().limit;
         let status = if limit > 0 && event.metrics.total_attempts >= limit {
@@ -270,8 +298,6 @@ impl Orchestrator {
     }
 
     async fn restart_task(&mut self, task_id: TaskId) {
-        self.supervisor.reset_restart(&task_id);
-
         match self.build_use_case(&task_id).await {
             Ok(use_case) => {
                 self.spawn_worker(task_id.clone(), use_case);
@@ -358,6 +384,16 @@ impl OrchestratorHandle {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(OrchestratorCommand::Subscribe { reply: tx })
+            .await
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
+    }
+
+    /// Остановить оркестратор: гасит все воркеры и завершает цикл обработки.
+    pub async fn shutdown(&self) -> Result<(), OrchestratorError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(OrchestratorCommand::Shutdown { reply: tx })
             .await
             .map_err(|_| OrchestratorError::ChannelClosed)?;
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)
