@@ -1,10 +1,12 @@
 pub mod adapters;
 mod client;
+mod error;
 pub mod parsers;
 mod query;
 pub mod registry;
 mod response;
 pub use client::{SnmpClient, SnmpClientConfig};
+pub use error::SnmpError;
 pub use query::SnmpGetQueryItem;
 pub mod business_value;
 pub mod community;

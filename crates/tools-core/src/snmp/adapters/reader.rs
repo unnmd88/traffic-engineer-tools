@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    SnmpError,
-    error::PollError,
-    polling::Pollable,
+    polling::{AttemptError, Pollable},
     snmp::{
-        SnmpGetQueryItem, SnmpClient,
+        SnmpError, SnmpGetQueryItem, SnmpClient,
         business_value::BusinessValue,
         oid::SnmpOid,
         parsers::OidValueParserFn,
@@ -70,16 +68,14 @@ impl SnmpReader {
 impl Pollable for SnmpReader {
     type Output = SnmpGetResponse;
 
-    async fn poll(&self) -> Result<Self::Output, PollError> {
+    async fn poll(&self) -> Result<Self::Output, AttemptError> {
         let oids: Vec<SnmpOid> = self.items.iter().map(|i| i.oid.clone()).collect();
 
         let samples = self
             .client
             .get_many(&oids)
             .await
-            .map_err(|e| PollError::Other {
-                message: e.to_string(),
-            })?
+            .map_err(classify_snmp_error)?
             .into_iter()
             .zip(&self.items)
             .map(|(vb, item)| {
@@ -101,5 +97,14 @@ impl Pollable for SnmpReader {
             .collect();
 
         Ok(SnmpGetResponse { samples })
+    }
+}
+
+fn classify_snmp_error(e: SnmpError) -> AttemptError {
+    match e {
+        SnmpError::Network { .. } | SnmpError::Timeout { .. } => {
+            AttemptError::Transient(e.to_string())
+        }
+        _ => AttemptError::Fatal(e.to_string()),
     }
 }

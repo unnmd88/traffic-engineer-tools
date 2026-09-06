@@ -1,7 +1,4 @@
-use crate::{
-    SnmpError,
-    snmp::{SnmpClient, oid::SnmpOid, registry::oids::UTC_REPLY_SITE_ID_POTOK_OID},
-};
+use crate::snmp::{SnmpError, SnmpClient, oid::SnmpOid, registry::oids::UTC_REPLY_SITE_ID_POTOK_OID};
 
 pub async fn fetch_site_id_potok_ug405(client: &SnmpClient) -> Result<Vec<u8>, SnmpError> {
     let oid = SnmpOid::parse(UTC_REPLY_SITE_ID_POTOK_OID)?;

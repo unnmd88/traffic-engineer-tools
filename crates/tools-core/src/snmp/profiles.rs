@@ -4,10 +4,10 @@ use itertools::Itertools;
 use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::{
-    AsciiError, Error, SnmpError,
+    AsciiError, Error,
     ascii::Ascii,
     snmp::{
-        SnmpClient,
+        SnmpError, SnmpClient,
         oid::SnmpOid,
         oid_metadata::{OidMetadata, Requirenment},
         parsers::{OidValueParserFn, parse_ug405_stage, site_id_ug405_potok},

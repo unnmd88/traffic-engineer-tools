@@ -1,6 +1,6 @@
 use derive_more::{AsRef, Constructor, Deref, Display};
 
-use crate::SnmpError;
+use crate::snmp::SnmpError;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Display, Constructor)]
 pub struct SnmpOid(async_snmp::Oid);

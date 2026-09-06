@@ -3,9 +3,9 @@ use std::net::{IpAddr, SocketAddr};
 use async_snmp::{Auth, Client, Retry};
 use tokio::time::Duration;
 
-use crate::{
+use crate::snmp::{
     SnmpError,
-    snmp::{community::Community, oid::SnmpOid, value::SnmpValue, varbind::SnmpVarbind},
+    community::Community, oid::SnmpOid, value::SnmpValue, varbind::SnmpVarbind,
 };
 
 #[derive(Debug, Clone)]
@@ -31,10 +31,7 @@ impl SnmpClientConfig {
             .await
             .map_err(|e| {
                 tracing::warn!(target: "create snmp client", "{e}");
-                SnmpError::ConnectionFailed {
-                    target: self.target,
-                    port: self.port,
-                }
+                SnmpError::Internal(format!("create snmp client: {e}"))
             })
     }
 }
@@ -90,15 +87,25 @@ fn map_snmp_error(e: async_snmp::Error) -> SnmpError {
     match e {
         async_snmp::Error::Network { target, source } => {
             tracing::warn!(target: "snmp network error", "{source}");
-            SnmpError::ConnectionFailed {
-                target: target.ip(),
-                port: target.port(),
+            SnmpError::Network {
+                target,
+                reason: source.to_string(),
             }
         }
-        async_snmp::Error::Timeout { target, retries, .. } => {
-            SnmpError::RequestTimeOut { target, retries }
-        }
+        async_snmp::Error::Timeout { target, retries, .. } => SnmpError::Timeout { target, retries },
         async_snmp::Error::Auth { target } => SnmpError::Auth { target },
+        async_snmp::Error::Snmp {
+            target,
+            status,
+            index,
+            oid,
+        } => SnmpError::Protocol {
+            target,
+            status: status.to_string(),
+            index,
+            oid: oid.map(|o| o.to_string()),
+        },
+        async_snmp::Error::InvalidOid(msg) => SnmpError::InvalidOid(msg.to_string()),
         _ => SnmpError::Internal(e.to_string()),
     }
 }

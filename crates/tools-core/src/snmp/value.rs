@@ -2,7 +2,7 @@ use std::fmt::{self, Formatter};
 
 use derive_more::Display;
 
-use crate::{SnmpError, snmp::oid::SnmpOid, utils::encode_to_hex};
+use crate::{snmp::{SnmpError, oid::SnmpOid}, utils::encode_to_hex};
 
 #[derive(Debug, Clone, Display)]
 pub enum SnmpValueType {

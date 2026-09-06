@@ -1,6 +1,6 @@
 use crate::{
-    error::{ParseError, SnmpError},
-    snmp::{business_value::BusinessValue, oid::SnmpOid, value::SnmpValue},
+    error::ParseError,
+    snmp::{SnmpError, business_value::BusinessValue, oid::SnmpOid, value::SnmpValue},
 };
 use async_snmp::Oid;
 
