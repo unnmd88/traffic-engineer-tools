@@ -1,8 +1,9 @@
 use crate::{
-    error::ConfigError,
     monitor::task::UseCaseQuery,
     polling::PollConfig,
 };
+
+use super::error::TaskError;
 
 /// Спека задачи — валидированное декларативное описание (Spec).
 ///
@@ -22,9 +23,9 @@ impl TaskSpec {
         query: UseCaseQuery,
         poll_config: PollConfig,
         deep_history: u8,
-    ) -> Result<Self, ConfigError> {
+    ) -> Result<Self, TaskError> {
         if name.trim().is_empty() {
-            return Err(ConfigError::EmptyTaskName);
+            return Err(TaskError::EmptyName);
         }
 
         Ok(Self {
@@ -85,7 +86,7 @@ mod tests {
     fn rejects_empty_name() {
         let err = TaskSpec::try_new("   ".to_string(), valid_query(), valid_poll_config(), 3)
             .unwrap_err();
-        assert!(matches!(err, ConfigError::EmptyTaskName));
+        assert!(matches!(err, TaskError::EmptyName));
     }
 
     #[test]

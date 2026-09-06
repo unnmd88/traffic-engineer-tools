@@ -42,3 +42,17 @@ impl Display for PollErrorContext {
         Ok(())
     }
 }
+
+/// Ошибка валидации конфигурации опроса (`PollConfig` / `AttemptConfig`).
+#[derive(Error, Debug, Clone)]
+pub enum ConfigError {
+    #[error("poll interval must be greater than zero")]
+    IntervalMustBePositive,
+    #[error("attempt timeout must be greater than zero")]
+    TimeoutMustBePositive,
+    #[error(
+        "poll interval ({interval_ms} ms) must be >= total attempt budget \
+         ({budget_ms} ms = timeout * (retries + 1) + retry_delay * retries)"
+    )]
+    IntervalShorterThanAttemptBudget { interval_ms: u64, budget_ms: u64 },
+}

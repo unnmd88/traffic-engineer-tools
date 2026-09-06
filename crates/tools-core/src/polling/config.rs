@@ -1,6 +1,6 @@
 use tokio::time::Duration;
 
-use crate::error::ConfigError;
+use super::error::ConfigError;
 
 /// Расписание и лимит одного воркера.
 ///
