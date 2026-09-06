@@ -6,7 +6,7 @@ mod repository;
 mod spec;
 
 pub use entity::{HistoryEntry, TaskEntity, TaskHistory, TaskSnapshot};
-pub use error::TaskError;
+pub use error::{TaskError, TaskRepositoryError};
 pub use id::{PollStatus, TaskId};
 pub use query::{QuerySnmpGet, RawSnmpOidItem, SnmpOidItem, UseCaseQuery};
 pub use repository::TaskRepository;

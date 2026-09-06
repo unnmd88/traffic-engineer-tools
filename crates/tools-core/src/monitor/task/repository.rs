@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
-use crate::{
-    error::TaskRepositoryError,
-    monitor::task::{PollStatus, TaskEntity, TaskId, TaskSnapshot, TaskSpec},
-};
+use crate::monitor::task::{PollStatus, TaskEntity, TaskId, TaskSnapshot, TaskSpec};
+
+use super::error::TaskRepositoryError;
 use chrono::{DateTime, Local};
 use itertools::Itertools;
 use tracing::{error, info, warn};

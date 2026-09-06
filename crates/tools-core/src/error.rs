@@ -28,7 +28,7 @@ pub enum Error {
     #[error("{0}")]
     Adapter(#[from] AdapterError),
     #[error("{0}")]
-    TaskRepository(#[from] TaskRepositoryError),
+    TaskRepository(#[from] crate::monitor::task::TaskRepositoryError),
     #[error("{0}")]
     Application(#[from] ApplicationError),
     #[error("{0}")]
@@ -44,7 +44,7 @@ pub enum OrchestratorError {
     #[error("build use-case failed: {0}")]
     Build(#[from] BuildMonitorError),
     #[error(transparent)]
-    TaskRepository(#[from] TaskRepositoryError),
+    TaskRepository(#[from] crate::monitor::task::TaskRepositoryError),
     #[error("task not found: {task_id}")]
     TaskNotFound { task_id: String },
     #[error("orchestrator channel closed")]
@@ -63,12 +63,6 @@ pub enum ApplicationError {
     RepositorySubscribe { reason: String },
     #[error("Cat`n get snapshot of task repository: {reason}")]
     GetSnapshot { reason: String },
-}
-
-#[derive(Error, Debug, Clone)]
-pub enum TaskRepositoryError {
-    #[error("Task with id={task_id} not fond in repository.")]
-    TaskNotFound { task_id: String },
 }
 
 #[derive(Error, Debug, Clone)]
