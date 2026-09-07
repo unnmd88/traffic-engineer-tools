@@ -34,3 +34,21 @@ pub enum SnmpError {
     #[error("Unsupported value for snmp-set: {value}")]
     UnsupportedForSet { value: String },
 }
+
+/// Ошибка парсинга значения в доменный тип.
+#[derive(Error, Debug, Clone)]
+pub enum ParseError {
+    #[error("invalid length: {message} (min: {min}, max: {max}, got: {provide})")]
+    InvalidLength {
+        message: String,
+        min: usize,
+        max: usize,
+        provide: usize,
+    },
+    #[error("expected {expected}, but got {actual}")]
+    InvalidType { expected: String, actual: String },
+    #[error("{name} can`t be empty")]
+    CantBeEmpty { name: String },
+    #[error("{message}")]
+    Common { message: String },
+}

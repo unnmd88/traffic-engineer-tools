@@ -1,13 +1,13 @@
 use std::net::IpAddr;
 
-use crate::{
-    error::{BuildMonitorError, ParseError},
-    snmp::{
-        community::Community,
-        oid::SnmpOid,
-        profiles::SnmpProfile,
-    },
+use crate::snmp::{
+    community::Community,
+    oid::SnmpOid,
+    profiles::SnmpProfile,
+    ParseError,
 };
+
+use super::error::QueryError;
 
 /// Валидированный OID-элемент запроса (`oid` уже распарсен из строки/алиаса).
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ impl QuerySnmpGet {
         community: String,
         profile: Option<String>,
         oids: Vec<RawSnmpOidItem>,
-    ) -> Result<Self, BuildMonitorError> {
+    ) -> Result<Self, QueryError> {
         let host = parse_ip(&host)?;
         let community = parse_community(&community)?;
         let profile = parse_profile(profile)?;
@@ -73,7 +73,7 @@ impl QuerySnmpGet {
                     oid,
                 })
             })
-            .collect::<Result<Vec<_>, BuildMonitorError>>()?;
+            .collect::<Result<Vec<_>, QueryError>>()?;
 
         Ok(Self {
             profile,
@@ -85,52 +85,52 @@ impl QuerySnmpGet {
     }
 }
 
-fn parse_ip(ip: &str) -> Result<IpAddr, BuildMonitorError> {
+fn parse_ip(ip: &str) -> Result<IpAddr, QueryError> {
     ip.parse::<IpAddr>()
-        .map_err(|_| BuildMonitorError::InvalidIpAddress { ip: ip.to_string() })
+        .map_err(|_| QueryError::InvalidIpAddress { ip: ip.to_string() })
 }
 
-fn parse_community(community: &str) -> Result<Community, BuildMonitorError> {
+fn parse_community(community: &str) -> Result<Community, QueryError> {
     Community::parse(community.to_string()).map_err(|e| match e {
-        ParseError::CantBeEmpty { .. } => BuildMonitorError::SnmpCommunityIsEmpty,
+        ParseError::CantBeEmpty { .. } => QueryError::SnmpCommunityIsEmpty,
         ParseError::InvalidLength {
             min, max, provide, ..
-        } => BuildMonitorError::SnmpCommunityInvalidLength { min, max, provide },
-        ParseError::Common { message } => BuildMonitorError::Other(message),
-        _ => BuildMonitorError::Other("Can't parse community string".to_string()),
+        } => QueryError::SnmpCommunityInvalidLength { min, max, provide },
+        ParseError::Common { message } => QueryError::Other(message),
+        _ => QueryError::Other("Can't parse community string".to_string()),
     })
 }
 
-fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, BuildMonitorError> {
+fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, QueryError> {
     profile
         .map(|p| p.parse::<SnmpProfile>())
         .transpose()
-        .map_err(|e| BuildMonitorError::InvalidSnmpProfile { message: e })
+        .map_err(|e| QueryError::InvalidSnmpProfile { message: e })
 }
 
 fn resolve_oid(
     raw: &str,
     profile: Option<&SnmpProfile>,
     pos: usize,
-) -> Result<SnmpOid, BuildMonitorError> {
+) -> Result<SnmpOid, QueryError> {
     let raw = raw.trim().to_lowercase();
 
     if let Ok(oid) = SnmpOid::parse(&raw) {
         return Ok(oid);
     }
 
-    let profile = profile.ok_or(BuildMonitorError::SnmpProfileMustBeProvided {
+    let profile = profile.ok_or(QueryError::SnmpProfileMustBeProvided {
         message: "SNMP profile is required for auto search oid by name".to_string(),
     })?;
 
     let meta = profile
         .get_metadata_by_name_or_alias(&raw)
-        .ok_or(BuildMonitorError::UnknownAlias {
+        .ok_or(QueryError::UnknownAlias {
             pos,
             alias: raw.clone(),
         })?;
 
-    SnmpOid::parse(meta.oid).map_err(|_| BuildMonitorError::InvalidSnmpOid {
+    SnmpOid::parse(meta.oid).map_err(|_| QueryError::InvalidSnmpOid {
         pos,
         oid: meta.oid.to_string(),
     })
@@ -174,7 +174,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(err, BuildMonitorError::InvalidIpAddress { .. }));
+        assert!(matches!(err, QueryError::InvalidIpAddress { .. }));
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(err, BuildMonitorError::SnmpCommunityIsEmpty));
+        assert!(matches!(err, QueryError::SnmpCommunityIsEmpty));
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            BuildMonitorError::SnmpProfileMustBeProvided { .. }
+            QueryError::SnmpProfileMustBeProvided { .. }
         ));
     }
 }

@@ -1,6 +1,6 @@
 use derive_more::{AsRef, Deref, Display, From, Into};
 
-use crate::error::ParseError;
+use crate::snmp::ParseError;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, From, Into, AsRef, Deref, Display)]
 pub struct Community(String);

@@ -1,4 +1,23 @@
-use crate::error::AsciiError;
+use thiserror::Error;
+
+/// Ошибка работы с ASCII/SCN-строками.
+#[derive(Debug, Clone, Error)]
+pub enum AsciiError {
+    #[error("String is empty")]
+    Empty,
+    #[error("Contains non-ASCII characters: {0:?}")]
+    NonAsciiCharacters(Vec<char>),
+    #[error("Invalid code: {0}")]
+    InvalidCode(String),
+    #[error("Invalid prefix: {0}")]
+    InvalidPrefix(String),
+    #[error("Invalid length: {0}")]
+    InvalidLength(String),
+    #[error("Length mismatch: expected {expected}, got {actual}")]
+    LengthMismatch { expected: usize, actual: usize },
+    #[error("Invalid format")]
+    InvalidFormat,
+}
 
 /// Валидная ASCII строка для протокола UG-405.
 ///

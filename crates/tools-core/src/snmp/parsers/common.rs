@@ -1,5 +1,5 @@
 use crate::{
-    error::ParseError,
+    snmp::ParseError,
     snmp::{business_value::BusinessValue, value::SnmpValue},
 };
 

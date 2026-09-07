@@ -6,7 +6,6 @@ use std::{
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
-    error::OrchestratorError,
     monitor::{
         task::{
             MonitorSnapshot, PollStatus, TaskEntity, TaskId, TaskRepository, TaskSnapshot, TaskSpec,
@@ -17,7 +16,7 @@ use crate::{
     polling::worker::{WorkerEvent, WorkerFinished},
 };
 
-use super::supervisor::Supervisor;
+use super::{error::OrchestratorError, supervisor::Supervisor};
 
 // Команды извне (Application/API)
 pub enum OrchestratorCommand {

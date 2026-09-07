@@ -4,7 +4,6 @@ use itertools::Itertools;
 use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::{
-    AsciiError, Error,
     ascii::Ascii,
     snmp::{
         SnmpError, SnmpClient,

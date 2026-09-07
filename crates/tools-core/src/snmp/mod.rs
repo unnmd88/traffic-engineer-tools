@@ -6,7 +6,7 @@ mod query;
 pub mod registry;
 mod response;
 pub use client::{SnmpClient, SnmpClientConfig};
-pub use error::SnmpError;
+pub use error::{ParseError, SnmpError};
 pub use query::SnmpGetQueryItem;
 pub mod business_value;
 pub mod community;

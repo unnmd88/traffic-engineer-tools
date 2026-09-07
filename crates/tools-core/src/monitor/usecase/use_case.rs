@@ -3,13 +3,14 @@ use tokio::time::Duration;
 use async_trait::async_trait;
 
 use crate::{
-    error::BuildMonitorError,
     monitor::task::{QuerySnmpGet, UseCaseQuery},
     polling::{AttemptConfig, AttemptError, Pollable},
     snmp::{
         SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, adapters::SnmpReader,
     },
 };
+
+use super::error::UseCaseBuildError;
 
 const CLIENT_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
 
@@ -41,7 +42,7 @@ impl UseCase {
     pub async fn build(
         query: UseCaseQuery,
         attempt: AttemptConfig,
-    ) -> Result<Self, BuildMonitorError> {
+    ) -> Result<Self, UseCaseBuildError> {
         match query {
             UseCaseQuery::SnmpGet(q) => Self::build_snmp_get(q, attempt).await,
         }
@@ -50,7 +51,7 @@ impl UseCase {
     async fn build_snmp_get(
         q: QuerySnmpGet,
         attempt: AttemptConfig,
-    ) -> Result<Self, BuildMonitorError> {
+    ) -> Result<Self, UseCaseBuildError> {
         let client_config = SnmpClientConfig {
             target: q.host,
             port: q.port,
@@ -64,7 +65,7 @@ impl UseCase {
 
         let client = SnmpClient::new(client_config)
             .await
-            .map_err(|_| BuildMonitorError::SnmpClientCreate)?;
+            .map_err(|_| UseCaseBuildError::SnmpClientCreate)?;
 
         let oids = q
             .oids
@@ -78,7 +79,7 @@ impl UseCase {
 
         let reader = SnmpReader::new(client, oids, q.profile)
             .await
-            .map_err(|e| BuildMonitorError::Other(e.to_string()))?;
+            .map_err(|e| UseCaseBuildError::Other(e.to_string()))?;
 
         Ok(Self::SnmpGet(reader))
     }

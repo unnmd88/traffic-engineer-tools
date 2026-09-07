@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use derive_more::{Constructor, Display};
 
-use crate::error::ParseError;
+use crate::snmp::ParseError;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Display, Constructor)]
 pub struct Stage(u32);

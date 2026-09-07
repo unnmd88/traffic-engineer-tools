@@ -1,4 +1,4 @@
-use crate::error::ParseError;
+use crate::snmp::ParseError;
 
 /// Парсит OCTET STRING в соответствии со спецификацией UTCType2BitMask.
 ///
