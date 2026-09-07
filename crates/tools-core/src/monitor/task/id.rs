@@ -1,6 +1,6 @@
 use derive_more::{Constructor, Display};
 
-#[derive(Clone, Debug, Copy, Display)]
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
 pub enum PollStatus {
     Idle,
     Active,

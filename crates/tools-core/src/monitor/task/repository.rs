@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::monitor::task::{PollStatus, TaskEntity, TaskId, TaskSnapshot, TaskSpec};
 
 use super::error::TaskRepositoryError;
+use super::view::{MonitorSnapshot, TaskView};
 use chrono::{DateTime, Local};
 use itertools::Itertools;
 use tracing::{error, info, warn};
@@ -209,6 +210,14 @@ impl TaskRepository {
 
     pub fn tasks(&self) -> impl Iterator<Item = &TaskEntity> + '_ {
         self.tasks.values()
+    }
+
+    /// Полный снапшот всех задач в виде read-model (`TaskView`), а не внутренних
+    /// `TaskEntity`. Для `get_snapshot` / первичной синхронизации интерфейса.
+    pub fn snapshot(&self) -> MonitorSnapshot {
+        MonitorSnapshot {
+            tasks: self.tasks_sorted_by_id().map(TaskView::from).collect(),
+        }
     }
 
     pub fn created_at(&self) -> &DateTime<Local> {
