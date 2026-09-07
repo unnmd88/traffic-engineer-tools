@@ -202,6 +202,8 @@ impl Orchestrator {
 
         // Явный ручной старт — сбрасываем накопленный backoff.
         self.supervisor.reset_restart(task_id);
+        // Новая сессия: сбрасываем счётчики, чтобы `limit` считался за запуск.
+        let _ = self.repository.reset_metrics(task_id);
         self.schedule_build(*task_id, BuildIntent::Start);
         Ok(())
     }

@@ -147,6 +147,20 @@ impl TaskRepository {
         Ok(())
     }
 
+    pub fn reset_metrics(&mut self, task_id: &TaskId) -> Result<(), TaskRepositoryError> {
+        let target = self
+            .get_mut_task(task_id)
+            .ok_or(TaskRepositoryError::TaskNotFound {
+                task_id: task_id.to_string(),
+            })?;
+
+        if target.reset_metrics() {
+            self.updated_at = Local::now();
+        }
+
+        Ok(())
+    }
+
     pub fn remove_task(&mut self, task_id: &TaskId) -> Result<TaskEntity, TaskRepositoryError> {
         let removed_task = match self.tasks.remove(task_id) {
             Some(task) => task,

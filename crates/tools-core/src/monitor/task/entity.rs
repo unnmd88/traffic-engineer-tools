@@ -210,4 +210,11 @@ impl TaskEntity {
         self.updated_at = Local::now();
         true
     }
+
+    /// Сбросить счётчики метрик — начало нового запуска (ручной `start`).
+    pub fn reset_metrics(&mut self) -> bool {
+        self.snapshot.metrics = Metrics::default();
+        self.updated_at = Local::now();
+        true
+    }
 }
