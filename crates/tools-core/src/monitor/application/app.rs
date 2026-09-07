@@ -6,7 +6,7 @@ use crate::{
     error::Error,
     monitor::{
         orchestrator::{Orchestrator, OrchestratorEvent, OrchestratorHandle},
-        task::{TaskId, TaskRepository, TaskSpec},
+        task::{MonitorSnapshot, TaskId, TaskSpec},
     },
 };
 
@@ -69,7 +69,7 @@ impl Application {
         matches!(self.state, ApplicationState::Runnig)
     }
 
-    pub async fn get_snapshot(&self) -> Result<TaskRepository, Error> {
+    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, Error> {
         Ok(self.handle.get_snapshot().await?)
     }
 

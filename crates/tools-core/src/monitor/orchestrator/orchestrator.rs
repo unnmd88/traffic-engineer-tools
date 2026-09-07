@@ -9,7 +9,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::{
     error::OrchestratorError,
     monitor::{
-        task::{PollStatus, TaskEntity, TaskId, TaskRepository, TaskSnapshot, TaskSpec},
+        task::{
+            MonitorSnapshot, PollStatus, TaskEntity, TaskId, TaskRepository, TaskSnapshot, TaskSpec,
+        },
         usecase::{UseCase, UseCaseOutput},
     },
     polling::worker::{WorkerEvent, WorkerFinished},
@@ -38,7 +40,7 @@ pub enum OrchestratorCommand {
         reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     GetSnapshot {
-        reply: oneshot::Sender<TaskRepository>,
+        reply: oneshot::Sender<MonitorSnapshot>,
     },
     Subscribe {
         reply: oneshot::Sender<broadcast::Receiver<OrchestratorEvent>>,
@@ -170,7 +172,7 @@ impl Orchestrator {
             }
             OrchestratorCommand::GetSnapshot { reply } => {
                 tracing::info!("command: get_snapshot");
-                let _ = reply.send(self.repository.clone());
+                let _ = reply.send(self.repository.snapshot());
             }
             OrchestratorCommand::Subscribe { reply } => {
                 tracing::info!("command: subscribe");
@@ -482,7 +484,7 @@ impl OrchestratorHandle {
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn get_snapshot(&self) -> Result<TaskRepository, OrchestratorError> {
+    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(OrchestratorCommand::GetSnapshot { reply: tx })
