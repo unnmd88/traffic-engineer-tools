@@ -205,6 +205,8 @@ impl Orchestrator {
         self.supervisor.reset_restart(task_id);
         // Новая сессия: сбрасываем счётчики, чтобы `limit` считался за запуск.
         let _ = self.repository.reset_metrics(task_id);
+        self.set_status(task_id, PollStatus::Starting);
+        self.broadcast_update(*task_id);
         self.schedule_build(*task_id, BuildIntent::Start);
         Ok(())
     }
@@ -228,6 +230,8 @@ impl Orchestrator {
 
         if self.supervisor.is_running(task_id) {
             self.supervisor.stop(task_id);
+            // Воркера больше нет, идёт пересборка — сразу показываем переход.
+            self.set_status(task_id, PollStatus::Restarting);
             // Сборка асинхронная; воркер появится, когда придёт BuildOutcome.
             self.schedule_build(*task_id, BuildIntent::Rebuild);
         }

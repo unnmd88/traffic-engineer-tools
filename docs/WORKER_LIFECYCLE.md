@@ -65,6 +65,8 @@ start_task(id):
     если задачи нет → Err(TaskNotFound)
     supervisor.reset_restart(id)            // ручной старт сбрасывает накопленный backoff
     repository.reset_metrics(id)            // новая сессия: limit считается за запуск
+    set_status(Starting)                    // сразу показываем переход (не ждём build)
+    broadcast
     schedule_build(id, BuildIntent::Start)
 ```
 
@@ -131,6 +133,7 @@ update_task(id, new_spec):
 
     если supervisor.is_running(id):
         supervisor.stop(id)                  // abort старого воркера (без exit-события)
+        set_status(Restarting)               // сразу показываем переход (воркера уже нет)
         schedule_build(id, BuildIntent::Rebuild)   // пересборка из НОВОЙ спеки
 
     broadcast
@@ -204,10 +207,11 @@ restart_task(id):
 | Статус | Когда | Перезапускаем? |
 |---|---|---|
 | `Idle` | добавлен, не стартовал; или ручной старт упал на сборке | по команде `start` |
+| `Starting` | ручной `start`: build в процессе | — (→ `Active` / `Idle`) |
 | `Active` | воркер работает | — |
 | `Paused` | `stop_task` | по команде `start` |
 | `RatedLimit` | дошёл до `limit` | по команде `start` (метрики сбрасываются → новый запуск) |
-| `Restarting` | упал, ждёт backoff | да, по тику |
+| `Restarting` | упал / пересобирается, ждёт backoff | да, по тику |
 
 ---
 

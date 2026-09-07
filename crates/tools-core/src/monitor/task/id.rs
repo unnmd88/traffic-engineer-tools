@@ -3,9 +3,12 @@ use derive_more::{Constructor, Display};
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
 pub enum PollStatus {
     Idle,
+    /// Ручной старт: build в процессе, воркера ещё нет.
+    Starting,
     Active,
     Paused,
     RatedLimit,
+    /// Пересоздание (после падения / update): build или backoff.
     Restarting,
 }
 
