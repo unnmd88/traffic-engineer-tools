@@ -160,16 +160,20 @@ impl Orchestrator {
                 tracing::info!(task_id = %task_id, "command: stop_task");
                 self.stop_task(&task_id);
             }
-            OrchestratorCommand::UpdateTask { task_id, spec, reply } => {
-                tracing::info!(task_id = %task_id, name = %spec.name(), "command: update_task");
+            OrchestratorCommand::UpdateTask {
+                task_id,
+                spec,
+                reply,
+            } => {
+                tracing::info!(task_id = %task_id, name = ?spec, "command: update_task");
                 let _ = reply.send(self.update_task(&task_id, spec));
             }
             OrchestratorCommand::GetSnapshot { reply } => {
-                tracing::debug!("command: get_snapshot");
+                tracing::info!("command: get_snapshot");
                 let _ = reply.send(self.repository.clone());
             }
             OrchestratorCommand::Subscribe { reply } => {
-                tracing::debug!("command: subscribe");
+                tracing::info!("command: subscribe");
                 let _ = reply.send(self.broadcast_tx.subscribe());
             }
             OrchestratorCommand::Shutdown { reply } => {
@@ -237,8 +241,11 @@ impl Orchestrator {
         self.repository.remove_task(task_id).map_err(Into::into)
     }
 
-    /// Запланировать сборку адаптера в отдельной таске (не блокируя цикл).
-    /// Возвращает `false`, если задача не найдена или сборка уже в полёте.
+    /// Единственная точка входа для запроса сборки адаптера: спавнит build-таску
+    /// вне цикла и НЕ трогает воркера — воркер появится в [`handle_build_outcome`].
+    /// Вызывается из `start_task` / `update_task` / `restart_task` и при пересборке
+    /// устаревшего результата. Возвращает `false`, если задача не найдена или
+    /// сборка уже в полёте.
     fn schedule_build(&mut self, task_id: TaskId, intent: BuildIntent) -> bool {
         if self.pending_builds.contains(&task_id) {
             tracing::debug!(task_id = %task_id, "build already in flight, skipping");
@@ -279,6 +286,10 @@ impl Orchestrator {
         true
     }
 
+    /// Обрабатывает результат сборки из build-канала. Единственный вызыватель
+    /// [`spawn_worker`] (а значит, и `Supervisor::spawn`). Отбрасывает сборку,
+    /// начатую до изменения спеки (по `generation`), и по `intent` решает, что
+    /// делать с ошибкой сборки: `Start` → `Idle`, `Rebuild` → `Restarting` + retry.
     fn handle_build_outcome(&mut self, outcome: BuildOutcome) {
         let BuildOutcome {
             task_id,
@@ -324,6 +335,9 @@ impl Orchestrator {
         }
     }
 
+    /// Единственный вызыватель `Supervisor::spawn`. Читает `poll_config` и
+    /// seed-метрики из репо и передаёт их супервизору. Вызывается только из
+    /// [`handle_build_outcome`] после успешной сборки адаптера.
     fn spawn_worker(&mut self, task_id: TaskId, use_case: UseCase) {
         let Some((poll_config, metrics)) = self
             .repository

@@ -49,6 +49,9 @@ impl Supervisor {
         }
     }
 
+    /// Единственная точка запуска воркера: создаёт `PollWorker`, оборачивает его
+    /// `run` в `catch_unwind` (паника → `WorkerFinished::Failed`) и сохраняет
+    /// `abort`-хендл. Вызывается только из `Orchestrator::spawn_worker`.
     #[tracing::instrument(name = "supervisor", skip_all, fields(task_id = %task_id))]
     pub fn spawn(
         &mut self,
