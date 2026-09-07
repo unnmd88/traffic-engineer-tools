@@ -52,8 +52,8 @@
 | **`Pollable`** | Трейт адаптера: `async fn poll(&self) -> Result<Output, AttemptError>` с ассоциированным `type Output: Send`. |
 | **`UseCase`** | Закрытый enum адаптеров (`SnmpGet(SnmpReader)`, …). Сам реализует `Pollable`, объединяя все адаптеры в один тип. |
 | **`UseCaseOutput`** | Закрытый enum результатов адаптера (`SnmpGet(SnmpGetResponse)`, …). |
-| **`UseCaseQuery`** | Закрытый enum валидированного запроса (часть `TaskSpec`). Источник `protocol`/`type_query`/`target`. |
-| **`TaskSpec`** | Декларативная спека (Spec): `name + query + poll_config + deep_history`. `TryFrom<TaskConfigDto>`. |
+| **`UseCaseQuery`** | Закрытый enum запроса; хранит валидированные доменные типы (`IpAddr`, `Community`, `SnmpOid`). |
+| **`TaskSpec`** | Валидированная спека (Spec): `name + query + poll_config + deep_history`; приватные поля, `try_new`. |
 | **Worker** | Stateless исполнитель: ритм опроса, ретраи, метрики, события. Без mailbox и машины состояний. Протокол-агностичен. |
 | **`WorkerHandle`** | Ручка остановки воркера: `abort()`, `id()`. |
 | **Orchestrator** | Контроль + супервизор: владеет хендлами воркеров и backoff-рестартами; команды/события/broadcast. |
@@ -166,9 +166,8 @@
 ### 7.1 Старт (создание задач)
 
 ```
-YAML → AppBuilder → AppConfig
-     → Application::new:
-         для каждой TaskConfigDto → TaskSpec::try_from (валидация, без I/O)
+YAML (в tctl) → DTO (serde) → TaskSpec::try_from (валидация: try_new-конструкторы, без I/O)
+     → Application::new(Vec<TaskSpec>):
          Orchestrator::new() → (orchestrator, handle); tokio::spawn(orchestrator.run())
          handle.add_task(spec) — на каждую спеку
      → Orchestrator.handle_command(AddTask):
@@ -181,9 +180,11 @@ YAML → AppBuilder → AppConfig
 Application::start()
   → handle.start_task(task_id) для каждой задачи
   → Orchestrator.handle_command(StartTask):
-      UseCase::build(spec.query, spec.poll_config.attempt) → адаптер (async: коннект)
-      PollWorker::new(worker_id, use_case, poll_config, events_tx, seed_metrics)
-      join_set.spawn(catch_unwind(run)) → WorkerHandle (abort)
+      статус Starting → schedule_build (async, вне цикла):
+        UseCase::build(query, attempt) → BuildOutcome → build_rx
+      handle_build_outcome → spawn_worker → Supervisor::spawn:
+        PollWorker::new(worker_id, use_case, poll_config, events_tx, seed_metrics)
+        tokio::spawn(catch_unwind(run)) → WorkerHandle (abort)
 ```
 
 ### 7.3 Цикл опроса (горячий путь)
@@ -201,8 +202,8 @@ Application::start()
   → events_tx (mpsc) → Orchestrator.handle_worker_event:
       poll_status = f(metrics vs limit): Active | RatedLimit
       TaskSnapshot → TaskRepository.update_snapshot
-      broadcast OrchestratorEvent::Update { snapshot, task_id }
-  → UI: rx.recv() → format_repository(snapshot)
+      broadcast OrchestratorEvent::TaskUpdated { task_id, view: TaskView }
+  → UI (tctl): get_snapshot (база) + subscribe (дельты) → format_snapshot
 ```
 
 ### 7.4 Горячее управление
@@ -224,15 +225,14 @@ RemoveTask:
 ### 7.5 Супервизия (реализовано)
 
 ```
-воркер завершился → JoinSet.join_next():
-  Ok(WorkerFinished::Completed)   — rate limit: poll_status = RatedLimit, не рестартуем
-  Ok(WorkerFinished::Failed(msg)) — фатально: Restarting + backoff (1s/2s/4s/…/60s) + broadcast
-  Err(panic)                      — паника: то же, что Failed
-  Err(JoinError::cancelled)       — наш abort(): не рестартуем
+воркер завершился сам → exit-канал (catch_unwind → (task_id, WorkerFinished)):
+  Completed (лимит)    — poll_status = RatedLimit, не рестартуем
+  Failed(msg) / паника — Restarting + backoff (1s/2s/4s/…/60s) + broadcast
+  abort() (наш stop)   — exit-события НЕ шлёт (тихий)
 
 supervisor_tick (1s):
   для задач с истёкшим restart.next_at:
-    UseCase::build(spec) → spawn_worker (seed-метрики из snapshot) → Active + broadcast
+    schedule_build(Rebuild) → build → spawn_worker (seed-метрики из snapshot) → Active + broadcast
 ```
 
 ---
@@ -308,8 +308,8 @@ pub enum WorkerFinished { Completed, Failed(String) }
 1. **Адаптер** — новый тип с `impl Pollable` (образец: `snmp/adapters/reader.rs`).
 2. **`UseCase`** — новый вариант + arm в `poll()`.
 3. **`UseCaseOutput`** — новый вариант.
-4. **`UseCaseQuery`** — новый вариант + DTO в `config/` + arm в `protocol()`/`type_query()`/`target()`.
-5. **`UseCase::build`** — arm, собирающий адаптер из query.
+4. **`UseCaseQuery`** — новый вариант + DTO в `tctl` (serde) + arm в `target()`; валидация — в `from_raw`-конструкторе.
+5. **`UseCase::build`** — arm, собирающий адаптер из валидированного query.
 6. **Форматтер** — ветка в `match resp.payload` (`tools-cli/.../formatters/repository.rs`).
 
 ---
@@ -349,9 +349,15 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 - **`AttemptError`** (`polling`) — ошибка одной попытки: `Transient` (ретраится) / `Fatal` (не ретраится).
 - **`FatalError`** (`polling`) — фатальная ошибка итерации, единственный `Err` из `poll()`.
 - **`SnmpError`** (`snmp`) — протокол: `Network`/`Timeout` (transient), `Auth`/`Protocol`/`InvalidOid`/парсерные (fatal).
-- **`ParseError`** — интерпретация сырого значения в `BusinessValue`.
-- **`BuildMonitorError`** — сборка адаптера в `UseCase::build`.
-- **`OrchestratorError`** — команды/оркестрация (`Build`, `TaskRepository`, `TaskNotFound`, `ChannelClosed`).
+- **`ParseError`** (`snmp`) — парсинг значения в доменный тип.
+- **`AsciiError`** (`ascii`) — работа с ASCII/SCN-строками.
+- **`QueryError`** (`monitor::task`) — валидация запроса в `QuerySnmpGet::from_raw`.
+- **`TaskError`** / **`TaskRepositoryError`** (`monitor::task`) — валидация задачи / операции репозитория.
+- **`UseCaseBuildError`** (`monitor::usecase`) — сборка адаптера в `UseCase::build`.
+- **`OrchestratorError`** (`monitor::orchestrator`) — команды/оркестрация (`Build`, `TaskRepository`, `TaskNotFound`, `ChannelClosed`).
+- **`ConfigError`** (`polling`) — валидация `PollConfig`/`AttemptConfig`.
+
+Все они сходятся в корневой `error::Error` — тонкий зонт из `#[from]`.
 
 Правило: ошибка интерпретации одного OID **не роняет** весь опрос — в `SnmpReader` она
 превращается в `BusinessValue::Text("parse error")`, остальные OID доставляются.
@@ -364,11 +370,11 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
   `dyn` — только на внешних точках расширения (history-sink и т.п.).
 - **O-2. Лимит рестартов.** Сейчас backoff бесконечный (до cap 60s). Нужен ли `max_restarts`
   + статус `Failed` для задачи, падающей детерминированно.
-- **O-3. Graceful shutdown.** Нет штатной остановки Orchestrator'а/воркеров — `CancellationToken`
-  / `TaskTracker` вместо грубого `abort()`.
-- **O-4. Семантика `limit`.** Считает попытки (`total_attempts`), не успешные опросы/интервалы.
-- **O-5. `Query` vs `UseCaseQuery`.** Дублирование на границе конфига; свести к одному набору
-  (домен хранит `IpAddr`/`Community`/`SnmpOid`, DTO — сырые строки).
+- **O-3. Graceful shutdown.** ✅ сделано: команда `Shutdown` + `Drop for Supervisor` (abort всех воркеров).
+- **O-4. Семантика `limit`.** ✅ сделано: `limit` считается **за запуск** (ручной `start` сбрасывает
+  счётчики через `reset_metrics`); рестарт после падения / `update` сохраняют.
+- **O-5. `Query` vs `UseCaseQuery`.** ✅ сделано: один набор — `UseCaseQuery` хранит валидированные
+  доменные типы (`IpAddr`/`Community`/`SnmpOid`), DTO (сырые строки) — только в `tctl`.
 - **O-6. Персистентность истории.** `TaskHistory` в памяти; нужен ли history-sink (файл/sqlite)
   через отдельный writer-актор + `mpsc`.
 - **O-7. Автокорреляция между задачами.** Группировка уже есть; автоматическое сравнение
@@ -382,7 +388,7 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 1. **History-sink** (O-6): `LogWriter` trait (`dyn`) + writer-актор + `mpsc`.
 2. **Второй use-case** (http-read или icmp-ping) — проверить рецепт §10.
 3. **snmp-set** — отдельный «командный» путь (не периодический опрос).
-4. **Свести `Query`/`UseCaseQuery`** (убрать дубли, доменные типы в query) — O-5.
+4. ✅ **Свести `Query`/`UseCaseQuery`** (убрать дубли, доменные типы в query) — сделано.
 5. **Лимит рестартов + статус `Failed`** (O-2) и graceful shutdown (O-3).
 6. **Web-интерфейс** поверх `OrchestratorHandle` (subscribe уже есть).
 7. **Параллельно**: самостоятельные инструменты `tools-core` (расчёты фаз/циклов/тактов,
@@ -399,10 +405,10 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 | Воркер | `crates/tools-core/src/polling/worker/{worker.rs, types.rs}` |
 | UseCase (адаптер/фабрика) | `crates/tools-core/src/monitor/usecase/use_case.rs` |
 | Orchestrator | `crates/tools-core/src/monitor/orchestrator/orchestrator.rs` |
-| Application (тонкий клиент) | `crates/tools-core/src/monitor/application/{app.rs, config.rs}` |
-| Задачи/репозиторий | `crates/tools-core/src/monitor/task/{spec.rs, query.rs, entity.rs, id.rs, repository.rs}` |
+| Application (тонкий клиент) | `crates/tools-core/src/monitor/application/app.rs` |
+| Задачи/репозиторий/view | `crates/tools-core/src/monitor/task/{spec.rs, query.rs, entity.rs, id.rs, repository.rs, view.rs, error.rs}` |
 | SNMP-адаптер/клиент | `crates/tools-core/src/snmp/{adapters/reader.rs, client.rs, error.rs}` |
 | Профили/реестр/парсеры | `crates/tools-core/src/snmp/{profiles.rs, registry/, parsers/}` |
 | SCN/ASCII | `crates/tools-core/src/ascii.rs` |
 | Stage (фаза) | `crates/tools-core/src/stage.rs` |
-| CLI | `crates/tools-cli/src/{main.rs, monitor/app.rs, monitor/queries/, monitor/formatters/}` |
+| CLI | `crates/tools-cli/src/{main.rs, monitor/app.rs, monitor/formatters/}` |
