@@ -1,158 +1,241 @@
-# Супервизия воркеров (шпаргалка)
+# Жизненный цикл воркера (шпаргалка)
 
-Как Orchestrator запускает воркеры, следит за их здоровьем и перезапускает.
+Как задача попадает в монитор, как её воркер запускается, меняется на ходу, как за ним следят и перезапускают.
 
-## Роли
+## Участники
 
-- **Orchestrator** = мозг: принимает команды, строит адаптер, пишет в репо, рассылает UI.
-- **Supervisor** = руки: владеет хендлами воркеров и backoff-таймерами.
-- **repository** = память: канон задачи (спека + снапшот + метрики).
+| Кто | Ответственность |
+|---|---|
+| `Orchestrator` | команды, агрегация в репо, события наружу, супервизия |
+| `Supervisor` | владеет хендлами воркеров + backoff-состоянием (`HashMap<TaskId, WorkerRuntime>`) |
+| `TaskRepository` | канон: спека + снапшот + метрики + статус |
+| `PollWorker<A>` | расходный исполнитель: ритм → опрос → событие. Без стейта и команд |
+| `UseCase::build` | асинхронная сборка адаптера (сетевой connect + SCN-резолюция) |
 
 ## Главный цикл Orchestrator
 
 ```rust
 loop {
     select! {
-        cmd   = cmd_rx.recv()              => /* команда: start/stop/update/remove */
-        ev    = events_rx.recv()           => /* воркер прислал результат — он ЖИВ */
-        exit  = supervisor.next_exit()     => /* воркер ЗАВЕРШИЛСЯ САМ — он УМЕР */
-        _     = supervisor_tick.tick()     => /* каждые 1s: пора перезапускать */
+        cmd     = cmd_rx.recv()             => команда (add/start/stop/update/remove/shutdown)
+        ev      = events_rx.recv()          => воркер прислал результат — он ЖИВ
+        outcome = build_rx.recv()           => адаптер собран (асинхронно, вне цикла)
+        exit    = supervisor.next_exit()    => воркер ЗАВЕРШИЛСЯ сам (Completed/Failed/panic)
+        _       = supervisor_tick.tick()    => каждые 1s: пора перезапускать (backoff истёк)
     }
 }
 ```
 
-Здоровье = один факт: **жив воркер или завершился**.
+Здоровье = один факт: **воркер шлёт события (жив) или завершился (exit-канал)**. Heartbeat не нужен.
 
-## Состояние (в Supervisor)
+---
 
-```rust
-runtimes: HashMap<TaskId, WorkerRuntime>
-WorkerRuntime {
-    worker:  Option<WorkerHandle>,   // Some = запущен, None = остановлен/упал/ждёт рестарт
-    restart: RestartState { attempts: u32, next_at: Option<Instant> },
-}
+## 1. Добавление новой задачи
+
+### 1.1 Конфиг → валидация → `TaskSpec`
+
+```
+YAML / форма UI
+  → DTO (сырые строки, serde)
+  → AttemptConfig::try_new(...)      // timeout > 0
+  → PollConfig::try_new(...)         // interval > 0, interval >= budget
+  → QuerySnmpGet::from_raw(...)      // IpAddr, Community, SnmpOid, profile
+  → TaskSpec::try_new(...)           // name непустой
 ```
 
-Наличие `worker` и есть «запущен/не запущен».
+Вся валидация — на этом шаге, **до** запуска. Невалидно → падаем сразу.
 
-## 1. Запуск
+### 1.2 `add_task` — задача в `Idle` (воркера ещё нет)
 
-Единственная точка — `Supervisor::spawn`. К ней сводятся `start_task`, `restart_task`, `update_task`.
+```
+Application::new(specs):
+    run_id = ApplicationId::generate()
+    Orchestrator::new() → tokio::spawn(orchestrator.run())
+    для каждого spec → handle.add_task(spec)
+
+add_task(spec):
+    repository.add_task(spec) → TaskId, статус Idle
+```
+
+### 1.3 `start_task` — планируем сборку
 
 ```
 start_task(id):
-    если supervisor.is_running(id) → no-op
-    иначе build_use_case(id) → spawn_worker(id, use_case)
-
-spawn_worker(id, use_case):
-    seed из репо (poll_config + metrics) → supervisor.spawn(id, use_case, config, metrics)
-
-Supervisor::spawn:
-    создать PollWorker
-    tokio::spawn(обёртка): run → catch_unwind → лог → exit_tx.send((id, finished))
-    сохранить handle (abort) в runtimes[id].worker
+    если supervisor.is_running(id) || pending_builds.contains(id) → Ok (уже работает/собирается)
+    если задачи нет → Err(TaskNotFound)
+    supervisor.reset_restart(id)            // ручной старт сбрасывает накопленный backoff
+    schedule_build(id, BuildIntent::Start)
 ```
 
-## 2. Жизнь (мониторинг здоровья)
-
-| Сигнал | Значит | Обработчик |
-|---|---|---|
-| `WorkerEvent` из `events_rx` | жив, опрос выполнен | обновить snapshot + broadcast |
-| `(id, WorkerFinished)` из exit-канала | завершился **сам** | разобрать причину |
-
-Воркер не шлёт heartbeat — его живость = он ещё шлёт события.
-
-## 3. Смерть: разбор причины
-
-`handle_worker_exit(task_id, finished)`:
-
-| `finished` | Что делаем |
-|---|---|
-| `Completed` (дошёл до `limit`) | `mark_stopped` → статус `RatedLimit`, не перезапускаем |
-| `Failed` (фатальная ошибка / паника) | `schedule_restart` → `Restarting` + broadcast |
-
-**Логирование**: `Failed` → `tracing::error!(..., "worker failed ({message}), scheduling restart")`; `Completed` → `tracing::info!(..., "worker completed")`. Плюс сам факт завершения задачи логируется в обёртке `Supervisor::spawn` (`worker task finished`).
-
-## 4. Перезапуск (backoff)
-
-`schedule_restart` НЕ перезапускает сразу — только планирует:
+### 1.4 `schedule_build` — сборка адаптера ВНЕ цикла
 
 ```
-schedule_restart(id):
-    worker = None
-    attempts += 1
-    next_at = now + backoff(attempts)   // 1s, 2s, 4s, ... до 60s
+schedule_build(id, intent):
+    если pending_builds.contains(id) → false (дубль)
+    (query, attempt) = клон из спеки репо
+    generation = build_generation[id]
+    pending_builds.insert(id)
+    supervisor.mark_building(id)            // снять таймер рестарта, attempts сохранить
+
+    tokio::spawn:
+        result = UseCase::build(query, attempt).await   // сеть: connect + SCN — НЕ блокирует цикл
+        build_tx.send(BuildOutcome { id, intent, generation, result })
 ```
 
-Перезапуск — по тику:
+### 1.5 `handle_build_outcome` — спавним воркера
 
 ```
-supervisor_tick (каждые 1s):
-    due = supervisor.due_restarts(now)   // next_at <= now
-    для каждого id → restart_task
+handle_build_outcome(outcome):
+    pending_builds.remove(id)
 
-restart_task(id):
-    supervisor.reset_restart(id)         // next_at = None, attempts = 0
-    build_use_case(id):
-        Ok  → spawn_worker → Active → broadcast
-        Err → supervisor.retry_later(id) // attempts += 1, next_at = backoff
+    если generation != build_generation[id]:
+        → спека успела поменяться, пока шла сборка → schedule_build ещё раз (пересборка)
+
+    Ok(use_case):
+        spawn_worker(id, use_case):
+            (poll_config, metrics) = из репо (metrics — seed, переживают рестарт)
+            supervisor.spawn(id, use_case, poll_config, metrics)   // см. §3
+        статус Active, broadcast
+
+    Err (intent == Start):
+        → ручной старт: статус Idle, broadcast (НЕ ретраим)
+
+    Err (intent == Rebuild):
+        → supervisor.retry_later(id)   // attempts += 1, next_at = backoff
+        → статус Restarting, broadcast
 ```
 
-## Цепочка «умер → пересоздали» (по шагам)
+`Supervisor::spawn` (единственная точка запуска):
 
 ```
-t=0    воркер паникует
-         → обёртка ловит панику → exit_tx.send((id, Failed("panic: ...")))
-         → Orchestrator: handle_worker_exit(id, Failed)
-         → schedule_restart: attempts=1, next_at=t+1s
-         → статус Restarting, broadcast, log error
-t=1s   tick → due_restarts вернул [id]
-         → restart_task: build → spawn нового воркера (seed метрик из репо)
-         → статус Active, broadcast
-         (если build упал → retry_later: next_at=t+2s, остаёмся Restarting)
-t=2s   ... пробуем снова
+spawn(id, use_case, poll_config, metrics):
+    worker = PollWorker::new(id, use_case, poll_config, events_tx, metrics)
+    join = tokio::spawn:
+        finished = catch_unwind(worker.run())   // паника → Failed("panic: ...")
+        exit_tx.send((id, finished))
+    runtimes[id].worker = Some(abort_handle)
+    runtimes[id].restart.next_at = None          // таймер израсходован, attempts сохраняем
+    // защита: если тут уже жил воркер — abort предыдущего
 ```
 
-## Команда «изменить конфиг» (update_task)
+---
+
+## 2. Изменение задачи на ходу (`update_task`)
 
 ```
 update_task(id, new_spec):
-    1) задача есть? нет → Err(TaskNotFound)
-    2) repository.update_spec(id, new_spec)   // канон в репо (interval/limit/query)
-    3) если supervisor.is_running(id):
-         supervisor.stop(id)                  // abort старого
-         build_use_case → spawn_worker        // новый воркер из новой спеки
-    4) broadcast
+    задачи нет → Err(TaskNotFound)
+    repository.update_spec(id, new_spec)     // канон обновлён
+    build_generation[id] += 1                // инвалидирует идущую сборку (гонка «конфиг поменяли, пока собирали»)
+
+    если supervisor.is_running(id):
+        supervisor.stop(id)                  // abort старого воркера (без exit-события)
+        schedule_build(id, BuildIntent::Rebuild)   // пересборка из НОВОЙ спеки
+
+    broadcast
 ```
 
-Метрики сохраняются: `spawn_worker` берёт их из репо как seed.
+Синхронизация = «**спека — канон; воркер перевыводится из неё**». Второго источника истины нет.
 
-## Важно: abort НЕ шлёт exit
+---
 
-`abort()` отменяет tokio-задачу насильно — обёртка не доходит до `exit_tx.send`.
+## 3. Мониторинг, смерть и перезапуск
 
-Поэтому `handle_worker_exit` вызывается **только когда воркер завершился сам** (`Completed`/`Failed`/паника), а не когда мы его `abort`'нули (`stop`/`remove`/`update`).
+### 3.1 Жизнь (воркер шлёт события)
 
-Итог:
-- **abort** (наш `stop`) → тихо, без exit-события;
-- **самозавершение** → exit-событие → реагируем.
+```
+PollWorker::run:
+    loop {
+        interval_tick.tick()
+        если limit_reached (seed-метрики могли исчерпать лимит) → Completed
+        poll(&attempt, &adapter):
+            Success / NoResponse → metrics обновить → events_tx.send(WorkerEvent{id, metrics, result})
+            Err(Fatal) → Failed(message)
+        если limit_reached → Completed
+    }
+```
+
+Оркестратор на `WorkerEvent`:
+
+```
+handle_worker_event(ev):
+    supervisor.reset_restart(id)   // воркер ПЕРЕЖИЛ опрос → сброс backoff
+    статус = (limit > 0 && metrics.total_attempts >= limit) ? RatedLimit : Active
+    repository.update_snapshot(id, snapshot)
+    broadcast
+```
+
+### 3.2 Смерть (exit-канал)
+
+```
+handle_worker_exit(id, finished):
+    Completed (лимит / приёмник упал):
+        supervisor.mark_stopped(id)   → статус RatedLimit, НЕ перезапускаем
+    Failed (Fatal / паника):
+        schedule_restart(id):
+            worker = None
+            attempts += 1
+            next_at = now + backoff(attempts)   // 1s, 2s, 4s, 8s, 16s, 32s, 60s (cap)
+        статус Restarting, broadcast, log error
+```
+
+### 3.3 Перезапуск (по тику, а не сразу)
+
+```
+supervisor_tick (1s):
+    due = supervisor.due_restarts(now)   // next_at <= now
+    для каждого id → restart_task(id)
+
+restart_task(id):
+    schedule_build(id, BuildIntent::Rebuild)   // НЕ сбрасываем attempts — backoff нарастает
+```
+
+Сброс backoff происходит **только** в двух местах:
+1. воркер пережил опрос (`handle_worker_event` → `reset_restart`);
+2. ручной старт (`start_task` → `reset_restart`).
+
+`restart_task` **не** сбрасывает — поэтому краш-луп нарастает: 1s → 2s → 4s → … → 60s.
+
+---
+
+## Статусы (`PollStatus`)
+
+| Статус | Когда | Перезапускаем? |
+|---|---|---|
+| `Idle` | добавлен, не стартовал; или ручной старт упал на сборке | по команде `start` |
+| `Active` | воркер работает | — |
+| `Paused` | `stop_task` | по команде `start` |
+| `RatedLimit` | дошёл до `limit` | по команде `start` (но seed-метрики сразу исчерпают лимит) |
+| `Restarting` | упал, ждёт backoff | да, по тику |
+
+---
+
+## Важные факты (gotchas)
+
+1. **`abort()` не шлёт exit.** `stop`/`remove`/`update` гасят воркер тихо; exit-событие приходит только когда воркер завершился **сам**.
+2. **Сборка адаптера — асинхронная и вне цикла.** Сетевой connect/SCN не блокирует команды и события.
+3. **`generation` защищает от гонки**: если спека обновилась, пока шла сборка — результат отбрасывается и пересобирается.
+4. **Метрики — seed**: при пересоздании берутся из репо, поэтому счётчики/латентность не сбрасываются.
+5. **`retries` = число повторов после первой попытки** (итого `1 + retries`).
+6. **`interval >= budget`** — жёсткое правило (`budget = timeout*(retries+1) + retry_delay*retries`).
+
+---
 
 ## Компактная схема
 
 ```
-запуск:    start_task → spawn_worker (seed из репо)
-жизнь:     воркер шлёт события → snapshot обновляется
-смерть:    exit-канал → Completed | Failed
-           ├─ Completed → RatedLimit (стоп)
-           └─ Failed/panic → Restarting + next_at (жди backoff)
-перезапуск: tick(1s) → next_at истёк → build → spawn → Active
+добавление:  config → валидация → TaskSpec → add_task(Idle) → start_task
+             → schedule_build(Start) → build(вне цикла) → spawn → Active
+
+изменение:   update_task → update_spec + generation++ → stop(abort) → schedule_build(Rebuild)
+             → build → spawn (из новой спеки) → Active
+
+жизнь:       воркер шлёт WorkerEvent → snapshot в репо + broadcast + reset_restart
+
+смерть:      exit-канал:
+               Completed  → RatedLimit (стоп)
+               Failed     → Restarting + next_at = backoff(attempts)
+
+перезапуск:  tick(1s) → next_at истёк → schedule_build(Rebuild) → build → spawn → Active
+             (build упал → retry_later: attempts++, ждём дальше)
 ```
-
-## Откуда может прийти паника
-
-Воркер (`polling`) сам не паникует. Паника приходит из:
-
-1. **`adapter.poll()` → `async_snmp`** — внешняя библиотека.
-2. **Парсеры сырых значений** (`snmp/value.rs`: `v[0]..v[3]` для `IpAddress` и т.п.) — malformed-данные от устройства.
-
-`catch_unwind` (только в `Supervisor::spawn`) — страховка: паника убивает только этот воркер, не весь супервизор.
