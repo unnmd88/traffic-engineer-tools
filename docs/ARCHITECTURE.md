@@ -41,14 +41,6 @@
 - **Status** (фактическое): `snapshot` + `history` в `TaskEntity`.
 - **Control** (управление): хендлы воркеров и счётчики рестартов — только в `Orchestrator`.
 
-Сочетание паттернов:
-
-1. **Ports & Adapters (hexagonal)** — core не зависит от транспорта; протоколы за адаптерами.
-2. **Actor model + Supervisor** — воркеры как легковесные задачи, Orchestrator как супервизор
-   (spawn/abort/пересоздание + backoff).
-3. **Закрытые enum'ы** — `UseCase` (адаптеры), `UseCaseOutput` (результаты), `Response<T>` (итог
-   опроса) как единый «язык» между воркером, репозиторием и UI.
-
 ---
 
 ## 3. Глоссарий
@@ -64,12 +56,12 @@
 | **`TaskSpec`** | Декларативная спека (Spec): `name + query + poll_config + deep_history`. `TryFrom<TaskConfigDto>`. |
 | **Worker** | Stateless исполнитель: ритм опроса, ретраи, метрики, события. Без mailbox и машины состояний. Протокол-агностичен. |
 | **`WorkerHandle`** | Ручка остановки воркера: `abort()`, `id()`. |
-| **Orchestrator** | Контроль-слой + супервизор: владеет хендлами воркеров и backoff-рестартами; команды/события/broadcast. |
+| **Orchestrator** | Контроль + супервизор: владеет хендлами воркеров и backoff-рестартами; команды/события/broadcast. |
 | **`OrchestratorHandle`** | Пульт оркестратора: `add_task`, `remove_task`, `start/stop/update_task`, `get_snapshot`, `subscribe`. |
 | **Task** | Логическая задача мониторинга = спека + расписание + история. |
 | **Snapshot** | Снимок состояния задачи (результат + метрики + статус). |
 | **Repository** | In-memory хранилище задач и их снапшотов. |
-| **Application** | Тонкий клиент: конфиг-слой (валидация в `TaskSpec`) + обёртка над `OrchestratorHandle`. |
+| **Application** | Тонкий клиент: конфиг (валидация в `TaskSpec`) + обёртка над `OrchestratorHandle`. |
 | **`Response<T>`** | Итог одной итерации опроса: `Success { payload, … }` / `NoResponse { … }` — оба штатные (value). |
 | **`AttemptError`** | Ошибка одной попытки: `Transient` (ретраится) / `Fatal` (не ретраится). |
 | **`FatalError`** | Фатальная ошибка итерации — единственный возможный `Err` из `poll()`. |
@@ -110,8 +102,8 @@
 | Компонент | Роль | Ключевые типы |
 |---|---|---|
 | **CLI** (`tctl`) | входная точка: парсит YAML, запускает, рендерит | `main.rs`, `AppBuilder`, formatters |
-| **Application** | конфиг-слой + тонкий клиент: валидация конфига → `TaskSpec`, отправка команд | `Application`, `ApplicationId`, `ApplicationState` |
-| **Orchestrator** | контроль-слой + супервизор: хендлы воркеров, backoff-рестарты | `Orchestrator`, `OrchestratorHandle`, `OrchestratorCommand`, `OrchestratorEvent` |
+| **Application** | конфиг + тонкий клиент: валидация конфига → `TaskSpec`, отправка команд | `Application`, `ApplicationId`, `ApplicationState` |
+| **Orchestrator** | контроль + супервизор: хендлы воркеров, backoff-рестарты | `Orchestrator`, `OrchestratorHandle`, `OrchestratorCommand`, `OrchestratorEvent` |
 | **PollWorker** | stateless исполнитель: ритм опроса, ретраи, метрики | `PollWorker<A>`, `WorkerHandle`, `WorkerEvent` |
 | **UseCase (адаптер)** | «один опрос → типизированный результат» | `UseCase`, `UseCaseOutput`, `UseCaseQuery` |
 | **TaskRepository** | in-memory хранилище состояния задач | `TaskRepository`, `TaskEntity`, `TaskSnapshot`, `TaskHistory` |
@@ -129,7 +121,9 @@
 
 ---
 
-## 6. Слои и компоненты
+## 6. Организация кода
+
+Код разбит по **зонам ответственности** (функционалу), а не по слоям: каждый модуль владеет своим функционалом целиком — протокол, опрос, оркестрация, конфиг — и зависит от нижележащих модулей только через их публичный API.
 
 ```
                  ┌──────────────────────────────────────────────┐
@@ -156,13 +150,13 @@
 │  │ UseCase (адаптер, enum)            │  SnmpGet(SnmpReader), …              │
 │  └─────┬──────────────────────────────┘                                      │
 │  ┌─────▼──────────────────────────────┐                                      │
-│  │ snmp (протокольный слой)           │  client, value, oid, profile,        │
+│  │ snmp (протокол)                    │  client, value, oid, profile,        │
 │  │                                     │  registry, parsers                  │
 │  └────────────────────────────────────┘                                      │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Правило зависимостей: слой зависит только от нижележащего; `polling` не знает про
+Правило зависимостей: модуль зависит только от нижележащего модуля; `polling` не знает про
 `snmp`/`use-case`; `Orchestrator` оперирует `UseCase` (enum), не зная протокольных деталей.
 
 ---
