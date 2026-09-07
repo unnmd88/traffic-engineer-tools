@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -11,6 +10,7 @@ use crate::{
     monitor::{
         task::{
             MonitorSnapshot, PollStatus, TaskEntity, TaskId, TaskRepository, TaskSnapshot, TaskSpec,
+            TaskView,
         },
         usecase::{UseCase, UseCaseOutput},
     },
@@ -53,10 +53,10 @@ pub enum OrchestratorCommand {
 // События наружу (UI/API)
 #[derive(Clone, Debug)]
 pub enum OrchestratorEvent {
-    Update {
-        snapshot: Arc<TaskRepository>,
-        task_id: TaskId,
-    },
+    /// Задача изменилась (добавлена / обновлена / изменён статус или результат).
+    TaskUpdated { task_id: TaskId, view: TaskView },
+    /// Задача удалена.
+    TaskRemoved { task_id: TaskId },
 }
 
 /// Зачем запускается сборка адаптера: влияет на обработку ошибки сборки.
@@ -150,7 +150,7 @@ impl Orchestrator {
                 tracing::info!(task_id = %task_id, "command: remove_task");
                 let result = self.remove_task(&task_id);
                 if result.is_ok() {
-                    self.broadcast_update(task_id);
+                    self.broadcast_removed(task_id);
                 }
                 let _ = reply.send(result);
             }
@@ -387,11 +387,23 @@ impl Orchestrator {
     }
 
     fn broadcast_update(&mut self, task_id: TaskId) {
+        if self.broadcast_tx.receiver_count() == 0 {
+            return;
+        }
+        let Some(task) = self.repository.get_task(&task_id) else {
+            return; // задача удалена — для этого есть broadcast_removed
+        };
+        let view = TaskView::from(task);
+        let _ = self
+            .broadcast_tx
+            .send(OrchestratorEvent::TaskUpdated { task_id, view });
+    }
+
+    fn broadcast_removed(&mut self, task_id: TaskId) {
         if self.broadcast_tx.receiver_count() > 0 {
-            let _ = self.broadcast_tx.send(OrchestratorEvent::Update {
-                snapshot: Arc::new(self.repository.clone()),
-                task_id,
-            });
+            let _ = self
+                .broadcast_tx
+                .send(OrchestratorEvent::TaskRemoved { task_id });
         }
     }
 

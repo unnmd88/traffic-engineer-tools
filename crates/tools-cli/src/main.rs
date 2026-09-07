@@ -13,7 +13,7 @@ use crate::{
     logging::init_file_logging,
     monitor::{
         app::AppBuilder,
-        formatters::{constants::LINE_DOUBLE_LN, format_repository},
+        formatters::{constants::LINE_DOUBLE_LN, format_snapshot},
     },
 };
 
@@ -38,32 +38,37 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(async move {
                 app.start().await;
                 let monitor_id = app.id();
-                //let mut rx = app.subscribe().await?;
                 let mut rx = app.subscribe().await.unwrap_or_else(|e| {
                     panic!("{}", e);
                 });
+                let mut snapshot = app
+                    .get_snapshot()
+                    .await
+                    .expect("Failed to get snapshot");
 
                 while let Ok(update) = rx.recv().await {
                     clear_screen();
+
+                    match update {
+                        OrchestratorEvent::TaskUpdated { task_id, view } => {
+                            if let Some(t) = snapshot.tasks.iter_mut().find(|t| t.id == task_id) {
+                                *t = view;
+                            } else {
+                                snapshot.tasks.push(view);
+                            }
+                        }
+                        OrchestratorEvent::TaskRemoved { task_id } => {
+                            snapshot.tasks.retain(|t| t.id != task_id);
+                        }
+                    }
+
                     let uptime = Local::now() - app_created_at;
                     let minutes = uptime.num_minutes();
                     let seconds = uptime.num_seconds() % 60;
-                    //execute!(stdout(), Clear(ClearType::All), cursor::MoveTo(0, 0))
-                    //    .unwrap_or_default();
-                    match update {
-                        OrchestratorEvent::Update { snapshot, task_id } => {
-                            println!(
-                                "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
-                                format_repository(&snapshot)
-                            );
-                            /*
-                                                        for task_id in ordered_tasks_ids.iter() {
-                                                            println!("Задача 1:\n{:#?}", snapshot.get_task(task_id));
-                                                        }
-                            */
-                        }
-                        _ => {}
-                    }
+                    println!(
+                        "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
+                        format_snapshot(&snapshot)
+                    );
                 }
             });
 
