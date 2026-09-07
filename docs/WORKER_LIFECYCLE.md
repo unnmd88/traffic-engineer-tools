@@ -239,3 +239,21 @@ restart_task(id):
 перезапуск:  tick(1s) → next_at истёк → schedule_build(Rebuild) → build → spawn → Active
              (build упал → retry_later: attempts++, ждём дальше)
 ```
+
+
+
+start_task ─────────┐
+update_task ────────┤
+restart_task ───────┼─► schedule_build ──► (build-таска, вне цикла)
+stale-reschedule ───┘                          │
+                                               ▼
+                                      build_tx → build_rx
+                                               │
+                                               ▼
+                                    handle_build_outcome
+                                               │
+                                               ▼
+                                         spawn_worker
+                                               │
+                                               ▼
+                                      Supervisor::spawn   ← единственный спавн воркера
