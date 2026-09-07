@@ -49,7 +49,7 @@ impl From<&TaskEntity> for TaskView {
             .history()
             .iter()
             .map(|h| HistoryEntryView {
-                timestamp: h.timestamp.clone(),
+                timestamp: h.timestamp,
                 result: h.snapshot.poll_result().cloned(),
             })
             .collect();
