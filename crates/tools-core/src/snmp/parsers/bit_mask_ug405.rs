@@ -20,17 +20,20 @@ pub fn parse_utc_bitmask(bytes: &[u8]) -> Result<u32, ParseError> {
     let mut found_pos: Option<usize> = None;
     let mut stage = 0;
 
-    // Байты идут от младшего к старшему (LSB first): bytes[0] — младший байт.
-    for (idx, &byte) in bytes.iter().enumerate() {
+    // Байты идут от старшего к младшему (MSB first): младший бит (LSB) всей
+    // маски — в последнем байте. Номер бита считаем от младшего.
+    for (idx_from_end, &byte) in bytes.iter().rev().enumerate() {
         if byte == 0 {
             continue;
         }
+
+        let pos = bytes.len() - idx_from_end - 1;
 
         // Байт должен быть степенью двойки (ровно один активный бит).
         if byte & (byte - 1) != 0 {
             let err_msg = format!(
                 "Byte must be power of 2. Got: {} (0b{:08b}) at position {}",
-                byte, byte, idx
+                byte, byte, pos
             );
 
             tracing::error!(target: "Parse UtcReplyGn", bytes = ?bytes, "{}", &err_msg);
@@ -41,7 +44,7 @@ pub fn parse_utc_bitmask(bytes: &[u8]) -> Result<u32, ParseError> {
         if let Some(first) = found_pos {
             let err_msg = format!(
                 "Multiple bytes with active bits. First at position {}, second at position {}",
-                first, idx
+                first, pos
             );
 
             tracing::error!(target: "parse_utc_bitmask", bytes = ?bytes, "{}", &err_msg);
@@ -49,8 +52,8 @@ pub fn parse_utc_bitmask(bytes: &[u8]) -> Result<u32, ParseError> {
             return Err(ParseError::Common { message: err_msg });
         }
 
-        found_pos = Some(idx);
-        stage = (idx as u32 * 8) + byte.trailing_zeros() + 1;
+        found_pos = Some(pos);
+        stage = (idx_from_end as u32 * 8) + byte.trailing_zeros() + 1;
     }
 
     if found_pos.is_none() {
@@ -68,21 +71,21 @@ mod tests {
 
     #[test]
     fn test_parse_utc_bitmask_stage_1() {
-        let bytes = vec![0x01, 0x00, 0x00, 0x00];
+        let bytes = vec![0x00, 0x00, 0x00, 0x01];
         let result = parse_utc_bitmask(&bytes).unwrap();
         assert_eq!(result, 1);
     }
 
     #[test]
     fn test_parse_utc_bitmask_stage_9() {
-        let bytes = vec![0x00, 0x01, 0x00, 0x00];
+        let bytes = vec![0x00, 0x00, 0x01, 0x00];
         let result = parse_utc_bitmask(&bytes).unwrap();
         assert_eq!(result, 9);
     }
 
     #[test]
     fn test_parse_utc_bitmask_stage_17() {
-        let bytes = vec![0x00, 0x00, 0x01, 0x00];
+        let bytes = vec![0x00, 0x01, 0x00, 0x00];
         let result = parse_utc_bitmask(&bytes).unwrap();
         assert_eq!(result, 17);
     }
@@ -111,9 +114,9 @@ mod tests {
         assert_eq!(parse_utc_bitmask(&[32]).unwrap(), 6);
         assert_eq!(parse_utc_bitmask(&[64]).unwrap(), 7);
         assert_eq!(parse_utc_bitmask(&[128]).unwrap(), 8);
-        assert_eq!(parse_utc_bitmask(&[1, 0]).unwrap(), 1);
-        assert_eq!(parse_utc_bitmask(&[2, 0]).unwrap(), 2);
-        assert_eq!(parse_utc_bitmask(&[0, 1]).unwrap(), 9);
+        assert_eq!(parse_utc_bitmask(&[1, 0]).unwrap(), 9);
+        assert_eq!(parse_utc_bitmask(&[2, 0]).unwrap(), 10);
+        assert_eq!(parse_utc_bitmask(&[0, 1]).unwrap(), 1);
     }
 
     #[test]
