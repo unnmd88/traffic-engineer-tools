@@ -147,22 +147,15 @@ impl Ascii {
             return Err(AsciiError::Empty);
         }
 
-        let non_ascii: Vec<char> = bytes
-            .iter()
-            .filter(|&&b| !b.is_ascii())
-            .map(|&b| b as char)
-            .collect();
+        let s = std::str::from_utf8(bytes).map_err(|_| AsciiError::InvalidFormat)?;
+
+        let non_ascii: Vec<char> = s.chars().filter(|c| !c.is_ascii()).collect();
 
         if !non_ascii.is_empty() {
             return Err(AsciiError::NonAsciiCharacters(non_ascii));
         }
 
-        Ok(Self {
-            s: String::from_utf8(bytes.to_vec()).map_err(|e| {
-                tracing::error!(target: "from_bytes constructor", "{e}", );
-                AsciiError::InvalidFormat
-            })?,
-        })
+        Ok(Self { s: s.to_string() })
     }
 
     /// # Пример
