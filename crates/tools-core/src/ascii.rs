@@ -28,13 +28,13 @@ pub enum AsciiError {
 /// # Особенности
 /// - Все конструкторы валидируют входные данные
 /// - `as_str()` и `as_bytes()` работают за O(1) без аллокаций
-/// - Форматирование (`to_dotted()`, `to_scn()`) создает новые строки
+/// - Форматирование (`to_dotted()`, `to_scn_index()`, `to_utc_index()`) создает новые строки
 ///
 /// # Примеры
 ///
 /// ## Создание из строки
 /// ```
-/// use tools_core::models::Ascii;
+/// use tools_core::Ascii;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let s = Ascii::from_str("ABC")?;
@@ -46,7 +46,7 @@ pub enum AsciiError {
 ///
 /// ## Создание из байт
 /// ```
-/// use tools_core::models::Ascii;
+/// use tools_core::Ascii;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let s = Ascii::from_bytes(&[65, 66, 67])?;
@@ -57,11 +57,11 @@ pub enum AsciiError {
 ///
 /// ## Парсинг разных форматов
 /// ```
-/// use tools_core::models::Ascii;
+/// use tools_core::Ascii;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let s1 = Ascii::parse_dotted("65.66.67")?;
-/// let s2 = Ascii::parse_scn(".1.3.65.66.67")?;
+/// let s2 = Ascii::parse_utc_index(".1.3.65.66.67")?;
 /// assert_eq!(s1, s2);
 /// assert_eq!(s1.as_str(), "ABC");
 /// # Ok(())
@@ -86,7 +86,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// // Пробелы по краям будут обрезаны
@@ -128,7 +128,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_bytes(b"ABC")?;
@@ -160,7 +160,7 @@ impl Ascii {
 
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -174,7 +174,7 @@ impl Ascii {
 
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -190,7 +190,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -210,7 +210,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -227,32 +227,51 @@ impl Ascii {
             .join(".") // Объединяем через точку
     }
 
-    /// Форматирует в SCN-формат для SNMP.
+    /// Форматирует SCN как OID-индекс: `{длина}.{коды_через_точку}`.
     ///
-    /// Формат: `.1.{длина}.{коды_через_точку}`
-    ///
-    /// Пример: `"ABC"` → `".1.3.65.66.67"`
+    /// Это «чистая» кодировка SCN (без timestamp). Пример: `"ABC"` → `"3.65.66.67"`.
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
-    /// assert_eq!(s.to_scn(), ".1.3.65.66.67");
+    /// assert_eq!(s.to_scn_index(), "3.65.66.67");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn to_scn(&self) -> String {
-        // Формат: .1.{длина}.{коды}
-        format!(".1.{}.{}", self.len(), self.to_dotted())
+    pub fn to_scn_index(&self) -> String {
+        format!("{}.{}", self.len(), self.to_dotted())
+    }
+
+    /// Форматирует полный индексный суффикс UTC-таблицы для SNMP-запроса.
+    ///
+    /// Формат: `.1.{длина}.{коды_через_точку}`, где `.1` — `utcType2TimeStamp`
+    /// со значением «now» (всегда 1 при запросе текущего состояния), а
+    /// `{длина}.{коды}` — SCN как OCTET-STRING-индекс (см. [`to_scn_index`]).
+    ///
+    /// Пример: `"ABC"` → `".1.3.65.66.67"`.
+    ///
+    /// # Пример
+    /// ```
+    /// use tools_core::Ascii;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let s = Ascii::from_str("ABC")?;
+    /// assert_eq!(s.to_utc_index(), ".1.3.65.66.67");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn to_utc_index(&self) -> String {
+        format!(".1.{}", self.to_scn_index())
     }
 
     /// Форматирует коды с произвольным разделителем.
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -280,7 +299,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::parse_dotted("65.66.67")?;
@@ -317,11 +336,11 @@ impl Ascii {
         Self::from_bytes(&bytes)
     }
 
-    /// Парсит SCN-формат.
+    /// Парсит SCN-индекс вида `{длина}.{коды_через_точку}`.
     ///
-    /// Формат: `.1.{длина}.{коды_через_точку}`
+    /// Это «чистая» кодировка SCN (без timestamp-префикса).
     ///
-    /// Пример: `".1.3.65.66.67"` → `Ascii("ABC")`
+    /// Пример: `"3.65.66.67"` → `Ascii("ABC")`.
     ///
     /// # Ошибки
     /// - `AsciiError::Empty` - если строка пустая
@@ -331,35 +350,35 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::parse_scn(".1.3.65.66.67")?;
+    /// let s = Ascii::parse_scn_index("3.65.66.67")?;
     /// assert_eq!(s.as_str(), "ABC");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn parse_scn(s: &str) -> Result<Self, AsciiError> {
+    pub fn parse_scn_index(s: &str) -> Result<Self, AsciiError> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
             return Err(AsciiError::Empty);
         }
 
-        // ".1.3.65.66.67" → ["1", "3", "65", "66", "67"]
+        // "3.65.66.67" → ["3", "65", "66", "67"]
         let parts: Vec<&str> = trimmed.trim_matches('.').split('.').collect();
 
-        // Проверяем минимальную длину и префикс
-        if parts.len() < 3 || parts[0] != "1" {
+        // Минимум: длина + хотя бы один код
+        if parts.len() < 2 {
             return Err(AsciiError::InvalidFormat);
         }
 
         // Парсим ожидаемую длину
-        let expected_len: usize = parts[1]
+        let expected_len: usize = parts[0]
             .parse()
-            .map_err(|_| AsciiError::InvalidLength(parts[1].to_string()))?;
+            .map_err(|_| AsciiError::InvalidLength(parts[0].to_string()))?;
 
         let mut bytes = Vec::with_capacity(expected_len);
-        for part in &parts[2..] {
+        for part in &parts[1..] {
             if part.is_empty() {
                 return Err(AsciiError::InvalidFormat);
             }
@@ -381,11 +400,51 @@ impl Ascii {
         Self::from_bytes(&bytes)
     }
 
+    /// Парсит полный индексный суффикс UTC-таблицы: `.1.{длина}.{коды_через_точку}`.
+    ///
+    /// `.1` — `utcType2TimeStamp` со значением «now»; после него идёт SCN как
+    /// OCTET-STRING-индекс (см. [`parse_scn_index`]). Вход `".1.3.65.66.67"`
+    /// даёт `Ascii("ABC")`.
+    ///
+    /// # Ошибки
+    /// - `AsciiError::Empty` - если строка пустая
+    /// - `AsciiError::InvalidFormat` - если формат не соответствует
+    /// - `AsciiError::InvalidLength` - если длина не число
+    /// - `AsciiError::LengthMismatch` - если длина не совпадает с количеством кодов
+    ///
+    /// # Пример
+    /// ```
+    /// use tools_core::Ascii;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let s = Ascii::parse_utc_index(".1.3.65.66.67")?;
+    /// assert_eq!(s.as_str(), "ABC");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn parse_utc_index(s: &str) -> Result<Self, AsciiError> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(AsciiError::Empty);
+        }
+
+        // ".1.3.65.66.67" → ["1", "3", "65", "66", "67"]
+        let parts: Vec<&str> = trimmed.trim_matches('.').split('.').collect();
+
+        // Проверяем минимальную длину и префикс utcType2TimeStamp == "now" (1)
+        if parts.len() < 3 || parts[0] != "1" {
+            return Err(AsciiError::InvalidFormat);
+        }
+
+        // Всё, что после ".1", — это SCN-индекс: "3.65.66.67"
+        Self::parse_scn_index(&parts[1..].join("."))
+    }
+
     /// Проверяет, начинается ли строка с указанного префикса.
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -402,7 +461,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -419,7 +478,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -436,7 +495,7 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::models::Ascii;
+    /// use tools_core::Ascii;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let s = Ascii::from_str("ABC")?;
@@ -607,15 +666,27 @@ mod tests {
     }
 
     #[test]
-    fn to_scn() {
+    fn to_scn_index() {
         let s = Ascii::from_str("ABC").unwrap();
-        assert_eq!(s.to_scn(), ".1.3.65.66.67");
+        assert_eq!(s.to_scn_index(), "3.65.66.67");
     }
 
     #[test]
-    fn to_scn_complex() {
+    fn to_scn_index_complex() {
         let s = Ascii::from_str("CO4500").unwrap();
-        assert_eq!(s.to_scn(), ".1.6.67.79.52.53.48.48");
+        assert_eq!(s.to_scn_index(), "6.67.79.52.53.48.48");
+    }
+
+    #[test]
+    fn to_utc_index() {
+        let s = Ascii::from_str("ABC").unwrap();
+        assert_eq!(s.to_utc_index(), ".1.3.65.66.67");
+    }
+
+    #[test]
+    fn to_utc_index_complex() {
+        let s = Ascii::from_str("CO4500").unwrap();
+        assert_eq!(s.to_utc_index(), ".1.6.67.79.52.53.48.48");
     }
 
     #[test]
@@ -665,41 +736,74 @@ mod tests {
     }
 
     #[test]
-    fn parse_scn_basic() {
-        let s = Ascii::parse_scn(".1.3.65.66.67").unwrap();
+    fn parse_scn_index_basic() {
+        let s = Ascii::parse_scn_index("3.65.66.67").unwrap();
         assert_eq!(s.as_str(), "ABC");
         assert_eq!(s.as_bytes(), &[65, 66, 67]);
     }
 
     #[test]
-    fn parse_scn_complex() {
-        let s = Ascii::parse_scn(".1.6.67.79.52.53.48.48").unwrap();
+    fn parse_scn_index_complex() {
+        let s = Ascii::parse_scn_index("6.67.79.52.53.48.48").unwrap();
         assert_eq!(s.as_str(), "CO4500");
         assert_eq!(s.as_bytes(), &[67, 79, 52, 53, 48, 48]);
     }
 
     #[test]
-    fn parse_scn_single() {
-        let s = Ascii::parse_scn(".1.1.65").unwrap();
+    fn parse_scn_index_single() {
+        let s = Ascii::parse_scn_index("1.65").unwrap();
         assert_eq!(s.as_str(), "A");
         assert_eq!(s.as_bytes(), &[65]);
     }
 
     #[test]
-    fn parse_scn_invalid_format() {
-        let err = Ascii::parse_scn("invalid").unwrap_err();
+    fn parse_scn_index_invalid_format() {
+        let err = Ascii::parse_scn_index("invalid").unwrap_err();
         assert!(matches!(err, AsciiError::InvalidFormat));
     }
 
     #[test]
-    fn parse_scn_invalid_prefix() {
-        let err = Ascii::parse_scn(".2.3.65.66.67").unwrap_err();
+    fn parse_scn_index_invalid_length() {
+        let err = Ascii::parse_scn_index("abc.65.66.67").unwrap_err();
+        assert!(matches!(err, AsciiError::InvalidLength(_)));
+    }
+
+    #[test]
+    fn parse_utc_index_basic() {
+        let s = Ascii::parse_utc_index(".1.3.65.66.67").unwrap();
+        assert_eq!(s.as_str(), "ABC");
+        assert_eq!(s.as_bytes(), &[65, 66, 67]);
+    }
+
+    #[test]
+    fn parse_utc_index_complex() {
+        let s = Ascii::parse_utc_index(".1.6.67.79.52.53.48.48").unwrap();
+        assert_eq!(s.as_str(), "CO4500");
+        assert_eq!(s.as_bytes(), &[67, 79, 52, 53, 48, 48]);
+    }
+
+    #[test]
+    fn parse_utc_index_single() {
+        let s = Ascii::parse_utc_index(".1.1.65").unwrap();
+        assert_eq!(s.as_str(), "A");
+        assert_eq!(s.as_bytes(), &[65]);
+    }
+
+    #[test]
+    fn parse_utc_index_invalid_format() {
+        let err = Ascii::parse_utc_index("invalid").unwrap_err();
         assert!(matches!(err, AsciiError::InvalidFormat));
     }
 
     #[test]
-    fn parse_scn_invalid_length() {
-        let err = Ascii::parse_scn(".1.abc.65.66.67").unwrap_err();
+    fn parse_utc_index_invalid_prefix() {
+        let err = Ascii::parse_utc_index(".2.3.65.66.67").unwrap_err();
+        assert!(matches!(err, AsciiError::InvalidFormat));
+    }
+
+    #[test]
+    fn parse_utc_index_invalid_length() {
+        let err = Ascii::parse_utc_index(".1.abc.65.66.67").unwrap_err();
         assert!(matches!(err, AsciiError::InvalidLength(_)));
     }
 }

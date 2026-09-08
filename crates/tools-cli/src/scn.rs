@@ -29,16 +29,16 @@ pub async fn run_from_string(input: String) -> Result<ScnResult> {
     Ok(ScnResult {
         input,
         decoded: engine.as_str().to_string(),
-        scn: engine.to_scn().to_string(),
+        scn: engine.to_scn_index(),
     })
 }
 
 pub async fn run_from_scn(input: String) -> Result<ScnResult> {
-    let engine = Ascii::parse_scn(&input)?;
+    let engine = Ascii::parse_scn_index(&input)?;
 
     Ok(ScnResult {
         input,
         decoded: engine.as_str().to_string(),
-        scn: engine.to_scn().to_string(),
+        scn: engine.to_scn_index(),
     })
 }

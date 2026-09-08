@@ -3,7 +3,8 @@ use tools_core::ascii::Ascii;
 fn main() -> anyhow::Result<()> {
     let engine = Ascii::from_str("CO101")?;
     println!("{}", engine.as_str());
-    println!("{}", engine.to_scn());
+    println!("scn_index: {}", engine.to_scn_index());
+    println!("utc_index: {}", engine.to_utc_index());
     println!("{:?}", engine.as_bytes());
 
     println!("{}", "-".repeat(40));

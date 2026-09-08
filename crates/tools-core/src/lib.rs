@@ -10,7 +10,7 @@ pub mod stage;
 pub mod error;
 
 pub mod snmp;
-pub use ascii::AsciiError;
+pub use ascii::{Ascii, AsciiError};
 pub use constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS};
 pub use error::Error;
 pub use polling::PollErrorContext;

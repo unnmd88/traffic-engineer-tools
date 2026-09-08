@@ -56,7 +56,7 @@ impl SnmpProfile {
         }
 
         let scn = match self.get_scn(client).await? {
-            Some(ascii) => ascii.to_scn(),
+            Some(ascii) => ascii.to_utc_index(),
             None => {
                 tracing::error!(target: "resolve_oids", profile=?self.to_string(), "Bug: snmp profile must have scn.");
                 return Err(SnmpError::ScnError {
