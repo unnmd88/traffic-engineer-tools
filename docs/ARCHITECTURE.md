@@ -385,6 +385,8 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 
 ## 14. Дорожная карта
 
+> Живой список задач (со статусами) — в [`docs/ROADMAP.md`](ROADMAP.md).
+
 1. **History-sink** (O-6): `LogWriter` trait (`dyn`) + writer-актор + `mpsc`.
 2. **Второй use-case** (http-read или icmp-ping) — проверить рецепт §10.
 3. **snmp-set** — отдельный «командный» путь (не периодический опрос).
