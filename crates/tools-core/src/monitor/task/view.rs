@@ -3,7 +3,7 @@ use tokio::time::Duration;
 
 use crate::{
     monitor::{
-        task::{PollStatus, TaskId},
+        task::{TaskId, TaskRevision, TaskStatus},
         usecase::UseCaseOutput,
     },
     polling::{Metrics, Response},
@@ -20,8 +20,9 @@ use super::entity::TaskEntity;
 pub struct TaskView {
     pub id: TaskId,
     pub name: String,
+    pub revision: TaskRevision,
     pub target: String,
-    pub status: PollStatus,
+    pub status: TaskStatus,
     pub interval: Duration,
     pub limit: u64,
     pub metrics: Metrics,
@@ -56,6 +57,7 @@ impl From<&TaskEntity> for TaskView {
 
         Self {
             id: *t.id(),
+            revision: *t.revision(),
             name: t.name().to_string(),
             target: t.query().target(),
             status: *t.status(),
@@ -102,7 +104,7 @@ mod tests {
 
         assert_eq!(view.name, "T-1");
         assert_eq!(view.target, "127.0.0.1:161");
-        assert_eq!(view.status, PollStatus::Idle);
+        assert_eq!(view.status, CurrentState::Idle);
         assert_eq!(view.interval, Duration::from_secs(5));
         assert_eq!(view.limit, 100);
         assert!(view.result.is_none());

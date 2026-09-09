@@ -2,7 +2,7 @@ use std::{collections::VecDeque, mem};
 
 use crate::{
     monitor::{
-        task::{PollStatus, TaskId, TaskSpec, UseCaseQuery},
+        task::{TaskId, TaskRevision, TaskSpec, TaskStatus, UseCaseQuery},
         usecase::UseCaseOutput,
     },
     polling::{Metrics, PollConfig, Response},
@@ -68,7 +68,7 @@ impl Default for TaskHistory {
 pub struct TaskSnapshot {
     poll_result: Option<Response<UseCaseOutput>>,
     metrics: Metrics,
-    poll_status: PollStatus,
+    poll_status: TaskStatus,
 }
 
 impl TaskSnapshot {
@@ -83,7 +83,7 @@ impl TaskSnapshot {
         }
     }
 
-    pub fn with_poll_status(self, poll_status: PollStatus) -> Self {
+    pub fn with_poll_status(self, poll_status: TaskStatus) -> Self {
         Self {
             poll_status,
             ..self
@@ -98,7 +98,7 @@ impl TaskSnapshot {
         self.poll_result.as_ref()
     }
 
-    pub fn poll_status(&self) -> &PollStatus {
+    pub fn poll_status(&self) -> &TaskStatus {
         &self.poll_status
     }
 
@@ -110,7 +110,7 @@ impl TaskSnapshot {
 impl Default for TaskSnapshot {
     fn default() -> Self {
         Self {
-            poll_status: PollStatus::Idle,
+            poll_status: TaskStatus::Idle,
             poll_result: None,
             metrics: Metrics::default(),
         }
@@ -121,6 +121,7 @@ impl Default for TaskSnapshot {
 pub struct TaskEntity {
     id: TaskId,
     spec: TaskSpec,
+    revision: TaskRevision,
     snapshot: TaskSnapshot,
     history: TaskHistory,
     created_at: DateTime<Local>,
@@ -132,6 +133,7 @@ impl TaskEntity {
         let dt = Local::now();
         Self {
             id,
+            revision: TaskRevision::new(1),
             snapshot: TaskSnapshot::default(),
             history: TaskHistory::new(spec.deep_history()),
             spec,
@@ -146,6 +148,10 @@ impl TaskEntity {
 
     pub fn spec(&self) -> &TaskSpec {
         &self.spec
+    }
+
+    pub fn revision(&self) -> &TaskRevision {
+        &self.revision
     }
 
     pub fn name(&self) -> &str {
@@ -168,7 +174,7 @@ impl TaskEntity {
         self.snapshot.poll_result()
     }
 
-    pub fn status(&self) -> &PollStatus {
+    pub fn status(&self) -> &TaskStatus {
         &self.snapshot.poll_status
     }
 
@@ -188,6 +194,11 @@ impl TaskEntity {
         &self.history
     }
 
+    fn next_revision(&mut self) -> bool {
+        self.revision = self.revision.next();
+        true
+    }
+
     pub fn update_snapshot(&mut self, snapshot: TaskSnapshot) -> bool {
         let ts = Local::now();
         let old_snapshot = mem::replace(&mut self.snapshot, snapshot);
@@ -201,11 +212,12 @@ impl TaskEntity {
 
     pub fn update_spec(&mut self, spec: TaskSpec) -> bool {
         self.spec = spec;
+        self.next_revision();
         self.updated_at = Local::now();
         true
     }
 
-    pub fn set_status(&mut self, status: PollStatus) -> bool {
+    pub fn set_status(&mut self, status: TaskStatus) -> bool {
         self.snapshot.poll_status = status;
         self.updated_at = Local::now();
         true

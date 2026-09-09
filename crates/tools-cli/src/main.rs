@@ -2,7 +2,7 @@ use chrono::Local;
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use tools_core::{DT_FMT, monitor::orchestrator::OrchestratorEvent};
+use tools_core::{DT_FMT, monitor::event::TaskEvent};
 use tracing::{error, info};
 mod logging;
 mod monitor;
@@ -41,27 +41,11 @@ async fn main() -> anyhow::Result<()> {
                 let mut rx = app.subscribe().await.unwrap_or_else(|e| {
                     panic!("{}", e);
                 });
-                let mut snapshot = app
-                    .get_snapshot()
-                    .await
-                    .expect("Failed to get snapshot");
+                let mut snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
 
                 while let Ok(update) = rx.recv().await {
+                    println!("{snapshot:#?}");
                     clear_screen();
-
-                    match update {
-                        OrchestratorEvent::TaskUpdated { task_id, view } => {
-                            if let Some(t) = snapshot.tasks.iter_mut().find(|t| t.id == task_id) {
-                                *t = view;
-                            } else {
-                                snapshot.tasks.push(view);
-                            }
-                        }
-                        OrchestratorEvent::TaskRemoved { task_id } => {
-                            snapshot.tasks.retain(|t| t.id != task_id);
-                        }
-                    }
-
                     let uptime = Local::now() - app_created_at;
                     let minutes = uptime.num_minutes();
                     let seconds = uptime.num_seconds() % 60;

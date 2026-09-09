@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::{
     error::Error,
     monitor::{
+        event::TaskEvent,
         orchestrator::{Orchestrator, OrchestratorEvent, OrchestratorHandle},
         task::{MonitorSnapshot, TaskId, TaskSpec},
     },
@@ -73,7 +74,7 @@ impl Application {
         Ok(self.handle.get_snapshot().await?)
     }
 
-    pub async fn subscribe(&self) -> Result<broadcast::Receiver<OrchestratorEvent>, Error> {
+    pub async fn subscribe(&self) -> Result<broadcast::Receiver<TaskEvent>, Error> {
         Ok(self.handle.subscribe().await?)
     }
 

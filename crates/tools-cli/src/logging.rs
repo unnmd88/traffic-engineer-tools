@@ -16,11 +16,16 @@ pub fn init_file_logging(log_dir: &str, file_prefix: &str) -> anyhow::Result<Wor
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // Явно устанавливаем уровень INFO (или TRACE для отладки)
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::Layer::new().with_writer(non_blocking).with_ansi(false).with_target(false))
+        .with(
+            fmt::Layer::new()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_target(false),
+        )
         .init();
 
     Ok(guard)

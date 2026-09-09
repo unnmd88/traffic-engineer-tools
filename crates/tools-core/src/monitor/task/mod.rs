@@ -8,7 +8,7 @@ mod view;
 
 pub use entity::{HistoryEntry, TaskEntity, TaskHistory, TaskSnapshot};
 pub use error::{QueryError, TaskError, TaskRepositoryError};
-pub use id::{PollStatus, TaskId};
+pub use id::{TaskId, TaskRevision, TaskStatus};
 pub use query::{QuerySnmpGet, RawSnmpOidItem, SnmpOidItem, UseCaseQuery};
 pub use repository::TaskRepository;
 pub use spec::TaskSpec;

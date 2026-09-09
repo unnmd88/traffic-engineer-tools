@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::monitor::task::{PollStatus, TaskEntity, TaskId, TaskSnapshot, TaskSpec};
+use crate::monitor::task::{TaskEntity, TaskId, TaskSnapshot, TaskSpec, TaskStatus};
 
 use super::error::TaskRepositoryError;
 use super::view::{MonitorSnapshot, TaskView};
@@ -90,7 +90,7 @@ impl TaskRepository {
         self.tasks.get(&id)
     }
 
-    fn get_mut_task(&mut self, id: &TaskId) -> Option<&mut TaskEntity> {
+    pub fn get_mut_task(&mut self, id: &TaskId) -> Option<&mut TaskEntity> {
         self.tasks.get_mut(&id)
     }
 
@@ -133,7 +133,7 @@ impl TaskRepository {
     pub fn update_status(
         &mut self,
         task_id: &TaskId,
-        status: PollStatus,
+        status: TaskStatus,
     ) -> Result<(), TaskRepositoryError> {
         let target = self
             .get_mut_task(task_id)
