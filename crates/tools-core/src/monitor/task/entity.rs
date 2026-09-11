@@ -2,7 +2,7 @@ use std::{collections::VecDeque, mem};
 
 use crate::{
     monitor::{
-        task::{TaskId, TaskRevision, TaskSpec, TaskStatus, UseCaseQuery},
+        task::{SpecRevision, TaskId, TaskSpec, TaskSpecPayload, TaskStatus, UseCaseQuery},
         usecase::UseCaseOutput,
     },
     polling::{Metrics, PollConfig, Response},
@@ -121,7 +121,6 @@ impl Default for TaskSnapshot {
 pub struct TaskEntity {
     id: TaskId,
     spec: TaskSpec,
-    revision: TaskRevision,
     snapshot: TaskSnapshot,
     history: TaskHistory,
     created_at: DateTime<Local>,
@@ -129,15 +128,16 @@ pub struct TaskEntity {
 }
 
 impl TaskEntity {
-    pub fn new(id: TaskId, spec: TaskSpec) -> Self {
+    pub fn new(id: TaskId, payload: TaskSpecPayload) -> Self {
         let dt = Local::now();
+        let deep_history = payload.deep_history();
+        let spec = TaskSpec::new(payload);
         Self {
             id,
-            revision: TaskRevision::new(1),
-            snapshot: TaskSnapshot::default(),
-            history: TaskHistory::new(spec.deep_history()),
             spec,
-            created_at: dt.clone(),
+            snapshot: TaskSnapshot::default(),
+            history: TaskHistory::new(deep_history),
+            created_at: dt,
             updated_at: dt,
         }
     }
@@ -150,20 +150,24 @@ impl TaskEntity {
         &self.spec
     }
 
-    pub fn revision(&self) -> &TaskRevision {
-        &self.revision
+    pub fn spec_payload(&self) -> &TaskSpecPayload {
+        self.spec.payload()
+    }
+
+    pub fn spec_revision(&self) -> SpecRevision {
+        self.spec.revision()
     }
 
     pub fn name(&self) -> &str {
-        self.spec.name()
+        self.spec.payload().name()
     }
 
     pub fn query(&self) -> &UseCaseQuery {
-        self.spec.query()
+        self.spec.payload().query()
     }
 
     pub fn poll_config(&self) -> &PollConfig {
-        self.spec.poll_config()
+        self.spec.payload().poll_config()
     }
 
     pub fn snapshot(&self) -> &TaskSnapshot {
@@ -194,39 +198,46 @@ impl TaskEntity {
         &self.history
     }
 
-    fn next_revision(&mut self) -> bool {
-        self.revision = self.revision.next();
-        true
-    }
-
-    pub fn update_snapshot(&mut self, snapshot: TaskSnapshot) -> bool {
+    /// Заменить текущий снапшот: старый уходит в историю.
+    pub fn update_snapshot(&mut self, snapshot: TaskSnapshot) {
         let ts = Local::now();
         let old_snapshot = mem::replace(&mut self.snapshot, snapshot);
         self.history.push(HistoryEntry {
-            timestamp: ts.clone(),
+            timestamp: ts,
             snapshot: old_snapshot,
         });
         self.updated_at = ts;
-        true
     }
 
-    pub fn update_spec(&mut self, spec: TaskSpec) -> bool {
-        self.spec = spec;
-        self.next_revision();
+    /// Пришёл результат опроса: собираем цельный снапшот и заменяем.
+    pub fn apply_poll(
+        &mut self,
+        result: Response<UseCaseOutput>,
+        metrics: Metrics,
+        status: TaskStatus,
+    ) {
+        let snapshot = TaskSnapshot::new()
+            .with_poll_result(result)
+            .with_metrics(metrics)
+            .with_poll_status(status);
+        self.update_snapshot(snapshot);
+    }
+
+    /// Заменить спеку (value object) и поднять версию.
+    pub fn update_spec(&mut self, spec: TaskSpecPayload) {
+        self.spec = self.spec.next(spec);
         self.updated_at = Local::now();
-        true
     }
 
-    pub fn set_status(&mut self, status: TaskStatus) -> bool {
+    /// Переход жизненного цикла: только статус, без новой записи истории.
+    pub fn set_status(&mut self, status: TaskStatus) {
         self.snapshot.poll_status = status;
         self.updated_at = Local::now();
-        true
     }
 
-    /// Сбросить счётчики метрик — начало нового запуска (ручной `start`).
-    pub fn reset_metrics(&mut self) -> bool {
+    /// Начало нового ручного запуска: метрики с нуля.
+    pub fn reset_metrics(&mut self) {
         self.snapshot.metrics = Metrics::default();
         self.updated_at = Local::now();
-        true
     }
 }

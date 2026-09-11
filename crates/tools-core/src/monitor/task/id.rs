@@ -16,9 +16,9 @@ pub enum TaskStatus {
 pub struct TaskId(pub u64);
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor)]
-pub struct TaskRevision(pub u64);
+pub struct SpecRevision(pub u64);
 
-impl TaskRevision {
+impl SpecRevision {
     pub fn next(self) -> Self {
         Self::new(self.0 + 1)
     }

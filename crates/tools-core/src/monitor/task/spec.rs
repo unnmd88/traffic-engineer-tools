@@ -1,23 +1,63 @@
+use chrono::{DateTime, Local};
+
 use crate::{
-    monitor::task::UseCaseQuery,
+    monitor::task::{SpecRevision, UseCaseQuery},
     polling::PollConfig,
 };
 
 use super::error::TaskError;
 
-/// Спека задачи — валидированное декларативное описание (Spec).
+/// Валидированное декларативное описание (Spec) — неизменяемый value object.
 ///
-/// Создаётся только через [`TaskSpec::try_new`] — невалидная спека невыразима
+/// Создаётся только через [`TaskSpecPayload::try_new`] — невалидная спека невыразима
 /// (поля приватные).
 #[derive(Clone, Debug)]
-pub struct TaskSpec {
+pub struct TaskSpecPayload {
     name: String,
     query: UseCaseQuery,
     poll_config: PollConfig,
     deep_history: u8,
 }
 
+/// Спека + версия и время постановки. Payload неизменяем; обновление — замена целиком.
+#[derive(Clone, Debug)]
+pub struct TaskSpec {
+    value: TaskSpecPayload,
+    revision: SpecRevision,
+    updated_at: DateTime<Local>,
+}
+
 impl TaskSpec {
+    pub fn new(payload: TaskSpecPayload) -> Self {
+        Self {
+            value: payload,
+            revision: SpecRevision::new(0),
+            updated_at: Local::now(),
+        }
+    }
+
+    pub fn next(&self, payload: TaskSpecPayload) -> Self {
+        Self {
+            value: payload,
+            revision: self.revision.next(),
+            updated_at: Local::now(),
+        }
+    }
+
+    pub fn payload(&self) -> &TaskSpecPayload {
+        &self.value
+    }
+
+    pub fn revision(&self) -> SpecRevision {
+        self.revision
+    }
+
+    pub fn updated_at(&self) -> DateTime<Local> {
+        self.updated_at
+    }
+}
+
+impl TaskSpecPayload {
     pub fn try_new(
         name: String,
         query: UseCaseQuery,
@@ -56,10 +96,7 @@ impl TaskSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        monitor::task::QuerySnmpGet,
-        polling::AttemptConfig,
-    };
+    use crate::{monitor::task::QuerySnmpGet, polling::AttemptConfig};
     use tokio::time::Duration;
 
     fn valid_poll_config() -> PollConfig {
@@ -84,15 +121,17 @@ mod tests {
 
     #[test]
     fn rejects_empty_name() {
-        let err = TaskSpec::try_new("   ".to_string(), valid_query(), valid_poll_config(), 3)
-            .unwrap_err();
+        let err =
+            TaskSpecPayload::try_new("   ".to_string(), valid_query(), valid_poll_config(), 3)
+                .unwrap_err();
         assert!(matches!(err, TaskError::EmptyName));
     }
 
     #[test]
     fn accepts_valid_spec() {
-        let spec = TaskSpec::try_new("T-1".to_string(), valid_query(), valid_poll_config(), 3)
-            .unwrap();
+        let spec =
+            TaskSpecPayload::try_new("T-1".to_string(), valid_query(), valid_poll_config(), 3)
+                .unwrap();
         assert_eq!(spec.name(), "T-1");
         assert_eq!(spec.deep_history(), 3);
     }

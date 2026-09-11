@@ -5,9 +5,8 @@ use uuid::Uuid;
 use crate::{
     error::Error,
     monitor::{
-        event::TaskEvent,
-        orchestrator::{Orchestrator, OrchestratorEvent, OrchestratorHandle},
-        task::{MonitorSnapshot, TaskId, TaskSpec},
+        orchestrator::{MonitorEvent, Orchestrator, OrchestratorApi},
+        task::{MonitorSnapshot, TaskId, TaskSpecPayload},
     },
 };
 
@@ -29,13 +28,13 @@ pub enum ApplicationState {
 pub struct Application {
     id: ApplicationId,
     state: ApplicationState,
-    handle: OrchestratorHandle,
+    handle: OrchestratorApi,
     task_ids: Vec<TaskId>,
 }
 
 impl Application {
-    pub async fn new(specs: Vec<TaskSpec>) -> Result<Self, Error> {
-        let (orchestrator, handle) = Orchestrator::new();
+    pub async fn new(specs: Vec<TaskSpecPayload>) -> Result<Self, Error> {
+        let (orchestrator, handle) = Orchestrator::new(None);
         tokio::spawn(orchestrator.run());
 
         let mut task_ids = Vec::new();
@@ -74,8 +73,8 @@ impl Application {
         Ok(self.handle.get_snapshot().await?)
     }
 
-    pub async fn subscribe(&self) -> Result<broadcast::Receiver<TaskEvent>, Error> {
-        Ok(self.handle.subscribe().await?)
+    pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
+        self.handle.subscribe()
     }
 
     pub fn id(&self) -> &ApplicationId {

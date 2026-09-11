@@ -2,7 +2,7 @@ use chrono::Local;
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use tools_core::{DT_FMT, monitor::event::TaskEvent};
+use tools_core::DT_FMT;
 use tracing::{error, info};
 mod logging;
 mod monitor;
@@ -37,14 +37,11 @@ async fn main() -> anyhow::Result<()> {
 
             tokio::spawn(async move {
                 app.start().await;
-                let monitor_id = app.id();
-                let mut rx = app.subscribe().await.unwrap_or_else(|e| {
-                    panic!("{}", e);
-                });
-                let mut snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
+                let monitor_id = app.id().clone();
+                let mut rx = app.subscribe();
 
-                while let Ok(update) = rx.recv().await {
-                    println!("{snapshot:#?}");
+                while rx.recv().await.is_ok() {
+                    let snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
                     clear_screen();
                     let uptime = Local::now() - app_created_at;
                     let minutes = uptime.num_minutes();

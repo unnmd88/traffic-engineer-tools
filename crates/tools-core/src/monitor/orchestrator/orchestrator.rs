@@ -1,522 +1,501 @@
 use std::{
     collections::{HashMap, HashSet},
+    ops::ControlFlow,
     time::{Duration, Instant},
 };
 
-use chrono::Local;
-use serde_json::map;
-use tokio::{
-    sync::{broadcast, mpsc, oneshot},
-    task::JoinHandle,
-};
+use chrono::{DateTime, Local};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::{
     monitor::{
-        event::{TaskEvent, TaskEventData},
         task::{
-            MonitorSnapshot, TaskEntity, TaskId, TaskRepository, TaskRevision, TaskSnapshot,
-            TaskSpec, TaskStatus, TaskView,
+            MonitorSnapshot, SpecRevision, TaskEntity, TaskId, TaskSpecPayload, TaskStatus,
+            TaskView,
         },
         usecase::{UseCase, UseCaseOutput},
     },
     polling::worker::{WorkerEvent, WorkerFinished},
 };
 
-use super::{error::OrchestratorError, supervisor::Supervisor};
+use super::{error::OrchestratorError, supervisor::WorkersPool};
 
-// Команды извне (Application/API)
-pub enum OrchestratorCommand {
+/// Всё, что может прийти в цикл.
+enum Msg {
+    Command(Command),
+    Facts(WorkerEvent<UseCaseOutput>),
+    Exited {
+        task_id: TaskId,
+        finished: WorkerFinished,
+    },
+    Built(BuildOutcome),
+    Tick,
+}
+
+/// Команды извне (Application/API).
+#[derive(Debug)]
+enum Command {
     AddTask {
-        spec: TaskSpec,
+        spec: TaskSpecPayload,
         reply: oneshot::Sender<Result<TaskId, OrchestratorError>>,
     },
     RemoveTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<TaskEntity, OrchestratorError>>,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     StartTask {
         task_id: TaskId,
         reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
-    StopTask(TaskId),
+    StopTask {
+        task_id: TaskId,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
+    },
     UpdateTask {
         task_id: TaskId,
-        spec: TaskSpec,
+        spec: TaskSpecPayload,
         reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     GetSnapshot {
         reply: oneshot::Sender<MonitorSnapshot>,
-    },
-    Subscribe {
-        reply: oneshot::Sender<broadcast::Receiver<TaskEvent>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
 }
 
-// События наружу (UI/API)
+/// Причина изменения — для live/файла (сток фильтрует по ней).
 #[derive(Clone, Debug)]
-pub enum OrchestratorEvent {
-    /// Задача изменилась (добавлена / обновлена / изменён статус или результат).
-    TaskUpdated { task_id: TaskId, view: TaskView },
-    /// Задача удалена.
-    TaskRemoved { task_id: TaskId },
+pub enum ChangeKind {
+    Added,
+    SpecUpdated,
+    Starting,
+    Started,
+    Restarted,
+    Stopped,
+    Completed,
+    Failed { reason: String },
+    BuildFailed { reason: String },
+    Polled,
 }
 
-/// Зачем запускается сборка адаптера: влияет на обработку ошибки сборки.
-enum BuildIntent {
-    /// Ручной `start_task`: при ошибке — возврат в Idle, без ретраев.
-    Start,
-    /// Пересоздание (update/restart): при ошибке — Restarting + backoff.
-    Rebuild,
+/// Единое событие наружу (тот же тип для broadcast и mpsc).
+#[derive(Clone, Debug)]
+pub enum MonitorEvent {
+    TaskChanged {
+        task_id: TaskId,
+        kind: ChangeKind,
+        view: TaskView,
+        at: DateTime<Local>,
+    },
+    TaskRemoved {
+        task_id: TaskId,
+        view: TaskView,
+        at: DateTime<Local>,
+    },
 }
 
 /// Исход сборки адаптера, приходящий из отдельной таски.
 struct BuildOutcome {
     task_id: TaskId,
-    intent: BuildIntent,
-    revision: TaskRevision,
+    revision: SpecRevision,
     result: Result<UseCase, OrchestratorError>,
 }
 
 pub struct Orchestrator {
-    repository: TaskRepository,
-    supervisor: Supervisor,
-    cmd_rx: mpsc::Receiver<OrchestratorCommand>,
-    worker_events_rx: mpsc::Receiver<WorkerEvent<UseCaseOutput>>,
-    task_event_tx: broadcast::Sender<TaskEvent>,
-    supervisor_tick: tokio::time::Interval,
-    build_tx: mpsc::Sender<BuildOutcome>,
+    tasks: HashMap<TaskId, TaskEntity>,
+    next_id: u64,
+    workers: WorkersPool,
+
+    cmd_rx: mpsc::Receiver<Command>,
+    worker_event_rx: mpsc::Receiver<WorkerEvent<UseCaseOutput>>,
+    worker_exit_rx: mpsc::Receiver<(TaskId, WorkerFinished)>,
     build_rx: mpsc::Receiver<BuildOutcome>,
-    /// Сборки в полёте (не даём запускать дубликат на тот же task_id).
+    build_tx: mpsc::Sender<BuildOutcome>,
+    tick: tokio::time::Interval,
+
+    live_tx: broadcast::Sender<MonitorEvent>,
+    hist_tx: Option<mpsc::Sender<MonitorEvent>>,
+
     pending_builds: HashSet<TaskId>,
 }
 
 impl Orchestrator {
-    pub fn new() -> (Self, OrchestratorHandle) {
+    pub fn new(hist_tx: Option<mpsc::Sender<MonitorEvent>>) -> (Self, OrchestratorApi) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
-        let (events_tx, events_rx) = mpsc::channel::<WorkerEvent<UseCaseOutput>>(32);
+        let (worker_event_tx, worker_event_rx) = mpsc::channel(32);
+        let (worker_exit_tx, worker_exit_rx) = mpsc::channel(32);
         let (build_tx, build_rx) = mpsc::channel::<BuildOutcome>(32);
-        let (task_event_tx, _) = broadcast::channel(1024);
+        let (live_tx, _) = broadcast::channel(1024);
 
-        (
-            Self {
-                repository: TaskRepository::new_empty(),
-                supervisor: Supervisor::new(events_tx),
-                cmd_rx,
-                worker_events_rx: events_rx,
-                task_event_tx,
-                supervisor_tick: tokio::time::interval(Duration::from_secs(1)),
-                build_tx,
-                build_rx,
-                pending_builds: HashSet::new(),
-            },
-            OrchestratorHandle { cmd_tx },
-        )
+        let kernel = Self {
+            tasks: HashMap::new(),
+            next_id: 0,
+            workers: WorkersPool::new(worker_event_tx, worker_exit_tx),
+            cmd_rx,
+            worker_event_rx,
+            worker_exit_rx,
+            build_tx,
+            build_rx,
+            tick: tokio::time::interval(Duration::from_secs(1)),
+            live_tx: live_tx.clone(),
+            hist_tx,
+            pending_builds: HashSet::new(),
+        };
+
+        (kernel, OrchestratorApi { cmd_tx, live_tx })
     }
 
     #[tracing::instrument(name = "orchestrator", skip_all)]
     pub async fn run(mut self) {
         tracing::info!("orchestrator started");
         loop {
-            tokio::select! {
-                Some(cmd) = self.cmd_rx.recv() => {
-                    if !self.handle_command(cmd) {
-                        break;
+            let msg = tokio::select! {
+                Some(c) = self.cmd_rx.recv()                 => Msg::Command(c),
+                Some(f) = self.worker_event_rx.recv()        => Msg::Facts(f),
+                Some((id, fin)) = self.worker_exit_rx.recv() => Msg::Exited { task_id: id, finished: fin },
+                Some(b) = self.build_rx.recv()               => Msg::Built(b),
+                _ = self.tick.tick()                         => Msg::Tick,
+            };
+
+            match self.apply(msg) {
+                ControlFlow::Break(()) => break,
+                ControlFlow::Continue(Some(ev)) => {
+                    let _ = self.live_tx.send(ev.clone());
+                    if let Some(tx) = &self.hist_tx {
+                        let _ = tx.send(ev).await;
                     }
                 }
-                Some(ev)  = self.worker_events_rx.recv() => self.handle_worker_event(ev),
-                Some(outcome) = self.build_rx.recv() => self.handle_build_outcome(outcome),
-                exit = self.supervisor.next_exit() => {
-                    if let Some((task_id, finished)) = exit {
-                        self.handle_worker_exit(task_id, finished);
-                    }
-                }
-                _ = self.supervisor_tick.tick() => self.supervise_due_restarts(),
+                ControlFlow::Continue(None) => {}
             }
         }
-
         tracing::info!("orchestrator stopped");
     }
 
-    /// Возвращает `false`, когда оркестратор должен завершиться (Shutdown).
-    fn handle_command(&mut self, cmd: OrchestratorCommand) -> bool {
+    /// Единственная точка, где меняется состояние.
+    fn apply(&mut self, msg: Msg) -> ControlFlow<(), Option<MonitorEvent>> {
+        match msg {
+            Msg::Command(c) => self.on_command(c),
+            Msg::Facts(f) => ControlFlow::Continue(self.on_facts(f)),
+            Msg::Exited {
+                task_id,
+                finished,
+            } => ControlFlow::Continue(self.on_exit(task_id, finished)),
+            Msg::Built(b) => ControlFlow::Continue(self.on_built(b)),
+            Msg::Tick => ControlFlow::Continue(self.on_tick()),
+        }
+    }
+
+    fn on_command(&mut self, cmd: Command) -> ControlFlow<(), Option<MonitorEvent>> {
         match cmd {
-            OrchestratorCommand::AddTask { spec, reply } => {
-                tracing::info!(name = %spec.name(), target = %spec.query().target(), "command: add_task");
-                let task_id = self.add_task(spec);
-                //self.broadcast_update(task_id);
-                let _ = reply.send(Ok(task_id));
+            Command::AddTask { spec, reply } => {
+                let id = TaskId(self.next_id);
+                self.next_id += 1;
+                self.tasks.insert(id, TaskEntity::new(id, spec));
+
+                let view = TaskView::from(&self.tasks[&id]);
+                let _ = reply.send(Ok(id));
+                ControlFlow::Continue(Some(MonitorEvent::TaskChanged {
+                    task_id: id,
+                    kind: ChangeKind::Added,
+                    view,
+                    at: Local::now(),
+                }))
             }
-            OrchestratorCommand::RemoveTask { task_id, reply } => {
-                tracing::info!(task_id = %task_id, "command: remove_task");
-                let result = self.remove_task(&task_id);
-                if result.is_ok() {
-                    //self.broadcast_removed(task_id);
-                }
-                let _ = reply.send(result);
+            Command::StartTask { task_id, reply } => {
+                let res = self.start(&task_id);
+                let _ = reply.send(res.as_ref().map(|_| ()).map_err(|e| e.clone()));
+                ControlFlow::Continue(res.ok().flatten())
             }
-            OrchestratorCommand::StartTask { task_id, reply } => {
-                tracing::info!(task_id = %task_id, "command: start_task");
-                let _ = reply.send(self.start_task(&task_id));
+            Command::StopTask { task_id, reply } => {
+                let res = self.stop(&task_id);
+                let _ = reply.send(res.as_ref().map(|_| ()).map_err(|e| e.clone()));
+                ControlFlow::Continue(res.ok().flatten())
             }
-            OrchestratorCommand::StopTask(task_id) => {
-                tracing::info!(task_id = %task_id, "command: stop_task");
-                self.stop_task(&task_id);
-            }
-            OrchestratorCommand::UpdateTask {
+            Command::UpdateTask {
                 task_id,
                 spec,
                 reply,
             } => {
-                tracing::info!(task_id = %task_id, name = ?spec, "command: update_task");
-                let _ = reply.send(self.update_task(&task_id, spec));
+                let res = self.update(&task_id, spec);
+                let _ = reply.send(res.as_ref().map(|_| ()).map_err(|e| e.clone()));
+                ControlFlow::Continue(res.ok().flatten())
             }
-            OrchestratorCommand::GetSnapshot { reply } => {
-                tracing::info!("command: get_snapshot");
-                let _ = reply.send(self.repository.snapshot());
+            Command::RemoveTask { task_id, reply } => {
+                let res = self.remove(&task_id);
+                let _ = reply.send(res.as_ref().map(|_| ()).map_err(|e| e.clone()));
+                ControlFlow::Continue(res.ok().flatten())
             }
-            OrchestratorCommand::Subscribe { reply } => {
-                tracing::info!("command: subscribe");
-                let _ = reply.send(self.task_event_tx.subscribe());
+            Command::GetSnapshot { reply } => {
+                let _ = reply.send(self.snapshot());
+                ControlFlow::Continue(None)
             }
-            OrchestratorCommand::Shutdown { reply } => {
-                tracing::info!("command: shutdown");
-                self.supervisor.stop_all();
+            Command::Shutdown { reply } => {
+                self.workers.stop_all();
                 let _ = reply.send(());
-                return false;
+                ControlFlow::Break(())
             }
         }
-        true
     }
 
-    pub fn emit(&self, task: &TaskEntity, data: TaskEventData) {
-        let event = TaskEvent::new(TaskView::from(task), data);
-        let _ = self.task_event_tx.send(event);
-    }
-
-    fn add_task(&mut self, spec: TaskSpec) -> TaskId {
-        let spec_for_event = spec.clone();
-        let task_id = self.repository.add_task(spec);
-        if let Some(t) = self.repository.get_task(&task_id) {
-            self.emit(
-                t,
-                TaskEventData::TaskAdded {
-                    spec: spec_for_event,
-                },
-            );
-        } else {
-            tracing::error!(target: "add_task", id = %task_id, "Can`t emit event: task not found in repository.");
+    fn start(&mut self, id: &TaskId) -> Result<Option<MonitorEvent>, OrchestratorError> {
+        // идемпотентность: уже работает или собирается → успех без события
+        if self.workers.is_running(id) || self.pending_builds.contains(id) {
+            return Ok(None);
         }
-
-        task_id
-    }
-
-    fn start_task(&mut self, task_id: &TaskId) -> Result<(), OrchestratorError> {
-        if self.supervisor.is_running(task_id) || self.pending_builds.contains(task_id) {
-            return Ok(()); // уже запущена или сборка в полёте
-        }
-
-        // Проверка существования — для reply (отличаем «не найдена»)
-        if self.repository.get_task(task_id).is_none() {
-            return Err(OrchestratorError::TaskNotFound {
-                task_id: task_id.to_string(),
-            });
-        }
-
-        self.supervisor.reset_restart(task_id);
-        let _ = self.repository.reset_metrics(task_id);
-        self.set_status(task_id, TaskStatus::Starting);
-
-        if let Some(t) = self.repository.get_task(task_id) {
-            self.emit(t, TaskEventData::TaskStarted);
-        } else {
-            tracing::error!(target: "start_task", id = %task_id, "emit: task not found in repository");
-        }
-        self.schedule_build(*task_id, BuildIntent::Start);
-        Ok(())
-    }
-
-    fn stop_task(&mut self, task_id: &TaskId) {
-        self.supervisor.stop(task_id);
-        self.set_status(task_id, TaskStatus::Stopped);
-        if let Some(t) = self.repository.get_task(task_id) {
-            self.emit(t, TaskEventData::TaskStopped);
-        } else {
-            tracing::error!(target: "stop_task", id = %task_id, "emit: task not found in repository");
-        }
-    }
-
-    fn update_task(&mut self, task_id: &TaskId, spec: TaskSpec) -> Result<(), OrchestratorError> {
-        if self.repository.get_task(task_id).is_none() {
-            tracing::warn!(target: "update_task", id = %task_id, "task not found in repository");
-            return Err(OrchestratorError::TaskNotFound {
-                task_id: task_id.to_string(),
-            });
-        }
-
-        let cloned_spec = spec.clone();
-
-        self.repository.update_spec(task_id, spec)?;
-        // Инвалидируем сборки, начатые до обновления спеки.
-        //*self.build_generation.entry(*task_id).or_insert(0) += 1;
-
-        if let Some(t) = self.repository.get_task(task_id) {
-            self.emit(
-                t,
-                TaskEventData::TaskSpecUpdated {
-                    spec: cloned_spec.clone(),
-                },
-            );
-        } else {
-            tracing::error!(target: "update_task", id = %task_id, "emit: task not found");
-        }
-
-        if self.supervisor.is_running(task_id) {
-            self.supervisor.stop(task_id);
-            // Воркера больше нет, идёт пересборка — сразу показываем переход.
-            self.set_status(task_id, TaskStatus::Restarting);
-            // Сборка асинхронная; воркер появится, когда придёт BuildOutcome.
-            self.schedule_build(*task_id, BuildIntent::Rebuild);
-        }
-
-        let task = match self.repository.get_task(task_id) {
-            Some(t) => t,
-            None => {
-                tracing::error!(target: "update_task", id = %task_id, "task not found in repository");
-                return Err(OrchestratorError::TaskNotFound {
-                    task_id: task_id.to_string(),
-                });
-            }
+        let view = {
+            let task = self
+                .tasks
+                .get_mut(id)
+                .ok_or(OrchestratorError::TaskNotFound(*id))?;
+            task.set_status(TaskStatus::Starting);
+            task.reset_metrics();
+            TaskView::from(&*task)
         };
-
-        self.emit(task, TaskEventData::TaskSpecUpdated { spec: cloned_spec });
-
-        Ok(())
+        self.workers.reset_restart(id);
+        self.schedule_build(*id);
+        Ok(Some(MonitorEvent::TaskChanged {
+            task_id: *id,
+            kind: ChangeKind::Starting,
+            view,
+            at: Local::now(),
+        }))
     }
 
-    fn remove_task(&mut self, task_id: &TaskId) -> Result<TaskEntity, OrchestratorError> {
-        self.supervisor.stop(task_id);
-        self.supervisor.remove(task_id);
-        self.pending_builds.remove(task_id);
-        //self.build_generation.remove(task_id);
-        let task = match self.repository.remove_task(task_id) {
-            Ok(t) => t,
+    fn stop(&mut self, id: &TaskId) -> Result<Option<MonitorEvent>, OrchestratorError> {
+        let view = {
+            let task = self
+                .tasks
+                .get_mut(id)
+                .ok_or(OrchestratorError::TaskNotFound(*id))?;
+            task.set_status(TaskStatus::Stopped);
+            TaskView::from(&*task)
+        };
+        self.workers.stop(id);
+        Ok(Some(MonitorEvent::TaskChanged {
+            task_id: *id,
+            kind: ChangeKind::Stopped,
+            view,
+            at: Local::now(),
+        }))
+    }
+
+    fn update(
+        &mut self,
+        id: &TaskId,
+        spec: TaskSpecPayload,
+    ) -> Result<Option<MonitorEvent>, OrchestratorError> {
+        let was_running = self.workers.is_running(id);
+        let view = {
+            let task = self
+                .tasks
+                .get_mut(id)
+                .ok_or(OrchestratorError::TaskNotFound(*id))?;
+            task.update_spec(spec);
+            if was_running {
+                task.set_status(TaskStatus::Restarting);
+            }
+            TaskView::from(&*task)
+        };
+        if was_running {
+            self.workers.stop(id);
+            self.schedule_build(*id);
+        }
+        Ok(Some(MonitorEvent::TaskChanged {
+            task_id: *id,
+            kind: ChangeKind::SpecUpdated,
+            view,
+            at: Local::now(),
+        }))
+    }
+
+    fn remove(&mut self, id: &TaskId) -> Result<Option<MonitorEvent>, OrchestratorError> {
+        self.workers.stop(id);
+        self.workers.remove(id);
+        self.pending_builds.remove(id);
+        let task = self
+            .tasks
+            .remove(id)
+            .ok_or(OrchestratorError::TaskNotFound(*id))?;
+        let view = TaskView::from(&task);
+        Ok(Some(MonitorEvent::TaskRemoved {
+            task_id: *id,
+            view,
+            at: Local::now(),
+        }))
+    }
+
+    fn on_facts(&mut self, f: WorkerEvent<UseCaseOutput>) -> Option<MonitorEvent> {
+        let id = TaskId(f.id.0);
+        self.workers.reset_restart(&id);
+
+        // Обычный опрос: задача жива. RatedLimit ставится в on_exit(Completed).
+        let view = {
+            let task = self.tasks.get_mut(&id)?;
+            task.apply_poll(f.result, f.metrics, TaskStatus::Active);
+            TaskView::from(&*task)
+        };
+        Some(MonitorEvent::TaskChanged {
+            task_id: id,
+            kind: ChangeKind::Polled,
+            view,
+            at: Local::now(),
+        })
+    }
+
+    fn on_exit(&mut self, id: TaskId, finished: WorkerFinished) -> Option<MonitorEvent> {
+        match finished {
+            WorkerFinished::Completed => {
+                self.workers.mark_stopped(&id);
+                let view = {
+                    let task = self.tasks.get_mut(&id)?;
+                    task.set_status(TaskStatus::RatedLimit);
+                    TaskView::from(&*task)
+                };
+                Some(MonitorEvent::TaskChanged {
+                    task_id: id,
+                    kind: ChangeKind::Completed,
+                    view,
+                    at: Local::now(),
+                })
+            }
+            WorkerFinished::Failed(reason) => {
+                self.workers.schedule_restart(&id)?;
+                let view = {
+                    let task = self.tasks.get_mut(&id)?;
+                    task.set_status(TaskStatus::Restarting);
+                    TaskView::from(&*task)
+                };
+                Some(MonitorEvent::TaskChanged {
+                    task_id: id,
+                    kind: ChangeKind::Failed { reason },
+                    view,
+                    at: Local::now(),
+                })
+            }
+        }
+    }
+
+    fn on_built(&mut self, out: BuildOutcome) -> Option<MonitorEvent> {
+        self.pending_builds.remove(&out.task_id);
+
+        // задача удалена, пока шла сборка → результат в мусор
+        let Some(task) = self.tasks.get(&out.task_id) else {
+            return None;
+        };
+        // спека успела обновиться (даже N раз) → пересобрать один раз
+        if out.revision != task.spec_revision() {
+            self.schedule_build(out.task_id);
+            return None;
+        }
+
+        match out.result {
+            Ok(use_case) => {
+                let (poll_config, metrics) = {
+                    let task = self.tasks.get_mut(&out.task_id)?;
+                    (*task.poll_config(), *task.metrics())
+                };
+                self.workers
+                    .spawn(out.task_id, use_case, poll_config, metrics);
+                let (kind, view) = {
+                    let task = self.tasks.get_mut(&out.task_id)?;
+                    // Восстановление после падения/update → Restarted, иначе первый запуск.
+                    let kind = if *task.status() == TaskStatus::Restarting {
+                        ChangeKind::Restarted
+                    } else {
+                        ChangeKind::Started
+                    };
+                    task.set_status(TaskStatus::Active);
+                    (kind, TaskView::from(&*task))
+                };
+                Some(MonitorEvent::TaskChanged {
+                    task_id: out.task_id,
+                    kind,
+                    view,
+                    at: Local::now(),
+                })
+            }
             Err(e) => {
-                tracing::error!(target: "remove_task", id = %task_id, source_error = %e, "task not found in repository");
-                return Err(OrchestratorError::TaskNotFound {
-                    task_id: task_id.to_string(),
-                });
+                let reason = e.to_string();
+                let view = {
+                    let task = self.tasks.get_mut(&out.task_id)?;
+                    task.set_status(TaskStatus::Restarting);
+                    TaskView::from(&*task)
+                };
+                self.workers.retry_later(&out.task_id);
+                Some(MonitorEvent::TaskChanged {
+                    task_id: out.task_id,
+                    kind: ChangeKind::BuildFailed { reason },
+                    view,
+                    at: Local::now(),
+                })
             }
-        };
-        self.emit(&task, TaskEventData::TaskRemoved);
-
-        Ok(task)
+        }
     }
 
-    /// Единственная точка входа для запроса сборки адаптера: спавнит build-таску
-    /// вне цикла и НЕ трогает воркера — воркер появится в [`handle_build_outcome`].
-    /// Вызывается из `start_task` / `update_task` / `restart_task` и при пересборке
-    /// устаревшего результата. Возвращает `false`, если задача не найдена или
-    /// сборка уже в полёте.
-    fn schedule_build(&mut self, task_id: TaskId, intent: BuildIntent) -> bool {
-        if self.pending_builds.contains(&task_id) {
-            tracing::debug!(task_id = %task_id, "build already in flight, skipping");
-            return false;
+    fn on_tick(&mut self) -> Option<MonitorEvent> {
+        for id in self.workers.due_restarts(Instant::now()) {
+            self.schedule_build(id);
         }
+        None
+    }
 
-        let task = match self.repository.get_task(&task_id) {
-            Some(t) => t,
-            None => {
-                tracing::warn!(task_id = %task_id, "cannot schedule build: task not found");
-                return false;
-            }
+    /// Единственная точка запуска сборки адаптера (async, вне цикла).
+    fn schedule_build(&mut self, task_id: TaskId) {
+        if self.pending_builds.contains(&task_id) {
+            return;
+        }
+        let Some(task) = self.tasks.get(&task_id) else {
+            return;
         };
-        let query = task.spec().query().clone();
-        let attempt = task.spec().poll_config().attempt().clone();
-        let revision = task.revision().clone();
+        let revision = task.spec_revision();
+        let query = task.query().clone();
+        let attempt = task.poll_config().attempt();
 
-        //let generation = self.build_generation.get(&task_id).copied().unwrap_or(0);
         self.pending_builds.insert(task_id);
-        // Таймер рестарта израсходован: воркер появится после сборки.
-        self.supervisor.mark_building(&task_id);
+        self.workers.mark_building(&task_id);
 
         let build_tx = self.build_tx.clone();
         tokio::spawn(async move {
             let result = UseCase::build(query, attempt).await.map_err(Into::into);
-            if build_tx
+            let _ = build_tx
                 .send(BuildOutcome {
                     task_id,
-                    intent,
                     revision,
                     result,
                 })
-                .await
-                .is_err()
-            {
-                tracing::warn!(task_id = %task_id, "build outcome receiver dropped");
-            }
+                .await;
         });
-
-        true
     }
 
-    /// Обрабатывает результат сборки из build-канала. Единственный вызыватель
-    /// [`spawn_worker`] (а значит, и `Supervisor::spawn`). Отбрасывает сборку,
-    /// начатую до изменения спеки (по `generation`), и по `intent` решает, что
-    /// делать с ошибкой сборки: `Start` → `Idle`, `Rebuild` → `Restarting` + retry.
-    fn handle_build_outcome(&mut self, outcome: BuildOutcome) {
-        let BuildOutcome {
-            task_id,
-            intent,
-            revision,
-            result,
-        } = outcome;
-        self.pending_builds.remove(&task_id);
-
-        let current_revision = match self.repository.get_task(&task_id) {
-            Some(t) => t.revision().clone(),
-            None => {
-                tracing::warn!(task_id = %task_id, "cannot schedule build: task not found");
-                return;
-            }
-        };
-        // Спека изменилась, пока шла сборка → результат устарел, пересобираем.
-        if revision != current_revision {
-            tracing::warn!(
-                task_id = %task_id,
-                revision = %revision,
-                current_revision = %current_revision,
-                "stale build discarded; rescheduling"
-            );
-            self.schedule_build(task_id, intent);
-            return;
-        }
-
-        match result {
-            Ok(use_case) => {
-                tracing::info!(task_id = %task_id, "adapter built, spawning worker");
-                self.spawn_worker(task_id, use_case);
-                self.set_status(&task_id, TaskStatus::Active);
-                //self.broadcast_update(task_id);
-            }
-            Err(e) => match intent {
-                BuildIntent::Start => {
-                    tracing::warn!(task_id = %task_id, error = %e, "build failed on manual start");
-                    self.set_status(&task_id, TaskStatus::Idle);
-                    //self.broadcast_update(task_id);
-                }
-                BuildIntent::Rebuild => {
-                    tracing::warn!(task_id = %task_id, error = %e, "build failed on rebuild; will retry");
-                    self.supervisor.retry_later(&task_id);
-                    self.set_status(&task_id, TaskStatus::Restarting);
-                    //self.broadcast_update(task_id);
-                }
-            },
-        }
-    }
-
-    /// Единственный вызыватель `Supervisor::spawn`. Читает `poll_config` и
-    /// seed-метрики из репо и передаёт их супервизору. Вызывается только из
-    /// [`handle_build_outcome`] после успешной сборки адаптера.
-    fn spawn_worker(&mut self, task_id: TaskId, use_case: UseCase) {
-        let Some((poll_config, metrics)) = self
-            .repository
-            .get_task(&task_id)
-            .map(|t| (*t.poll_config(), *t.metrics()))
-        else {
-            return;
-        };
-        self.supervisor
-            .spawn(task_id, use_case, poll_config, metrics);
-    }
-
-    fn set_status(&mut self, task_id: &TaskId, status: TaskStatus) {
-        let _ = self.repository.update_status(task_id, status);
-    }
-
-    fn handle_worker_event(&mut self, event: WorkerEvent<UseCaseOutput>) {
-        let task_id = TaskId(event.id.0);
-        let Some(task) = self.repository.get_task(&task_id) else {
-            tracing::warn!(worker_id = ?event.id, "task for worker not found");
-            return;
-        };
-
-        // Воркер пережил хотя бы один опрос (событие приходит только после
-        // успешного poll) — сбрасываем backoff.
-        self.supervisor.reset_restart(&task_id);
-
-        let limit = task.poll_config().limit();
-        let status = if limit > 0 && event.metrics.total_attempts >= limit {
-            TaskStatus::RatedLimit
-        } else {
-            TaskStatus::Active
-        };
-
-        let snapshot = TaskSnapshot::new()
-            .with_poll_result(event.result)
-            .with_poll_status(status)
-            .with_metrics(event.metrics);
-
-        if self.repository.update_snapshot(&task_id, snapshot).is_ok() {
-            self.emit(self.repository.get_task(&task_id).unwrap(), TaskEventData::TaskPolled);
-
-            //self.broadcast_update(task_id);
-        }
-    }
-
-    fn handle_worker_exit(&mut self, task_id: TaskId, finished: WorkerFinished) {
-        match finished {
-            WorkerFinished::Completed => {
-                self.supervisor.mark_stopped(&task_id);
-                self.set_status(&task_id, TaskStatus::RatedLimit);
-                //self.broadcast_update(task_id);
-                tracing::info!(task_id = %task_id, "worker completed");
-            }
-            WorkerFinished::Failed(message) => {
-                if self.supervisor.schedule_restart(&task_id).is_none() {
-                    return;
-                }
-                self.set_status(&task_id, TaskStatus::Restarting);
-                //self.broadcast_update(task_id);
-                tracing::error!(task_id = %task_id, "worker failed ({message})");
-            }
-        }
-    }
-
-    fn supervise_due_restarts(&mut self) {
-        let due = self.supervisor.due_restarts(Instant::now());
-        for task_id in due {
-            self.restart_task(task_id);
-        }
-    }
-
-    fn restart_task(&mut self, task_id: TaskId) {
-        // Сборка адаптера — в отдельной таске; воркер появится по BuildOutcome.
-        self.schedule_build(task_id, BuildIntent::Rebuild);
+    /// Проекция текущего состояния в read-model (чистое чтение).
+    fn snapshot(&self) -> MonitorSnapshot {
+        let mut tasks: Vec<TaskView> = self.tasks.values().map(TaskView::from).collect();
+        tasks.sort_by_key(|v| v.id);
+        MonitorSnapshot { tasks }
     }
 }
 
 #[derive(Clone)]
-pub struct OrchestratorHandle {
-    cmd_tx: mpsc::Sender<OrchestratorCommand>,
+pub struct OrchestratorApi {
+    cmd_tx: mpsc::Sender<Command>,
+    live_tx: broadcast::Sender<MonitorEvent>,
 }
 
-impl OrchestratorHandle {
-    pub async fn add_task(&self, spec: TaskSpec) -> Result<TaskId, OrchestratorError> {
+impl OrchestratorApi {
+    pub async fn add_task(&self, spec: TaskSpecPayload) -> Result<TaskId, OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(OrchestratorCommand::AddTask { spec, reply: tx })
+            .send(Command::AddTask { spec, reply: tx })
             .await
             .map_err(|_| OrchestratorError::ChannelClosed)?;
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn remove_task(&self, task_id: TaskId) -> Result<TaskEntity, OrchestratorError> {
+    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(OrchestratorCommand::RemoveTask { task_id, reply: tx })
+            .send(Command::RemoveTask { task_id, reply: tx })
             .await
             .map_err(|_| OrchestratorError::ChannelClosed)?;
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
@@ -525,27 +504,29 @@ impl OrchestratorHandle {
     pub async fn start_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(OrchestratorCommand::StartTask { task_id, reply: tx })
+            .send(Command::StartTask { task_id, reply: tx })
             .await
             .map_err(|_| OrchestratorError::ChannelClosed)?;
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
     pub async fn stop_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+        let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(OrchestratorCommand::StopTask(task_id))
+            .send(Command::StopTask { task_id, reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
     pub async fn update_task(
         &self,
         task_id: TaskId,
-        spec: TaskSpec,
+        spec: TaskSpecPayload,
     ) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(OrchestratorCommand::UpdateTask {
+            .send(Command::UpdateTask {
                 task_id,
                 spec,
                 reply: tx,
@@ -558,26 +539,21 @@ impl OrchestratorHandle {
     pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(OrchestratorCommand::GetSnapshot { reply: tx })
+            .send(Command::GetSnapshot { reply: tx })
             .await
             .map_err(|_| OrchestratorError::ChannelClosed)?;
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)
     }
 
-    pub async fn subscribe(&self) -> Result<broadcast::Receiver<TaskEvent>, OrchestratorError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(OrchestratorCommand::Subscribe { reply: tx })
-            .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
+    pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
+        self.live_tx.subscribe()
     }
 
     /// Остановить оркестратор: гасит все воркеры и завершает цикл обработки.
     pub async fn shutdown(&self) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(OrchestratorCommand::Shutdown { reply: tx })
+            .send(Command::Shutdown { reply: tx })
             .await
             .map_err(|_| OrchestratorError::ChannelClosed)?;
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)

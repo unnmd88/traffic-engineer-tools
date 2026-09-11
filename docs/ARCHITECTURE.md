@@ -414,3 +414,19 @@ pub struct Metrics { /* total/success/errors, current/min/max latency */ }
 | SCN/ASCII | `crates/tools-core/src/ascii.rs` |
 | Stage (фаза) | `crates/tools-core/src/stage.rs` |
 | CLI | `crates/tools-cli/src/{main.rs, monitor/app.rs, monitor/formatters/}` |
+
+## 16. Схема 
+
+        ┌──────────────────────────────────────────────────────┐
+входы ──┤  cmd_rx: Command                                     │
+        │  facts_rx: WorkerEvent<UseCaseOutput>                │
+        │  exit_rx: (TaskId, WorkerFinished)                   │
+        │  build_rx: BuildOutcome                              │
+        │  tick: Interval(1s)                                  │
+        └───────────────┬──────────────────────────────────────┘
+                        ▼
+                    RUNTIME.run  ──▶  apply(msg)  ──▶  Vec<MonitorEvent>
+                        │                                   │
+        ┌───────────────┴───────────────┐                   ▼
+        │ live: broadcast<MonitorEvent> │   durable: mpsc<MonitorEvent>
+        └───────────────────────────────┘

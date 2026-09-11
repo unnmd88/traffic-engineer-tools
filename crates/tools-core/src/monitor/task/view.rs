@@ -3,7 +3,7 @@ use tokio::time::Duration;
 
 use crate::{
     monitor::{
-        task::{TaskId, TaskRevision, TaskStatus},
+        task::{SpecRevision, TaskId, TaskStatus},
         usecase::UseCaseOutput,
     },
     polling::{Metrics, Response},
@@ -20,7 +20,7 @@ use super::entity::TaskEntity;
 pub struct TaskView {
     pub id: TaskId,
     pub name: String,
-    pub revision: TaskRevision,
+    pub revision: SpecRevision,
     pub target: String,
     pub status: TaskStatus,
     pub interval: Duration,
@@ -57,7 +57,7 @@ impl From<&TaskEntity> for TaskView {
 
         Self {
             id: *t.id(),
-            revision: *t.revision(),
+            revision: t.spec_revision(),
             name: t.name().to_string(),
             target: t.query().target(),
             status: *t.status(),
@@ -74,12 +74,12 @@ impl From<&TaskEntity> for TaskView {
 mod tests {
     use super::*;
     use crate::{
-        monitor::task::{QuerySnmpGet, TaskSpec, UseCaseQuery},
+        monitor::task::{QuerySnmpGet, TaskSpecPayload, UseCaseQuery},
         polling::{AttemptConfig, PollConfig},
     };
     use tokio::time::Duration;
 
-    fn make_spec() -> TaskSpec {
+    fn make_spec() -> TaskSpecPayload {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 1, Duration::from_millis(10))
                 .unwrap();
@@ -94,7 +94,7 @@ mod tests {
             )
             .unwrap(),
         );
-        TaskSpec::try_new("T-1".to_string(), query, poll, 3).unwrap()
+        TaskSpecPayload::try_new("T-1".to_string(), query, poll, 3).unwrap()
     }
 
     #[test]
@@ -104,7 +104,7 @@ mod tests {
 
         assert_eq!(view.name, "T-1");
         assert_eq!(view.target, "127.0.0.1:161");
-        assert_eq!(view.status, CurrentState::Idle);
+        assert_eq!(view.status, TaskStatus::Idle);
         assert_eq!(view.interval, Duration::from_secs(5));
         assert_eq!(view.limit, 100);
         assert!(view.result.is_none());

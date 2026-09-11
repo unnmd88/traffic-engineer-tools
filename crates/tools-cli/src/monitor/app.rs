@@ -5,7 +5,7 @@ use tools_core::{
     error::Error,
     monitor::{
         application::Application,
-        task::{QuerySnmpGet, RawSnmpOidItem, TaskSpec, UseCaseQuery},
+        task::{QuerySnmpGet, RawSnmpOidItem, TaskSpecPayload, UseCaseQuery},
     },
     polling::{AttemptConfig, PollConfig},
 };
@@ -67,13 +67,13 @@ impl AppBuilder {
         let specs = dto
             .tasks
             .into_iter()
-            .map(TaskSpec::try_from)
+            .map(TaskSpecPayload::try_from)
             .collect::<Result<Vec<_>, Error>>()?;
         Ok(Application::new(specs).await?)
     }
 }
 
-impl TryFrom<TaskConfigDto> for TaskSpec {
+impl TryFrom<TaskConfigDto> for TaskSpecPayload {
     type Error = Error;
 
     fn try_from(dto: TaskConfigDto) -> Result<Self, Self::Error> {
@@ -82,11 +82,8 @@ impl TryFrom<TaskConfigDto> for TaskSpec {
             dto.attempt_config.retries,
             Duration::from_millis(dto.attempt_config.retry_delay_ms),
         )?;
-        let poll_config = PollConfig::try_new(
-            Duration::from_secs(dto.interval_seconds),
-            dto.limit,
-            attempt,
-        )?;
+        let poll_config =
+            PollConfig::try_new(Duration::from_secs(dto.interval_seconds), dto.limit, attempt)?;
 
         let query = match dto.query {
             QueryDto::SnmpGet(q) => {
@@ -108,7 +105,7 @@ impl TryFrom<TaskConfigDto> for TaskSpec {
             }
         };
 
-        Ok(TaskSpec::try_new(
+        Ok(TaskSpecPayload::try_new(
             dto.name,
             query,
             poll_config,
@@ -145,7 +142,7 @@ tasks:
         let specs = dto
             .tasks
             .into_iter()
-            .map(TaskSpec::try_from)
+            .map(TaskSpecPayload::try_from)
             .collect::<Result<Vec<_>, Error>>()
             .unwrap();
 
