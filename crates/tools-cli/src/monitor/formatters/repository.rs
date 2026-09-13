@@ -1,15 +1,17 @@
+use std::collections::{BTreeMap, HashMap};
+
 use crate::monitor::formatters::constants::{LINE_DOTTED_LN, LINE_THIN_LN};
 
 use super::format_oids;
 use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::task::{MonitorSnapshot, TaskView};
+use tools_core::monitor::task::{MonitorSnapshot, TaskId, TaskView};
 use tools_core::monitor::usecase::UseCaseOutput;
 use tools_core::polling::Response;
 
-pub fn format_snapshot(snapshot: &MonitorSnapshot) -> String {
+pub fn format_snapshot(tasks: &BTreeMap<TaskId, TaskView>) -> String {
     let mut output = String::new();
 
-    for view in &snapshot.tasks {
+    for view in tasks.values() {
         output.push_str(&format_task(view));
         output.push_str(LINE_DOTTED_LN);
         output.push('\n');
@@ -22,10 +24,7 @@ fn format_task(view: &TaskView) -> String {
     let mut output = String::new();
 
     // Metadata
-    output.push_str(&format!(
-        "{} [ID: {}]  Target: {}\n",
-        view.name, view.id, view.target,
-    ));
+    output.push_str(&format!("{} [ID: {}]  Target: {}\n", view.name, view.id, view.target,));
 
     let limit = match view.limit {
         0 => "infinity".to_string(),
@@ -44,7 +43,9 @@ fn format_task(view: &TaskView) -> String {
     let latency = if view.metrics.successful > 0 {
         format!(
             "{}ms (min: {}ms max: {}ms)",
-            view.metrics.current_latency_ms, view.metrics.min_latency_ms, view.metrics.max_latency_ms
+            view.metrics.current_latency_ms,
+            view.metrics.min_latency_ms,
+            view.metrics.max_latency_ms
         )
     } else {
         "n/a".to_string()

@@ -7,13 +7,6 @@ pub enum TaskError {
     EmptyName,
 }
 
-/// Ошибка хранилища задач.
-#[derive(Error, Debug, Clone)]
-pub enum TaskRepositoryError {
-    #[error("task with id={task_id} not found in repository")]
-    TaskNotFound { task_id: String },
-}
-
 /// Ошибка валидации запроса (`QuerySnmpGet::from_raw`).
 #[derive(Error, Debug, Clone)]
 pub enum QueryError {

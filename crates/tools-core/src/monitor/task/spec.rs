@@ -31,7 +31,7 @@ impl TaskSpec {
     pub fn new(payload: TaskSpecPayload) -> Self {
         Self {
             value: payload,
-            revision: SpecRevision::new(0),
+            revision: SpecRevision::new(1),
             updated_at: Local::now(),
         }
     }

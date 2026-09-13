@@ -14,11 +14,11 @@ pub enum Error {
     #[error(transparent)]
     Task(#[from] crate::monitor::task::TaskError),
     #[error(transparent)]
-    TaskRepository(#[from] crate::monitor::task::TaskRepositoryError),
-    #[error(transparent)]
     UseCaseBuild(#[from] crate::monitor::usecase::UseCaseBuildError),
     #[error(transparent)]
-    Orchestrator(#[from] crate::monitor::orchestrator::OrchestratorError),
+    MonitorSupervisor(#[from] crate::monitor::runtime::error::SupervisorError),
+    #[error(transparent)]
+    MonitorProjector(#[from] crate::monitor::runtime::error::ProjectorError),
     #[error(transparent)]
     PollingConfig(#[from] crate::polling::ConfigError),
 }

@@ -7,9 +7,12 @@ pub enum TaskStatus {
     Starting,
     Active,
     Stopped,
-    RatedLimit,
+    /// Воркер завершился по лимиту опросов (штатно, закончен).
+    Completed,
     /// Пересоздание (после падения / update): build или backoff.
     Restarting,
+    /// Актор упал целиком (паника в собственной логике). Данные в проекторе, авто-рестарта нет.
+    Failed,
 }
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]

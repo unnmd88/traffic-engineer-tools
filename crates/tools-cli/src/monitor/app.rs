@@ -4,7 +4,7 @@ use tokio::time::Duration;
 use tools_core::{
     error::Error,
     monitor::{
-        application::Application,
+        runtime::Application,
         task::{QuerySnmpGet, RawSnmpOidItem, TaskSpecPayload, UseCaseQuery},
     },
     polling::{AttemptConfig, PollConfig},
@@ -59,7 +59,9 @@ struct SnmpOidItemDto {
     oid: String,
 }
 
-pub struct AppBuilder;
+pub struct AppBuilder {
+    specs: Vec<TaskSpecPayload>,
+}
 
 impl AppBuilder {
     pub async fn from_yaml(content: &str) -> anyhow::Result<Application> {
@@ -69,7 +71,11 @@ impl AppBuilder {
             .into_iter()
             .map(TaskSpecPayload::try_from)
             .collect::<Result<Vec<_>, Error>>()?;
-        Ok(Application::new(specs).await?)
+        let app = Application::new(None);
+
+        app.start(specs).await?;
+
+        Ok(app)
     }
 }
 
