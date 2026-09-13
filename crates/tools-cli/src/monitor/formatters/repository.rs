@@ -4,8 +4,8 @@ use crate::monitor::formatters::constants::{LINE_DOTTED_LN, LINE_THIN_LN};
 
 use super::format_oids;
 use tools_core::DT_FMT_WITH_MICROSECONDS;
+use tools_core::monitor::adapter::AdapterOutput;
 use tools_core::monitor::task::{MonitorSnapshot, TaskId, TaskView};
-use tools_core::monitor::usecase::UseCaseOutput;
 use tools_core::polling::Response;
 
 pub fn format_snapshot(tasks: &BTreeMap<TaskId, TaskView>) -> String {
@@ -82,7 +82,7 @@ fn format_task(view: &TaskView) -> String {
     // Response
     match view.result.as_ref() {
         Some(Response::Success { payload, .. }) => {
-            let UseCaseOutput::SnmpGet(snmp) = payload;
+            let AdapterOutput::SnmpGet(snmp) = payload;
             output.push_str("Snmp-get response:\n");
             output.push_str(&format_oids(&snmp.samples));
             output.push('\n');

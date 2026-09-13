@@ -3,55 +3,50 @@ use tokio::time::Duration;
 use async_trait::async_trait;
 
 use crate::{
-    monitor::task::{QuerySnmpGet, UseCaseQuery},
+    monitor::adapter::{Query, SnmpGetQuery},
     polling::{AttemptConfig, AttemptError, Pollable},
-    snmp::{
-        SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, adapters::SnmpReader,
-    },
+    snmp::{SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, adapters::SnmpReader},
 };
 
-use super::error::UseCaseBuildError;
+use super::error::AdapterBuildError;
 
 const CLIENT_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
 
-pub enum UseCase {
+pub enum Adapter {
     SnmpGet(SnmpReader),
     // SnmpSet(SnmpWriter),  // будущий
     // HttpRead(HttpReader), // будущий
 }
 
 #[derive(Clone, Debug)]
-pub enum UseCaseOutput {
+pub enum AdapterOutput {
     SnmpGet(SnmpGetResponse),
     // SnmpSet(SnmpSetResponse),
     // HttpRead(HttpReadResponse),
 }
 
 #[async_trait]
-impl Pollable for UseCase {
-    type Output = UseCaseOutput;
+impl Pollable for Adapter {
+    type Output = AdapterOutput;
 
-    async fn poll(&self) -> Result<UseCaseOutput, AttemptError> {
+    async fn poll(&self) -> Result<AdapterOutput, AttemptError> {
         match self {
-            Self::SnmpGet(a) => a.poll().await.map(UseCaseOutput::SnmpGet),
+            Self::SnmpGet(a) => a.poll().await.map(AdapterOutput::SnmpGet),
         }
     }
 }
 
-impl UseCase {
-    pub async fn build(
-        query: UseCaseQuery,
-        attempt: AttemptConfig,
-    ) -> Result<Self, UseCaseBuildError> {
+impl Adapter {
+    pub async fn build(query: Query, attempt: AttemptConfig) -> Result<Self, AdapterBuildError> {
         match query {
-            UseCaseQuery::SnmpGet(q) => Self::build_snmp_get(q, attempt).await,
+            Query::SnmpGet(q) => Self::build_snmp_get(q, attempt).await,
         }
     }
 
     async fn build_snmp_get(
-        q: QuerySnmpGet,
+        q: SnmpGetQuery,
         attempt: AttemptConfig,
-    ) -> Result<Self, UseCaseBuildError> {
+    ) -> Result<Self, AdapterBuildError> {
         let client_config = SnmpClientConfig {
             target: q.host,
             port: q.port,
@@ -65,7 +60,7 @@ impl UseCase {
 
         let client = SnmpClient::new(client_config)
             .await
-            .map_err(|_| UseCaseBuildError::SnmpClientCreate)?;
+            .map_err(|_| AdapterBuildError::SnmpClientCreate)?;
 
         let oids = q
             .oids
@@ -79,7 +74,7 @@ impl UseCase {
 
         let reader = SnmpReader::new(client, oids, q.profile)
             .await
-            .map_err(|e| UseCaseBuildError::Other(e.to_string()))?;
+            .map_err(|e| AdapterBuildError::Other(e.to_string()))?;
 
         Ok(Self::SnmpGet(reader))
     }

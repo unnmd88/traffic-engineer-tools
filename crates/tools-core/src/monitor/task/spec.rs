@@ -1,34 +1,31 @@
 use chrono::{DateTime, Local};
 
 use crate::{
-    monitor::task::{SpecRevision, UseCaseQuery},
+    monitor::{adapter::Query, task::SpecRevision},
     polling::PollConfig,
 };
 
 use super::error::TaskError;
 
 /// Валидированное декларативное описание (Spec) — неизменяемый value object.
-///
-/// Создаётся только через [`TaskSpecPayload::try_new`] — невалидная спека невыразима
-/// (поля приватные).
 #[derive(Clone, Debug)]
-pub struct TaskSpecPayload {
+pub struct TaskConfig {
     name: String,
-    query: UseCaseQuery,
+    query: Query,
     poll_config: PollConfig,
     deep_history: u8,
 }
 
-/// Спека + версия и время постановки. Payload неизменяем; обновление — замена целиком.
+/// Спека + версия и время постановки
 #[derive(Clone, Debug)]
 pub struct TaskSpec {
-    value: TaskSpecPayload,
+    value: TaskConfig,
     revision: SpecRevision,
     updated_at: DateTime<Local>,
 }
 
 impl TaskSpec {
-    pub fn new(payload: TaskSpecPayload) -> Self {
+    pub fn new(payload: TaskConfig) -> Self {
         Self {
             value: payload,
             revision: SpecRevision::new(1),
@@ -36,7 +33,7 @@ impl TaskSpec {
         }
     }
 
-    pub fn next(&self, payload: TaskSpecPayload) -> Self {
+    pub fn next(&self, payload: TaskConfig) -> Self {
         Self {
             value: payload,
             revision: self.revision.next(),
@@ -44,8 +41,20 @@ impl TaskSpec {
         }
     }
 
-    pub fn payload(&self) -> &TaskSpecPayload {
-        &self.value
+    pub fn name(&self) -> &str {
+        &self.value.name()
+    }
+
+    pub fn query(&self) -> &Query {
+        &self.value.query()
+    }
+
+    pub fn poll_config(&self) -> PollConfig {
+        self.value.poll_config()
+    }
+
+    pub fn deep_history(&self) -> u8 {
+        self.value.deep_history()
     }
 
     pub fn revision(&self) -> SpecRevision {
@@ -57,10 +66,10 @@ impl TaskSpec {
     }
 }
 
-impl TaskSpecPayload {
+impl TaskConfig {
     pub fn try_new(
         name: String,
-        query: UseCaseQuery,
+        query: Query,
         poll_config: PollConfig,
         deep_history: u8,
     ) -> Result<Self, TaskError> {
@@ -80,12 +89,12 @@ impl TaskSpecPayload {
         &self.name
     }
 
-    pub fn query(&self) -> &UseCaseQuery {
+    pub fn query(&self) -> &Query {
         &self.query
     }
 
-    pub fn poll_config(&self) -> &PollConfig {
-        &self.poll_config
+    pub fn poll_config(&self) -> PollConfig {
+        self.poll_config
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -96,7 +105,7 @@ impl TaskSpecPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{monitor::task::QuerySnmpGet, polling::AttemptConfig};
+    use crate::{monitor::adapter::SnmpGetQuery, polling::AttemptConfig};
     use tokio::time::Duration;
 
     fn valid_poll_config() -> PollConfig {
@@ -106,9 +115,9 @@ mod tests {
         PollConfig::try_new(Duration::from_secs(1), 0, attempt).unwrap()
     }
 
-    fn valid_query() -> UseCaseQuery {
-        UseCaseQuery::SnmpGet(
-            QuerySnmpGet::from_raw(
+    fn valid_query() -> Query {
+        Query::SnmpGet(
+            SnmpGetQuery::from_raw(
                 "127.0.0.1".to_string(),
                 161,
                 "public".to_string(),
@@ -121,17 +130,15 @@ mod tests {
 
     #[test]
     fn rejects_empty_name() {
-        let err =
-            TaskSpecPayload::try_new("   ".to_string(), valid_query(), valid_poll_config(), 3)
-                .unwrap_err();
+        let err = TaskConfig::try_new("   ".to_string(), valid_query(), valid_poll_config(), 3)
+            .unwrap_err();
         assert!(matches!(err, TaskError::EmptyName));
     }
 
     #[test]
     fn accepts_valid_spec() {
         let spec =
-            TaskSpecPayload::try_new("T-1".to_string(), valid_query(), valid_poll_config(), 3)
-                .unwrap();
+            TaskConfig::try_new("T-1".to_string(), valid_query(), valid_poll_config(), 3).unwrap();
         assert_eq!(spec.name(), "T-1");
         assert_eq!(spec.deep_history(), 3);
     }

@@ -9,7 +9,7 @@ use crate::monitor::{
         error::SupervisorError,
         task_actor::{ActorCommand, Desired, TaskActor},
     },
-    task::{TaskId, TaskSpecPayload},
+    task::{TaskConfig, TaskId},
 };
 
 /// Сообщение наблюдателя: актор завершился (паника → reason = Some).
@@ -26,7 +26,7 @@ pub struct ActorHandle {
 
 enum Command {
     AddTask {
-        spec: TaskSpecPayload,
+        spec: TaskConfig,
         reply: oneshot::Sender<Result<TaskId, SupervisorError>>,
     },
     RemoveTask {
@@ -43,7 +43,7 @@ enum Command {
     },
     UpdateTask {
         task_id: TaskId,
-        spec: TaskSpecPayload,
+        spec: TaskConfig,
         reply: oneshot::Sender<Result<(), SupervisorError>>,
     },
     Shutdown {
@@ -55,7 +55,7 @@ enum Command {
 /// Акторы — воркеры; при падении супервизор пересоздаёт их по сохранённой спеке.
 pub struct Supervisor {
     next_id: u64,
-    specs: HashMap<TaskId, (TaskSpecPayload, Desired)>,
+    specs: HashMap<TaskId, (TaskConfig, Desired)>,
     actors: HashMap<TaskId, ActorHandle>,
     cmd_rx: mpsc::Receiver<Command>,
     death_rx: mpsc::Receiver<Death>,
@@ -182,7 +182,7 @@ impl Supervisor {
         self.forward(id, cmd).await
     }
 
-    async fn update(&mut self, id: TaskId, spec: TaskSpecPayload) -> Result<(), SupervisorError> {
+    async fn update(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), SupervisorError> {
         let Some((stored, _)) = self.specs.get_mut(&id) else {
             return Err(SupervisorError::TaskNotFound(id));
         };
@@ -211,7 +211,7 @@ impl Supervisor {
             .map_err(|_| SupervisorError::ChannelClosed)
     }
 
-    fn spawn_actor(&mut self, id: TaskId, spec: TaskSpecPayload, desired: Desired) {
+    fn spawn_actor(&mut self, id: TaskId, spec: TaskConfig, desired: Desired) {
         let (actor, mailbox) = TaskActor::new(id, spec, desired, self.fact_tx.clone());
         let join = tokio::spawn(actor.run());
         let abort = join.abort_handle();
@@ -243,7 +243,7 @@ pub struct SupervisorHandle {
 }
 
 impl SupervisorHandle {
-    pub async fn add_task(&self, spec: TaskSpecPayload) -> Result<TaskId, SupervisorError> {
+    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, SupervisorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::AddTask { spec, reply: tx })
@@ -282,7 +282,7 @@ impl SupervisorHandle {
     pub async fn update_task(
         &self,
         task_id: TaskId,
-        spec: TaskSpecPayload,
+        spec: TaskConfig,
     ) -> Result<(), SupervisorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx

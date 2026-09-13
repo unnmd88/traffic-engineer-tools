@@ -7,9 +7,9 @@ use tokio::time::{Instant, sleep, sleep_until};
 use crate::monitor::event::{ChangeKind, TaskFact};
 use crate::{
     monitor::{
+        adapter::Adapter,
         runtime::restart_policy::RestartPolicy,
-        task::{HistoryEntryView, TaskEntity, TaskId, TaskSpecPayload, TaskStatus, TaskView},
-        usecase::UseCase,
+        task::{HistoryEntryView, Task, TaskConfig, TaskId, TaskStatus, TaskView},
     },
     polling::{Response, poll},
 };
@@ -34,7 +34,7 @@ enum Runtime {
 pub enum ActorCommand {
     Start,
     Stop,
-    Update { spec: TaskSpecPayload },
+    Update { spec: TaskConfig },
     Shutdown,
 }
 
@@ -44,19 +44,19 @@ pub struct TaskActor {
     mailbox: mpsc::Receiver<ActorCommand>,
     fact_tx: mpsc::Sender<TaskFact>,
 
-    data: TaskEntity, // spec + result/metrics/history/health
+    data: Task,
     desired: Desired,
     runtime: Runtime,
     attempts: u32,
     ever_started: bool,
-    use_case: Option<UseCase>,
+    use_case: Option<Adapter>,
     policy: RestartPolicy,
 }
 
 impl TaskActor {
     pub fn new(
         id: TaskId,
-        spec: TaskSpecPayload,
+        spec: TaskConfig,
         desired: Desired,
         fact_tx: mpsc::Sender<TaskFact>,
     ) -> (Self, mpsc::Sender<ActorCommand>) {
@@ -64,7 +64,7 @@ impl TaskActor {
         let actor = Self {
             mailbox: mailbox_rx,
             fact_tx,
-            data: TaskEntity::new(id, spec),
+            data: Task::new(id, spec),
             desired,
             runtime: Runtime::Idle,
             attempts: 0,
@@ -116,15 +116,16 @@ impl TaskActor {
     /// Собрать адаптер. Слушаем команды параллельно: если пришёл Update/Stop,
     /// сборка отменяется, и цикл пересоберёт по новой спеке.
     async fn build(&mut self) -> bool {
-        let query = self.data.query().clone();
-        let attempt = self.data.poll_config().attempt();
+        let spec = self.data.spec();
+        let query = spec.query().clone();
+        let attempt = spec.poll_config().attempt();
 
         tokio::select! {
             cmd = self.mailbox.recv() => match cmd {
                 Some(c) => self.handle(c).await,
                 None => false,
             },
-            res = UseCase::build(query, attempt) => match res {
+            res = Adapter::build(query, attempt) => match res {
                 Ok(uc) => {
                     let was_restart = self.attempts > 0;
                     self.use_case = Some(uc);
@@ -146,7 +147,7 @@ impl TaskActor {
 
     /// Фаза опроса: ждём либо команду, либо пора опрашивать.
     async fn poll_cycle(&mut self) -> bool {
-        let interval = self.data.poll_config().interval();
+        let interval = self.data.spec().poll_config().interval();
         tokio::select! {
             cmd = self.mailbox.recv() => match cmd {
                 Some(c) => self.handle(c).await,
@@ -161,7 +162,7 @@ impl TaskActor {
 
     /// Один опрос. Паника адаптера == фатальная ошибка.
     async fn do_poll(&mut self) {
-        let attempt = self.data.poll_config().attempt();
+        let attempt = self.data.spec().poll_config().attempt();
         let outcome = AssertUnwindSafe(poll(&attempt, self.use_case.as_ref().unwrap()))
             .catch_unwind()
             .await;
@@ -255,7 +256,7 @@ impl TaskActor {
     }
 
     fn limit_reached(&self) -> bool {
-        let limit = self.data.poll_config().limit();
+        let limit = self.data.spec().poll_config().limit();
         limit > 0 && self.data.metrics().total_attempts >= limit
     }
 
@@ -280,6 +281,7 @@ impl TaskActor {
 
     fn view(&self) -> TaskView {
         let t = &self.data;
+        let spec = t.spec();
         let history = t
             .history()
             .iter()
@@ -288,14 +290,15 @@ impl TaskActor {
                 result: Some(h.result.clone()),
             })
             .collect();
+
         TaskView {
             id: t.id(),
-            name: t.name().to_string(),
-            revision: t.spec_revision(),
-            target: t.query().target(),
+            name: spec.name().to_string(),
+            revision: spec.revision(),
+            target: spec.query().target().clone(),
             status: self.status(),
-            interval: t.poll_config().interval(),
-            limit: t.poll_config().limit(),
+            interval: spec.poll_config().interval(),
+            limit: spec.poll_config().limit(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
             history,

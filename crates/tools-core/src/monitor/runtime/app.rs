@@ -9,7 +9,7 @@ use crate::monitor::{
         projector::{Projector, ProjectorHandle},
         supervisor::{Supervisor, SupervisorHandle},
     },
-    task::{MonitorSnapshot, TaskId, TaskSpecPayload},
+    task::{MonitorSnapshot, TaskConfig, TaskId},
 };
 
 #[derive(Clone, Display)]
@@ -49,7 +49,7 @@ impl Application {
         &self.uid
     }
 
-    pub async fn start(&self, specs: Vec<TaskSpecPayload>) -> Result<(), SupervisorError> {
+    pub async fn start(&self, specs: Vec<TaskConfig>) -> Result<(), SupervisorError> {
         for spec in specs {
             let task_id = self.add_task(spec).await?;
             self.start_task(task_id).await?;
@@ -58,7 +58,7 @@ impl Application {
         Ok(())
     }
 
-    pub async fn add_task(&self, spec: TaskSpecPayload) -> Result<TaskId, SupervisorError> {
+    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, SupervisorError> {
         self.supervisor.add_task(spec).await
     }
 
@@ -77,7 +77,7 @@ impl Application {
     pub async fn update_task(
         &self,
         task_id: TaskId,
-        spec: TaskSpecPayload,
+        spec: TaskConfig,
     ) -> Result<(), SupervisorError> {
         self.supervisor.update_task(task_id, spec).await
     }
@@ -101,15 +101,16 @@ mod tests {
 
     use crate::{
         monitor::{
+            adapter::{Query, SnmpGetQuery},
             runtime::Application,
-            task::{MonitorSnapshot, QuerySnmpGet, TaskSpecPayload, TaskStatus, UseCaseQuery},
+            task::{MonitorSnapshot, TaskConfig, TaskStatus},
         },
         polling::{AttemptConfig, PollConfig},
     };
 
-    fn spec(name: &str) -> TaskSpecPayload {
-        let query = UseCaseQuery::SnmpGet(
-            QuerySnmpGet::from_raw(
+    fn spec(name: &str) -> TaskConfig {
+        let query = Query::SnmpGet(
+            SnmpGetQuery::from_raw(
                 "127.0.0.1".to_string(),
                 161,
                 "public".to_string(),
@@ -122,7 +123,7 @@ mod tests {
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
         let poll = PollConfig::try_new(Duration::from_secs(1), 0, attempt).unwrap();
-        TaskSpecPayload::try_new(name.to_string(), query, poll, 3).unwrap()
+        TaskConfig::try_new(name.to_string(), query, poll, 3).unwrap()
     }
 
     async fn poll_until(

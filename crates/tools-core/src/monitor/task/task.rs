@@ -2,8 +2,8 @@ use std::{collections::VecDeque, mem};
 
 use crate::{
     monitor::{
-        task::{SpecRevision, TaskId, TaskSpec, TaskSpecPayload, UseCaseQuery},
-        usecase::UseCaseOutput,
+        adapter::AdapterOutput,
+        task::{SpecRevision, TaskConfig, TaskId, TaskSpec},
     },
     polling::{Metrics, PollConfig, Response},
 };
@@ -13,7 +13,7 @@ use chrono::{DateTime, Local};
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
     pub timestamp: DateTime<Local>,
-    pub result: Response<UseCaseOutput>,
+    pub result: Response<AdapterOutput>,
 }
 
 /// Кольцо последних N результатов. `deep_history == 0` → всегда пустое.
@@ -68,7 +68,7 @@ pub struct Health {
 }
 
 impl Health {
-    pub fn record(&mut self, r: &Response<UseCaseOutput>) {
+    pub fn record(&mut self, r: &Response<AdapterOutput>) {
         self.last_poll_at = Some(Local::now());
         match r {
             Response::Success { .. } => {
@@ -85,10 +85,10 @@ impl Health {
 
 /// Данные одной задачи: что опрашивать + что получили. Без статуса (он производный).
 #[derive(Clone, Debug)]
-pub struct TaskEntity {
+pub struct Task {
     id: TaskId,
     spec: TaskSpec,
-    result: Option<Response<UseCaseOutput>>,
+    last_result: Option<Response<AdapterOutput>>,
     history: History,
     metrics: Metrics,
     health: Health,
@@ -96,15 +96,15 @@ pub struct TaskEntity {
     updated_at: DateTime<Local>,
 }
 
-impl TaskEntity {
-    pub fn new(id: TaskId, payload: TaskSpecPayload) -> Self {
+impl Task {
+    pub fn new(id: TaskId, payload: TaskConfig) -> Self {
         let dt = Local::now();
         let deep_history = payload.deep_history();
         let spec = TaskSpec::new(payload);
         Self {
             id,
             spec,
-            result: None,
+            last_result: None,
             metrics: Metrics::default(),
             health: Health::default(),
             history: History::new(deep_history),
@@ -121,28 +121,8 @@ impl TaskEntity {
         &self.spec
     }
 
-    pub fn spec_payload(&self) -> &TaskSpecPayload {
-        self.spec.payload()
-    }
-
-    pub fn spec_revision(&self) -> SpecRevision {
-        self.spec.revision()
-    }
-
-    pub fn name(&self) -> &str {
-        self.spec.payload().name()
-    }
-
-    pub fn query(&self) -> &UseCaseQuery {
-        self.spec.payload().query()
-    }
-
-    pub fn poll_config(&self) -> PollConfig {
-        *self.spec.payload().poll_config()
-    }
-
-    pub fn last_result(&self) -> Option<&Response<UseCaseOutput>> {
-        self.result.as_ref()
+    pub fn last_result(&self) -> Option<&Response<AdapterOutput>> {
+        self.last_result.as_ref()
     }
 
     pub fn metrics(&self) -> Metrics {
@@ -161,11 +141,15 @@ impl TaskEntity {
         &self.history
     }
 
+    pub fn health(&self) -> &Health {
+        &self.health
+    }
+
     /// Пришёл результат опроса: старый → история, новый → текущий, обновить метрики и здоровье.
-    pub fn apply_poll(&mut self, result: Response<UseCaseOutput>, metrics: Metrics) {
+    pub fn apply_poll(&mut self, result: Response<AdapterOutput>, metrics: Metrics) {
         self.health.record(&result);
         let ts = Local::now();
-        if let Some(prev) = mem::replace(&mut self.result, Some(result)) {
+        if let Some(prev) = mem::replace(&mut self.last_result, Some(result)) {
             self.history.push(HistoryEntry {
                 timestamp: ts,
                 result: prev,
@@ -176,7 +160,7 @@ impl TaskEntity {
     }
 
     /// Заменить спеку (value object) и поднять версию.
-    pub fn update_spec(&mut self, spec: TaskSpecPayload) {
+    pub fn update_spec(&mut self, spec: TaskConfig) {
         self.spec = self.spec.next(spec);
         self.updated_at = Local::now();
     }

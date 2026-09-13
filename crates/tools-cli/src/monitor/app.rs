@@ -4,8 +4,9 @@ use tokio::time::Duration;
 use tools_core::{
     error::Error,
     monitor::{
+        adapter::{Query, RawSnmpOidItem, SnmpGetQuery},
         runtime::Application,
-        task::{QuerySnmpGet, RawSnmpOidItem, TaskSpecPayload, UseCaseQuery},
+        task::TaskConfig,
     },
     polling::{AttemptConfig, PollConfig},
 };
@@ -60,7 +61,7 @@ struct SnmpOidItemDto {
 }
 
 pub struct AppBuilder {
-    specs: Vec<TaskSpecPayload>,
+    specs: Vec<TaskConfig>,
 }
 
 impl AppBuilder {
@@ -69,7 +70,7 @@ impl AppBuilder {
         let specs = dto
             .tasks
             .into_iter()
-            .map(TaskSpecPayload::try_from)
+            .map(TaskConfig::try_from)
             .collect::<Result<Vec<_>, Error>>()?;
         let app = Application::new(None);
 
@@ -79,7 +80,7 @@ impl AppBuilder {
     }
 }
 
-impl TryFrom<TaskConfigDto> for TaskSpecPayload {
+impl TryFrom<TaskConfigDto> for TaskConfig {
     type Error = Error;
 
     fn try_from(dto: TaskConfigDto) -> Result<Self, Self::Error> {
@@ -101,7 +102,7 @@ impl TryFrom<TaskConfigDto> for TaskSpecPayload {
                         oid: item.oid,
                     })
                     .collect();
-                UseCaseQuery::SnmpGet(QuerySnmpGet::from_raw(
+                Query::SnmpGet(SnmpGetQuery::from_raw(
                     q.host,
                     q.port,
                     q.community,
@@ -111,7 +112,7 @@ impl TryFrom<TaskConfigDto> for TaskSpecPayload {
             }
         };
 
-        Ok(TaskSpecPayload::try_new(
+        Ok(TaskConfig::try_new(
             dto.name,
             query,
             poll_config,
@@ -148,7 +149,7 @@ tasks:
         let specs = dto
             .tasks
             .into_iter()
-            .map(TaskSpecPayload::try_from)
+            .map(TaskConfig::try_from)
             .collect::<Result<Vec<_>, Error>>()
             .unwrap();
 

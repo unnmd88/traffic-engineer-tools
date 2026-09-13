@@ -1,13 +1,8 @@
 use std::net::IpAddr;
 
-use crate::snmp::{
-    community::Community,
-    oid::SnmpOid,
-    profiles::SnmpProfile,
-    ParseError,
-};
+use crate::snmp::{ParseError, community::Community, oid::SnmpOid, profiles::SnmpProfile};
 
-use super::error::QueryError;
+use super::error::SnmpQueryError;
 
 /// Валидированный OID-элемент запроса (`oid` уже распарсен из строки/алиаса).
 #[derive(Debug, Clone)]
@@ -25,7 +20,7 @@ pub struct RawSnmpOidItem {
 
 /// Валидированный SNMP GET запрос: доменные типы вместо сырых строк.
 #[derive(Debug, Clone)]
-pub struct QuerySnmpGet {
+pub struct SnmpGetQuery {
     pub profile: Option<SnmpProfile>,
     pub host: IpAddr,
     pub port: u16,
@@ -34,15 +29,14 @@ pub struct QuerySnmpGet {
 }
 
 /// Запрос задачи. Валидация сырых значений происходит при построении
-/// (`QuerySnmpGet::from_raw`), поэтому здесь уже доменные типы.
 #[derive(Clone, Debug)]
-pub enum UseCaseQuery {
-    SnmpGet(QuerySnmpGet),
+pub enum Query {
+    SnmpGet(SnmpGetQuery),
     // SnmpSet(QuerySnmpSet),
     // HttpRead(QueryHttpRead),
 }
 
-impl UseCaseQuery {
+impl Query {
     pub fn target(&self) -> String {
         match self {
             Self::SnmpGet(q) => format!("{}:{}", q.host, q.port),
@@ -50,7 +44,7 @@ impl UseCaseQuery {
     }
 }
 
-impl QuerySnmpGet {
+impl SnmpGetQuery {
     /// Собрать валидированный SNMP GET запрос из сырых значений конфига.
     pub fn from_raw(
         host: String,
@@ -58,7 +52,7 @@ impl QuerySnmpGet {
         community: String,
         profile: Option<String>,
         oids: Vec<RawSnmpOidItem>,
-    ) -> Result<Self, QueryError> {
+    ) -> Result<Self, SnmpQueryError> {
         let host = parse_ip(&host)?;
         let community = parse_community(&community)?;
         let profile = parse_profile(profile)?;
@@ -73,7 +67,7 @@ impl QuerySnmpGet {
                     oid,
                 })
             })
-            .collect::<Result<Vec<_>, QueryError>>()?;
+            .collect::<Result<Vec<_>, SnmpQueryError>>()?;
 
         Ok(Self {
             profile,
@@ -85,52 +79,52 @@ impl QuerySnmpGet {
     }
 }
 
-fn parse_ip(ip: &str) -> Result<IpAddr, QueryError> {
+fn parse_ip(ip: &str) -> Result<IpAddr, SnmpQueryError> {
     ip.parse::<IpAddr>()
-        .map_err(|_| QueryError::InvalidIpAddress { ip: ip.to_string() })
+        .map_err(|_| SnmpQueryError::InvalidIpAddress { ip: ip.to_string() })
 }
 
-fn parse_community(community: &str) -> Result<Community, QueryError> {
+fn parse_community(community: &str) -> Result<Community, SnmpQueryError> {
     Community::parse(community.to_string()).map_err(|e| match e {
-        ParseError::CantBeEmpty { .. } => QueryError::SnmpCommunityIsEmpty,
+        ParseError::CantBeEmpty { .. } => SnmpQueryError::SnmpCommunityIsEmpty,
         ParseError::InvalidLength {
             min, max, provide, ..
-        } => QueryError::SnmpCommunityInvalidLength { min, max, provide },
-        ParseError::Common { message } => QueryError::Other(message),
-        _ => QueryError::Other("Can't parse community string".to_string()),
+        } => SnmpQueryError::SnmpCommunityInvalidLength { min, max, provide },
+        ParseError::Common { message } => SnmpQueryError::Other(message),
+        _ => SnmpQueryError::Other("Can't parse community string".to_string()),
     })
 }
 
-fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, QueryError> {
+fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, SnmpQueryError> {
     profile
         .map(|p| p.parse::<SnmpProfile>())
         .transpose()
-        .map_err(|e| QueryError::InvalidSnmpProfile { message: e })
+        .map_err(|e| SnmpQueryError::InvalidSnmpProfile { message: e })
 }
 
 fn resolve_oid(
     raw: &str,
     profile: Option<&SnmpProfile>,
     pos: usize,
-) -> Result<SnmpOid, QueryError> {
+) -> Result<SnmpOid, SnmpQueryError> {
     let raw = raw.trim().to_lowercase();
 
     if let Ok(oid) = SnmpOid::parse(&raw) {
         return Ok(oid);
     }
 
-    let profile = profile.ok_or(QueryError::SnmpProfileMustBeProvided {
+    let profile = profile.ok_or(SnmpQueryError::SnmpProfileMustBeProvided {
         message: "SNMP profile is required for auto search oid by name".to_string(),
     })?;
 
     let meta = profile
         .get_metadata_by_name_or_alias(&raw)
-        .ok_or(QueryError::UnknownAlias {
+        .ok_or(SnmpQueryError::UnknownAlias {
             pos,
             alias: raw.clone(),
         })?;
 
-    SnmpOid::parse(meta.oid).map_err(|_| QueryError::InvalidSnmpOid {
+    SnmpOid::parse(meta.oid).map_err(|_| SnmpQueryError::InvalidSnmpOid {
         pos,
         oid: meta.oid.to_string(),
     })
@@ -149,7 +143,7 @@ mod tests {
 
     #[test]
     fn resolves_numeric_oids_without_profile() {
-        let q = QuerySnmpGet::from_raw(
+        let q = SnmpGetQuery::from_raw(
             "127.0.0.1".to_string(),
             161,
             "public".to_string(),
@@ -165,7 +159,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_ip() {
-        let err = QuerySnmpGet::from_raw(
+        let err = SnmpGetQuery::from_raw(
             "not-an-ip".to_string(),
             161,
             "public".to_string(),
@@ -174,26 +168,20 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(err, QueryError::InvalidIpAddress { .. }));
+        assert!(matches!(err, SnmpQueryError::InvalidIpAddress { .. }));
     }
 
     #[test]
     fn rejects_empty_community() {
-        let err = QuerySnmpGet::from_raw(
-            "127.0.0.1".to_string(),
-            161,
-            String::new(),
-            None,
-            vec![],
-        )
-        .unwrap_err();
+        let err = SnmpGetQuery::from_raw("127.0.0.1".to_string(), 161, String::new(), None, vec![])
+            .unwrap_err();
 
-        assert!(matches!(err, QueryError::SnmpCommunityIsEmpty));
+        assert!(matches!(err, SnmpQueryError::SnmpCommunityIsEmpty));
     }
 
     #[test]
     fn rejects_alias_without_profile() {
-        let err = QuerySnmpGet::from_raw(
+        let err = SnmpGetQuery::from_raw(
             "127.0.0.1".to_string(),
             161,
             "public".to_string(),
@@ -202,9 +190,6 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(
-            err,
-            QueryError::SnmpProfileMustBeProvided { .. }
-        ));
+        assert!(matches!(err, SnmpQueryError::SnmpProfileMustBeProvided { .. }));
     }
 }
