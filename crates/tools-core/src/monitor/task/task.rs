@@ -112,10 +112,10 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(id: TaskId, payload: TaskConfig) -> Self {
+    pub fn new(id: TaskId, spec: TaskConfig) -> Self {
         let dt = Local::now();
-        let deep_history = payload.deep_history();
-        let spec = TaskSpec::new(payload);
+        let deep_history = spec.deep_history();
+        let spec = TaskSpec::new(spec);
         Self {
             id,
             spec,

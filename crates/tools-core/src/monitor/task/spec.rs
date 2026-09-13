@@ -32,17 +32,17 @@ pub struct TaskSpec {
 }
 
 impl TaskSpec {
-    pub fn new(payload: TaskConfig) -> Self {
+    pub fn new(spec: TaskConfig) -> Self {
         Self {
-            value: payload,
+            value: spec,
             revision: SpecRevision::new(1),
             updated_at: Local::now(),
         }
     }
 
-    pub fn next(&self, payload: TaskConfig) -> Self {
+    pub fn next(&self, spec: TaskConfig) -> Self {
         Self {
-            value: payload,
+            value: spec,
             revision: self.revision.next(),
             updated_at: Local::now(),
         }

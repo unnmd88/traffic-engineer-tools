@@ -302,6 +302,7 @@ impl TaskActor {
             metrics: t.metrics(),
             result: t.last_result().cloned(),
             history,
+            health: t.health().clone(),
         }
     }
 

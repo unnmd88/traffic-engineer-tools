@@ -51,7 +51,6 @@ impl Adapter {
             target: q.host,
             port: q.port,
             community: q.community,
-            // добавить CLIENT_TIMEOUT_MARGIN, чтобы внутренний таймаут не наступил раньше чем в async poll.
             timeout: attempt.timeout().saturating_add(CLIENT_TIMEOUT_MARGIN),
             // Ретраями управляет async poll
             retries: 0,

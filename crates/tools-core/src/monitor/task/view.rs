@@ -4,7 +4,7 @@ use tokio::time::Duration;
 use crate::{
     monitor::{
         adapter::AdapterOutput,
-        task::{SpecRevision, TaskId, TaskStatus},
+        task::{SpecRevision, TaskId, TaskStatus, task::Health},
     },
     polling::{Metrics, Response},
 };
@@ -22,6 +22,7 @@ pub struct TaskView {
     pub metrics: Metrics,
     pub result: Option<Response<AdapterOutput>>,
     pub history: Vec<HistoryEntryView>,
+    pub health: Health,
 }
 
 #[derive(Debug, Clone)]
