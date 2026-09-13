@@ -1,11 +1,18 @@
 use chrono::{DateTime, Local};
+use derive_more::{Constructor, Display};
 
-use crate::{
-    monitor::{adapter::Query, task::SpecRevision},
-    polling::PollConfig,
-};
+use crate::{monitor::adapter::Query, polling::PollConfig};
 
 use super::error::TaskError;
+
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor)]
+pub struct SpecRevision(pub u64);
+
+impl SpecRevision {
+    pub fn next(self) -> Self {
+        Self::new(self.0 + 1)
+    }
+}
 
 /// Валидированное декларативное описание (Spec) — неизменяемый value object.
 #[derive(Clone, Debug)]

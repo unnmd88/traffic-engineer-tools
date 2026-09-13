@@ -3,11 +3,26 @@ use std::{collections::VecDeque, mem};
 use crate::{
     monitor::{
         adapter::AdapterOutput,
-        task::{SpecRevision, TaskConfig, TaskId, TaskSpec},
+        task::{SpecRevision, TaskConfig, TaskSpec},
     },
     polling::{Metrics, PollConfig, Response},
 };
 use chrono::{DateTime, Local};
+use derive_more::{Constructor, Display};
+
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
+pub enum TaskStatus {
+    Idle,
+    Starting,
+    Active,
+    Stopped,
+    Completed,
+    Restarting,
+    Failed,
+}
+
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
+pub struct TaskId(pub u64);
 
 /// Одна запись истории: предыдущий результат опроса.
 #[derive(Clone, Debug)]
