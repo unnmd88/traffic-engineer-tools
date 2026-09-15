@@ -1,6 +1,6 @@
 use derive_more::Display;
 
-use crate::snmp::{parsers::OidValueParserFn, value::SnmpValueType};
+use crate::snmp::{builders::OidValueBuilderFn, parsers::OidValueParserFn, value::SnmpValueType};
 
 #[derive(Clone, Copy, Display, Debug)]
 pub enum AccessType {
@@ -21,6 +21,7 @@ pub struct OidMetadata {
     pub aliases: &'static [&'static str],
     pub description: &'static str,
     pub parser: Option<OidValueParserFn>,
+    pub builder: Option<OidValueBuilderFn>,
     pub requires: Option<&'static [Requirenment]>,
     pub access: AccessType,
     pub syntax: SnmpValueType,

@@ -6,7 +6,7 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 use crate::{
     ascii::Ascii,
     snmp::{
-        SnmpError, SnmpClient,
+        SnmpClient, SnmpError,
         oid::SnmpOid,
         oid_metadata::{OidMetadata, Requirenment},
         parsers::{OidValueParserFn, parse_ug405_stage, site_id_ug405_potok},
@@ -97,7 +97,10 @@ impl SnmpProfile {
 
     pub fn registry(&self) -> &'static [OidMetadata] {
         match self {
-            Self::Swarco => &[SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA],
+            Self::Swarco => &[
+                SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA,
+                SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA,
+            ],
             Self::PotokS => &[SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA],
             Self::PotokUg405 => &[
                 UTC_REPLY_SITE_ID_POTOK_METADATA,

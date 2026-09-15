@@ -1,6 +1,6 @@
 use crate::snmp::{
     oid_metadata::{AccessType, OidMetadata, Requirenment},
-    parsers::{parse_ug405_stage, site_id_ug405_potok, stage_stcip::parse_stcip_stage},
+    parsers::{parse_ug405_stage, site_id_ug405_potok, stage_stcip::parse_stcip_stage_swarco},
     registry::oids::STAGE_ALIAS,
     value::SnmpValueType,
 };
@@ -44,4 +44,52 @@ G1 and G2 shall normally be returned simultaneously to indicate
                         e) The interface between the
                         OTU and the controller has
                         been disconnected.";
+/*-----------------------------------------------------------------*/
+
+///  swarcoUTCTrafftechPhaseCommand
+pub const SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_OID: &str = "1.3.6.1.4.1.1618.3.7.2.11.1";
+pub const SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_NAME: &str = "swarcoUTCTrafftechPhaseCommand";
+pub const SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_ALIAS: &str = STAGE_ALIAS;
+pub const SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_DESCRITION: &str =
+    "Commands the controller to go to the specified phase.
+A phase of 0 means no phase commanded.";
+/*-----------------------------------------------------------------*/
+
+///  utcControlFn
+pub const UTC_CONTROL_FN_OID: &str = "1.3.6.1.4.1.13267.3.2.4.2.1.5";
+pub const UTC_CONTROL_FN_OID_NAME: &str = "utcControlFn";
+pub const UTC_CONTROL_FN_OID_ALIAS: &str = STAGE_ALIAS;
+pub const UTC_CONTROL_FN_OID_DESCRIPTION: &str = "Condition 1 shall force the
+controller to make an immediate
+change to the selected stage or
+shall hold a selected stage subject
+to the following conditions:
+a) if the selected stage does not
+have rightofway then
+condition 1 on the force bit for
+that stage, and no other, shall
+cause a forced change to that
+stage provided that a demand
+exists or is assumed to exist for
+the stage;
+b) if the controller is in an
+intergreen or a minimum green
+period, the change to the
+selected stage shall be
+deferred until the expiry of the
+minimum green period,
+provided that the force
+condition still exists;
+c) if the selected stage has
+already appeared, condition 1
+on the force bit for that stage
+shall reset the phase maximum
+timers and hold that stage for
+so long as the condition 1 is
+received, provided that gap
+changes to another demanded
+stage are prevented by vehicle
+extensions (e.g. either by
+control demand signals or from
+local detectors).";
 /*-----------------------------------------------------------------*/

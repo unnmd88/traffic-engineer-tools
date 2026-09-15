@@ -58,7 +58,7 @@ pub fn parse_utc_bitmask(bytes: &[u8]) -> Result<u32, ParseError> {
 
     if found_pos.is_none() {
         let err_msg = "No active bits found (all bytes are zero)".to_string();
-        tracing::error!(target: "parse_utc_bitmask", bytes = ?bytes, "{}", &err_msg);
+        tracing::warn!(target: "parse_utc_bitmask", bytes = ?bytes, "{}", &err_msg);
         return Err(ParseError::Common { message: err_msg });
     }
 

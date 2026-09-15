@@ -164,7 +164,7 @@ mod tests {
         monitor::{
             event::{ChangeKind, TaskFact},
             runtime::Projector,
-            task::{SpecRevision, TaskId, TaskStatus, TaskView},
+            task::{Health, SpecRevision, TaskId, TaskStatus, TaskView},
         },
         polling::Metrics,
     };
@@ -181,6 +181,7 @@ mod tests {
             metrics: Metrics::default(),
             result: None,
             history: vec![],
+            health: Health::default(),
         }
     }
 

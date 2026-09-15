@@ -1,30 +1,36 @@
+use anyhow::Result;
 use async_snmp::value;
 
 use crate::{
-    stage::Stage,
     snmp::ParseError,
     snmp::{
         business_value::BusinessValue,
         profiles::SnmpProfile,
         value::{SnmpValue, SnmpValueType},
     },
+    stage::Stage,
 };
 
-pub fn parse_stcip_stage(value: &SnmpValue) -> Result<BusinessValue, ParseError> {
-    let v = value.as_u32().ok_or_else(|| ParseError::InvalidType {
+fn parse_num(v: &SnmpValue) -> Result<u32, ParseError> {
+    v.as_u32().ok_or_else(|| ParseError::InvalidType {
         expected: "Unsigned32".to_string(),
-        actual: SnmpValueType::from(value).to_string(),
-    })?;
+        actual: SnmpValueType::from(v).to_string(),
+    })
+}
+
+pub fn parse_stcip_stage_swarco(value: &SnmpValue) -> Result<BusinessValue, ParseError> {
+    let v = parse_num(value)?;
 
     let stage = match v {
-        0 => {
-            return Err(ParseError::Common {
-                message: "Value can`t be 0.".to_string(),
-            });
-        }
         1 => 8,
         _ => v - 1,
     };
 
     Ok(BusinessValue::Stage(Stage::new(stage)))
+}
+
+pub fn parse_stcip_stage_potok(value: &SnmpValue) -> Result<BusinessValue, ParseError> {
+    let v = parse_num(value)?;
+
+    Ok(BusinessValue::Stage(Stage::new(v - 1)))
 }

@@ -45,6 +45,8 @@ pub enum ParseError {
         max: usize,
         provide: usize,
     },
+    #[error("invalid value: {value}, reason: {reason}")]
+    InvalidValue { value: String, reason: String },
     #[error("expected {expected}, but got {actual}")]
     InvalidType { expected: String, actual: String },
     #[error("{name} can`t be empty")]
