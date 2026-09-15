@@ -4,4 +4,4 @@ mod query;
 
 pub use adapter::{Adapter, AdapterOutput};
 pub use error::{AdapterBuildError, SnmpQueryError};
-pub use query::{Query, RawSnmpOidItem, SnmpGetQuery, SnmpOidItem};
+pub use query::{Query, RawSnmpOidItem, RawSnmpSetItem, SnmpGetQuery, SnmpOidItem, SnmpSetQuery};

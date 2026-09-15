@@ -78,6 +78,32 @@ impl SnmpClient {
             .collect())
     }
 
+    pub async fn set_many(
+        &self,
+        sets: &[(SnmpOid, SnmpValue)],
+    ) -> Result<Vec<SnmpVarbind>, SnmpError> {
+        let varbinds: Vec<(async_snmp::Oid, async_snmp::Value)> = sets
+            .iter()
+            .map(|(oid, value)| {
+                Ok((oid.inner().clone(), async_snmp::Value::try_from(value)?))
+            })
+            .collect::<Result<Vec<_>, SnmpError>>()?;
+
+        let result = self
+            .client
+            .set_many(&varbinds)
+            .await
+            .map_err(|e| map_snmp_error(*e))?;
+
+        Ok(result
+            .into_iter()
+            .map(|vb| SnmpVarbind {
+                oid: SnmpOid::new(vb.oid),
+                value: SnmpValue::from(&vb.value),
+            })
+            .collect())
+    }
+
     pub fn socket_addr(&self) -> SocketAddr {
         self.client.peer_addr()
     }

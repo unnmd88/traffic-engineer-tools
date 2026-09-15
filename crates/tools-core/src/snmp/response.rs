@@ -56,6 +56,18 @@ pub struct SnmpGetResponse {
     pub samples: Vec<SnmpGetSample>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SnmpSetSample {
+    pub oid_name: Option<String>,
+    pub oid: SnmpOid,
+    pub value: SnmpValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnmpSetResponse {
+    pub samples: Vec<SnmpSetSample>,
+}
+
 /*
 impl Display for SnmpGetResponse {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

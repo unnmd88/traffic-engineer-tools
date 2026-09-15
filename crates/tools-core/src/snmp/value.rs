@@ -1,4 +1,4 @@
-use std::fmt::{self, Formatter};
+use std::{fmt::{self, Formatter}, str::FromStr};
 
 use derive_more::Display;
 
@@ -24,6 +24,26 @@ pub enum SnmpValueType {
     Unknown,
 }
 
+impl FromStr for SnmpValueType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let key = s.trim().to_lowercase().replace('-', "_");
+        match key.as_str() {
+            "octet_string" => Ok(Self::OctetString),
+            "gauge32" => Ok(Self::Gauge32),
+            "integer" => Ok(Self::Integer),
+            "unsigned32" => Ok(Self::Unsigned32),
+            "counter32" => Ok(Self::Counter32),
+            "counter64" => Ok(Self::Counter64),
+            "time_ticks" | "timeticks" => Ok(Self::TimeTicks),
+            "oid" => Ok(Self::Oid),
+            "ip_address" | "ipaddress" => Ok(Self::IpAddress),
+            _ => Err(format!("unknown SNMP value type: '{s}'")),
+        }
+    }
+}
+
 impl From<&SnmpValue> for SnmpValueType {
     fn from(value: &SnmpValue) -> Self {
         match value {
@@ -38,7 +58,6 @@ impl From<&SnmpValue> for SnmpValueType {
             SnmpValue::NoSuchObject => Self::NoSuchObject,
             SnmpValue::NoSuchInstance => Self::NoSuchInstance,
             SnmpValue::EndOfMibView => Self::EndOfMibView,
-            SnmpValue::Unsigned32(_) => Self::Unsigned32,
             SnmpValue::Counter32(_) => Self::Counter32,
             SnmpValue::Counter64(_) => Self::Counter64,
             SnmpValue::Unknown { .. } => Self::Unknown,
@@ -53,7 +72,6 @@ pub enum SnmpValue {
     Opaque(Vec<u8>),
     Gauge32(u32),
     Integer(i32),
-    Unsigned32(u32),
     Counter32(u32),
     Counter64(u64),
     TimeTicks(u32),
@@ -105,7 +123,6 @@ impl SnmpValue {
             SnmpValue::NoSuchObject => "NoSuchObject".to_string(),
             SnmpValue::NoSuchInstance => "NoSuchInstance".to_string(),
             SnmpValue::EndOfMibView => "EndOfMibView".to_string(),
-            SnmpValue::Unsigned32(v) => v.to_string(),
             SnmpValue::Counter32(v) => v.to_string(),
             SnmpValue::Counter64(v) => v.to_string(),
             SnmpValue::Unknown { tag, data } => format!("tag: {tag} data: {data:?}"),
@@ -128,7 +145,6 @@ impl fmt::Display for SnmpValue {
             SnmpValue::NoSuchObject => write!(f, "NoSuchObject"),
             SnmpValue::NoSuchInstance => write!(f, "NoSuchInstance"),
             SnmpValue::EndOfMibView => write!(f, "EndOfMibView"),
-            SnmpValue::Unsigned32(v) => write!(f, "{v}(Unsigned32)"),
             SnmpValue::Counter32(v) => write!(f, "{v}(Counter32)"),
             SnmpValue::Counter64(v) => write!(f, "{v}(Counter64)"),
             SnmpValue::Unknown { tag, data } => write!(f, "tag: {tag} data: {data:?}"),
@@ -162,7 +178,7 @@ impl TryFrom<&SnmpValue> for async_snmp::Value {
     fn try_from(value: &SnmpValue) -> Result<Self, Self::Error> {
         match value {
             SnmpValue::Integer(v) => Ok(async_snmp::Value::Integer(*v)),
-            SnmpValue::Unsigned32(v) => Ok(async_snmp::Value::Gauge32(*v)),
+            SnmpValue::Gauge32(v) => Ok(async_snmp::Value::Gauge32(*v)),
             SnmpValue::Counter32(v) => Ok(async_snmp::Value::Counter32(*v)),
             SnmpValue::Counter64(v) => Ok(async_snmp::Value::Counter64(*v)),
             SnmpValue::OctetString(v) => Ok(async_snmp::Value::OctetString(v.clone().into())),

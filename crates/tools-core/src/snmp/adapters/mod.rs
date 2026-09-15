@@ -1,5 +1,5 @@
 mod reader;
-//mod generic_custom;
+mod writer;
 
 pub use reader::SnmpReader;
-//pub use generic_custom::GenericCustomReader;
+pub use writer::SnmpWriter;

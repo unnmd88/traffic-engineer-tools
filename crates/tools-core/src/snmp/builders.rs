@@ -1,4 +1,9 @@
-use crate::snmp::{ParseError, parsers::bit_mask_ug405::parse_utc_bitmask, value::SnmpValue};
+use crate::snmp::{
+    ParseError,
+    oid::SnmpOid,
+    parsers::bit_mask_ug405::parse_utc_bitmask,
+    value::{SnmpValue, SnmpValueType},
+};
 
 pub type OidValueBuilderFn = fn(&str) -> Result<SnmpValue, ParseError>;
 
@@ -96,6 +101,86 @@ pub fn to_stage_u405(value: &str) -> Result<SnmpValue, ParseError> {
     Ok(SnmpValue::OctetString(bytes))
 }
 
+/// Кастомный OID (нет в реестре): кодируем значение по явному типу.
+/// `OctetString` ждёт hex (с `0x` или без), числа — десятичные, `IpAddress` — `a.b.c.d`.
+pub fn encode_by_type(ty: SnmpValueType, raw: &str) -> Result<SnmpValue, ParseError> {
+    let raw = raw.trim();
+    match ty {
+        SnmpValueType::OctetString => {
+            let hex = raw.strip_prefix("0x").unwrap_or(raw).replace(' ', "");
+            let bytes = hex::decode(&hex).map_err(|_| ParseError::InvalidValue {
+                value: raw.to_string(),
+                reason: "invalid hex octet string".to_string(),
+            })?;
+            Ok(SnmpValue::OctetString(bytes))
+        }
+        SnmpValueType::Integer => raw
+            .parse::<i32>()
+            .map(SnmpValue::Integer)
+            .map_err(|_| ParseError::InvalidValue {
+                value: raw.to_string(),
+                reason: "invalid i32 for Integer".to_string(),
+            }),
+        SnmpValueType::Gauge32 | SnmpValueType::Unsigned32 => raw
+            .parse::<u32>()
+            .map(SnmpValue::Gauge32)
+            .map_err(|_| ParseError::InvalidValue {
+                value: raw.to_string(),
+                reason: "invalid u32 for Gauge32/Unsigned32".to_string(),
+            }),
+
+        SnmpValueType::Counter32 => raw
+            .parse::<u32>()
+            .map(SnmpValue::Counter32)
+            .map_err(|_| ParseError::InvalidValue {
+                value: raw.to_string(),
+                reason: "invalid u32 for Counter32".to_string(),
+            }),
+        SnmpValueType::Counter64 => raw
+            .parse::<u64>()
+            .map(SnmpValue::Counter64)
+            .map_err(|_| ParseError::InvalidValue {
+                value: raw.to_string(),
+                reason: "invalid u64 for Counter64".to_string(),
+            }),
+        SnmpValueType::TimeTicks => raw
+            .parse::<u32>()
+            .map(SnmpValue::TimeTicks)
+            .map_err(|_| ParseError::InvalidValue {
+                value: raw.to_string(),
+                reason: "invalid u32 for TimeTicks".to_string(),
+            }),
+        SnmpValueType::IpAddress => {
+            let parts: Vec<u8> = raw
+                .split('.')
+                .map(|p| p.parse::<u8>())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ParseError::InvalidValue {
+                    value: raw.to_string(),
+                    reason: "invalid IPv4 address".to_string(),
+                })?;
+            if parts.len() != 4 {
+                return Err(ParseError::InvalidValue {
+                    value: raw.to_string(),
+                    reason: "IPv4 must be a.b.c.d".to_string(),
+                });
+            }
+            Ok(SnmpValue::IpAddress([parts[0], parts[1], parts[2], parts[3]]))
+        }
+        SnmpValueType::Oid => {
+            let oid = SnmpOid::parse(raw).map_err(|_| ParseError::InvalidValue {
+                value: raw.to_string(),
+                reason: "invalid OID".to_string(),
+            })?;
+            Ok(SnmpValue::Oid(oid))
+        }
+        other => Err(ParseError::InvalidValue {
+            value: raw.to_string(),
+            reason: format!("type {other} is not supported for SET"),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +253,52 @@ mod tests {
         assert_eq!(gauge(to_stage_val_stcip("3").unwrap()), 3);
         assert_eq!(gauge(to_stage_val_stcip("42").unwrap()), 42);
         assert!(to_stage_val_stcip("abc").is_err());
+    }
+
+    #[test]
+    fn encode_by_type_octet_string() {
+        assert_eq!(
+            octet(encode_by_type(SnmpValueType::OctetString, "0x01").unwrap()),
+            vec![0x01]
+        );
+        assert_eq!(
+            octet(encode_by_type(SnmpValueType::OctetString, "01 02").unwrap()),
+            vec![0x01, 0x02]
+        );
+        assert!(encode_by_type(SnmpValueType::OctetString, "zz").is_err());
+    }
+
+    #[test]
+    fn encode_by_type_numbers() {
+        assert_eq!(
+            gauge(encode_by_type(SnmpValueType::Gauge32, "42").unwrap()),
+            42
+        );
+        assert!(matches!(
+            encode_by_type(SnmpValueType::Integer, "-5").unwrap(),
+            SnmpValue::Integer(-5)
+        ));
+        assert!(matches!(
+            encode_by_type(SnmpValueType::Counter64, "99").unwrap(),
+            SnmpValue::Counter64(99)
+        ));
+    }
+
+    #[test]
+    fn encode_by_type_ip_and_oid() {
+        assert!(matches!(
+            encode_by_type(SnmpValueType::IpAddress, "127.0.0.1").unwrap(),
+            SnmpValue::IpAddress([127, 0, 0, 1])
+        ));
+        assert!(encode_by_type(SnmpValueType::IpAddress, "127.0.0").is_err());
+        assert!(encode_by_type(SnmpValueType::Oid, "1.3.6.1").is_ok());
+        assert!(encode_by_type(SnmpValueType::Oid, "not-an-oid").is_err());
+    }
+
+    #[test]
+    fn encode_by_type_rejects_unsupported() {
+        assert!(encode_by_type(SnmpValueType::Null, "x").is_err());
+        assert!(encode_by_type(SnmpValueType::NoSuchObject, "x").is_err());
+        assert!(encode_by_type(SnmpValueType::Opaque, "x").is_err());
     }
 }

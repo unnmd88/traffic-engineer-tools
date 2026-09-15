@@ -7,7 +7,7 @@ pub mod registry;
 mod response;
 pub use client::{SnmpClient, SnmpClientConfig};
 pub use error::{ParseError, SnmpError};
-pub use query::SnmpGetQueryItem;
+pub use query::{SnmpGetQueryItem, SnmpSetItem};
 pub mod business_value;
 pub mod community;
 pub mod oid;
@@ -20,4 +20,4 @@ pub mod ug405_stage;
 pub mod value;
 pub mod varbind;
 
-pub use response::{SnmpGetResponse, SnmpGetSample};
+pub use response::{SnmpGetResponse, SnmpGetSample, SnmpSetResponse, SnmpSetSample};

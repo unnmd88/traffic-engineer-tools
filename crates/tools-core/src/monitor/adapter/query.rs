@@ -1,6 +1,13 @@
 use std::net::IpAddr;
 
-use crate::snmp::{ParseError, community::Community, oid::SnmpOid, profiles::SnmpProfile};
+use crate::snmp::{
+    ParseError, SnmpSetItem,
+    builders::encode_by_type,
+    community::Community,
+    oid::SnmpOid,
+    profiles::SnmpProfile,
+    value::{SnmpValue, SnmpValueType},
+};
 
 use super::error::SnmpQueryError;
 
@@ -18,6 +25,15 @@ pub struct RawSnmpOidItem {
     pub oid: String,
 }
 
+/// Сырое описание SET-элемента из конфига.
+#[derive(Debug, Clone)]
+pub struct RawSnmpSetItem {
+    pub name: Option<String>,
+    pub oid: String,
+    pub value: String,
+    pub value_type: Option<String>,
+}
+
 /// Валидированный SNMP GET запрос: доменные типы вместо сырых строк.
 #[derive(Debug, Clone)]
 pub struct SnmpGetQuery {
@@ -28,11 +44,21 @@ pub struct SnmpGetQuery {
     pub oids: Vec<SnmpOidItem>,
 }
 
+/// Валидированный SNMP SET запрос. OID и value полностью зарезолвлены.
+#[derive(Debug, Clone)]
+pub struct SnmpSetQuery {
+    pub profile: Option<SnmpProfile>,
+    pub host: IpAddr,
+    pub port: u16,
+    pub community: Community,
+    pub sets: Vec<SnmpSetItem>,
+}
+
 /// Запрос задачи. Валидация сырых значений происходит при построении
 #[derive(Clone, Debug)]
 pub enum Query {
     SnmpGet(SnmpGetQuery),
-    // SnmpSet(QuerySnmpSet),
+    SnmpSet(SnmpSetQuery),
     // HttpRead(QueryHttpRead),
 }
 
@@ -40,6 +66,7 @@ impl Query {
     pub fn target(&self) -> String {
         match self {
             Self::SnmpGet(q) => format!("{}:{}", q.host, q.port),
+            Self::SnmpSet(q) => format!("{}:{}", q.host, q.port),
         }
     }
 }
@@ -75,6 +102,43 @@ impl SnmpGetQuery {
             port,
             community,
             oids,
+        })
+    }
+}
+
+impl SnmpSetQuery {
+    /// Собрать валидированный SNMP SET запрос из сырых значений конфига.
+    pub fn from_raw(
+        host: String,
+        port: u16,
+        community: String,
+        profile: Option<String>,
+        sets: Vec<RawSnmpSetItem>,
+    ) -> Result<Self, SnmpQueryError> {
+        let host = parse_ip(&host)?;
+        let community = parse_community(&community)?;
+        let profile = parse_profile(profile)?;
+
+        let sets = sets
+            .into_iter()
+            .enumerate()
+            .map(|(pos, raw)| {
+                let oid = resolve_oid(&raw.oid, profile.as_ref(), pos)?;
+                let value = encode_set_value(&oid, &raw.value, raw.value_type, profile.as_ref())?;
+                Ok(SnmpSetItem {
+                    name: raw.name,
+                    oid,
+                    value,
+                })
+            })
+            .collect::<Result<Vec<_>, SnmpQueryError>>()?;
+
+        Ok(Self {
+            profile,
+            host,
+            port,
+            community,
+            sets,
         })
     }
 }
@@ -128,6 +192,31 @@ fn resolve_oid(
         pos,
         oid: meta.oid.to_string(),
     })
+}
+
+/// Кодирует сырое значение SET в `SnmpValue`:
+/// 1) явный `value_type` → 2) builder из реестра → 3) ошибка.
+fn encode_set_value(
+    oid: &SnmpOid,
+    value: &str,
+    value_type: Option<String>,
+    profile: Option<&SnmpProfile>,
+) -> Result<SnmpValue, SnmpQueryError> {
+    if let Some(ty) = value_type {
+        let ty: SnmpValueType = ty.parse().map_err(SnmpQueryError::Other)?;
+        return encode_by_type(ty, value).map_err(|e| SnmpQueryError::Other(e.to_string()));
+    }
+
+    if let Some(builder) = profile
+        .and_then(|p| p.get_metadata_by_oid(oid))
+        .and_then(|m| m.builder)
+    {
+        return builder(value).map_err(|e| SnmpQueryError::Other(e.to_string()));
+    }
+
+    Err(SnmpQueryError::Other(format!(
+        "no builder and no value_type for oid {oid}"
+    )))
 }
 
 #[cfg(test)]
@@ -191,5 +280,80 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, SnmpQueryError::SnmpProfileMustBeProvided { .. }));
+    }
+
+    fn raw_set(oid: &str, value: &str) -> RawSnmpSetItem {
+        RawSnmpSetItem {
+            name: None,
+            oid: oid.to_string(),
+            value: value.to_string(),
+            value_type: None,
+        }
+    }
+
+    #[test]
+    fn snmp_set_numeric_oid_with_explicit_type() {
+        let q = SnmpSetQuery::from_raw(
+            "127.0.0.1".to_string(),
+            161,
+            "public".to_string(),
+            None,
+            vec![RawSnmpSetItem {
+                name: None,
+                oid: "1.3.6.1.4.1.999.1.0".to_string(),
+                value: "0x01".to_string(),
+                value_type: Some("octet_string".to_string()),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(q.sets.len(), 1);
+        assert!(matches!(
+            q.sets[0].value,
+            SnmpValue::OctetString(ref b) if b == &vec![0x01]
+        ));
+    }
+
+    #[test]
+    fn snmp_set_alias_with_profile_uses_builder() {
+        let q = SnmpSetQuery::from_raw(
+            "127.0.0.1".to_string(),
+            161,
+            "public".to_string(),
+            Some("swarco".to_string()),
+            vec![raw_set("stage", "3")],
+        )
+        .unwrap();
+
+        assert_eq!(q.sets.len(), 1);
+        assert!(matches!(q.sets[0].value, SnmpValue::Gauge32(3)));
+    }
+
+    #[test]
+    fn snmp_set_rejects_alias_without_profile() {
+        let err = SnmpSetQuery::from_raw(
+            "127.0.0.1".to_string(),
+            161,
+            "public".to_string(),
+            None,
+            vec![raw_set("stage", "3")],
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, SnmpQueryError::SnmpProfileMustBeProvided { .. }));
+    }
+
+    #[test]
+    fn snmp_set_rejects_without_builder_or_type() {
+        let err = SnmpSetQuery::from_raw(
+            "127.0.0.1".to_string(),
+            161,
+            "public".to_string(),
+            None,
+            vec![raw_set("1.3.6.1.4.1.999.1.0", "3")],
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, SnmpQueryError::Other(_)));
     }
 }

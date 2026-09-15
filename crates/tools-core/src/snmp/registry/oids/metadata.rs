@@ -1,5 +1,5 @@
 use crate::snmp::{
-    builders::{to_stage_val_stcip, to_stage_val_swarco_8stages},
+    builders::{to_stage_u405, to_stage_val_stcip, to_stage_val_swarco_8stages},
     oid_metadata::{AccessType, OidMetadata, Requirenment},
     parsers::{
         parse_ug405_stage, site_id_ug405_potok,
@@ -86,5 +86,5 @@ pub const UTC_CONTROL_FN_METADATA: OidMetadata = OidMetadata {
     syntax: SnmpValueType::OctetString,
     requires: Some(&[Requirenment::Scn]),
     parser: Some(parse_ug405_stage),
-    builder: None,
+    builder: Some(to_stage_u405),
 };
