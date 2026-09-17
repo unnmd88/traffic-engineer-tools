@@ -51,6 +51,7 @@ pub struct SnmpSetQuery {
     pub host: IpAddr,
     pub port: u16,
     pub community: Community,
+    pub community_r: Option<Community>,
     pub sets: Vec<SnmpSetItem>,
 }
 
@@ -111,12 +112,17 @@ impl SnmpSetQuery {
     pub fn from_raw(
         host: String,
         port: u16,
-        community: String,
+        community_r: Option<String>,
+        community_w: String,
         profile: Option<String>,
         sets: Vec<RawSnmpSetItem>,
     ) -> Result<Self, SnmpQueryError> {
         let host = parse_ip(&host)?;
-        let community = parse_community(&community)?;
+        let community = parse_community(&community_w)?;
+        let community_r = match community_r.as_ref() {
+            Some(c) => Some(parse_community(c)?),
+            None => None,
+        };
         let profile = parse_profile(profile)?;
 
         let sets = sets
@@ -138,6 +144,7 @@ impl SnmpSetQuery {
             host,
             port,
             community,
+            community_r,
             sets,
         })
     }
@@ -149,6 +156,7 @@ fn parse_ip(ip: &str) -> Result<IpAddr, SnmpQueryError> {
 }
 
 fn parse_community(community: &str) -> Result<Community, SnmpQueryError> {
+    tracing::debug!(target: "parse_community", "r={}", community);
     Community::parse(community.to_string()).map_err(|e| match e {
         ParseError::CantBeEmpty { .. } => SnmpQueryError::SnmpCommunityIsEmpty,
         ParseError::InvalidLength {
@@ -214,9 +222,7 @@ fn encode_set_value(
         return builder(value).map_err(|e| SnmpQueryError::Other(e.to_string()));
     }
 
-    Err(SnmpQueryError::Other(format!(
-        "no builder and no value_type for oid {oid}"
-    )))
+    Err(SnmpQueryError::Other(format!("no builder and no value_type for oid {oid}")))
 }
 
 #[cfg(test)]
@@ -296,6 +302,7 @@ mod tests {
         let q = SnmpSetQuery::from_raw(
             "127.0.0.1".to_string(),
             161,
+            None,
             "public".to_string(),
             None,
             vec![RawSnmpSetItem {
@@ -319,9 +326,10 @@ mod tests {
         let q = SnmpSetQuery::from_raw(
             "127.0.0.1".to_string(),
             161,
+            None,
             "public".to_string(),
             Some("swarco".to_string()),
-            vec![raw_set("stage", "3")],
+            vec![raw_set("set_stage", "3")],
         )
         .unwrap();
 
@@ -334,6 +342,7 @@ mod tests {
         let err = SnmpSetQuery::from_raw(
             "127.0.0.1".to_string(),
             161,
+            None,
             "public".to_string(),
             None,
             vec![raw_set("stage", "3")],
@@ -348,6 +357,7 @@ mod tests {
         let err = SnmpSetQuery::from_raw(
             "127.0.0.1".to_string(),
             161,
+            None,
             "public".to_string(),
             None,
             vec![raw_set("1.3.6.1.4.1.999.1.0", "3")],

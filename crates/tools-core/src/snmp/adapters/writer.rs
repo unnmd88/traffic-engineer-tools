@@ -5,37 +5,22 @@ use crate::{
     snmp::{
         SnmpClient, SnmpError, SnmpSetItem,
         oid::SnmpOid,
-        profiles::SnmpProfile,
         response::{SnmpSetResponse, SnmpSetSample},
         value::SnmpValue,
     },
 };
 
 /// Адаптер записи: держит зарезолвленные (oid, value) и шлёт их атомарным
-/// multi-varbind SET. Весь резолвинг (OID + кодирование value) уже сделан
-/// на границе в `SnmpSetQuery::from_raw`.
+/// multi-varbind SET. Резолвинг (SCN) уже сделан на этапе `snmp::resolve`.
 pub struct SnmpWriter {
     client: SnmpClient,
     items: Vec<SnmpSetItem>,
 }
 
 impl SnmpWriter {
-    pub async fn new(
-        client: SnmpClient,
-        mut items: Vec<SnmpSetItem>,
-        profile: Option<SnmpProfile>,
-    ) -> Result<Self, SnmpError> {
-        // SCN-резолюция — единственное, что требует живого клиента.
-        let oids: Vec<SnmpOid> = items.iter().map(|i| i.oid.clone()).collect();
-        let resolved = match &profile {
-            Some(profile) => profile.resolve_oids(&client, &oids).await?,
-            None => oids,
-        };
-        for (item, oid) in items.iter_mut().zip(resolved) {
-            item.oid = oid;
-        }
-
-        Ok(Self { client, items })
+    /// Чистая сборка из уже зарезолвленных элементов (см. `snmp::resolve`).
+    pub fn new(client: SnmpClient, items: Vec<SnmpSetItem>) -> Self {
+        Self { client, items }
     }
 }
 

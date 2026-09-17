@@ -11,6 +11,7 @@ use crate::{
         SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, SnmpSetResponse,
         adapters::{SnmpReader, SnmpWriter},
         community::Community,
+        resolve::Resolver,
     },
 };
 
@@ -57,7 +58,7 @@ impl Adapter {
     ) -> Result<Self, AdapterBuildError> {
         let client = Self::connect(q.host, q.port, q.community, &attempt).await?;
 
-        let oids = q
+        let items = q
             .oids
             .into_iter()
             .map(|item| SnmpGetQueryItem {
@@ -67,11 +68,13 @@ impl Adapter {
             })
             .collect();
 
-        let reader = SnmpReader::new(client, oids, q.profile)
+        let resolver = Resolver::new(client.clone(), q.profile);
+        let resolved = resolver
+            .resolve_get(items)
             .await
             .map_err(|e| AdapterBuildError::Other(e.to_string()))?;
 
-        Ok(Self::SnmpGet(reader))
+        Ok(Self::SnmpGet(SnmpReader::new(client, resolved)))
     }
 
     async fn build_snmp_set(
@@ -80,11 +83,20 @@ impl Adapter {
     ) -> Result<Self, AdapterBuildError> {
         let client = Self::connect(q.host, q.port, q.community, &attempt).await?;
 
-        let writer = SnmpWriter::new(client, q.sets, q.profile)
+        // Клиент для чтения SCN: по умолчанию write-клиент (common-кейс — общий
+        // community); отдельный read-клиент нужен только при write-only community.
+        let scn_client = match q.community_r {
+            Some(c) => Self::connect(q.host, q.port, c, &attempt).await?,
+            None => client.clone(),
+        };
+
+        let resolver = Resolver::new(scn_client, q.profile);
+        let resolved = resolver
+            .resolve_set(q.sets)
             .await
             .map_err(|e| AdapterBuildError::Other(e.to_string()))?;
 
-        Ok(Self::SnmpSet(writer))
+        Ok(Self::SnmpSet(SnmpWriter::new(client, resolved)))
     }
 
     async fn connect(

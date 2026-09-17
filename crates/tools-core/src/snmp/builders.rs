@@ -9,7 +9,7 @@ pub type OidValueBuilderFn = fn(&str) -> Result<SnmpValue, ParseError>;
 
 const SWARCO_MAX_STAGE: u32 = 8;
 
-fn to_u32(value: &str) -> Result<u32, ParseError> {
+fn parse_to_u32(value: &str) -> Result<u32, ParseError> {
     value
         .trim()
         .parse::<u32>()
@@ -20,11 +20,11 @@ fn to_u32(value: &str) -> Result<u32, ParseError> {
 }
 
 pub fn to_stage_val_stcip(value: &str) -> Result<SnmpValue, ParseError> {
-    to_u32(value).map(SnmpValue::Gauge32)
+    parse_to_u32(value).map(SnmpValue::Gauge32)
 }
 
 pub fn to_stage_val_swarco_8stages(value: &str) -> Result<SnmpValue, ParseError> {
-    let val = to_u32(value)?;
+    let val = parse_to_u32(value)?;
 
     if val > SWARCO_MAX_STAGE {
         return Err(ParseError::InvalidValue {
@@ -68,7 +68,9 @@ pub fn to_stage_u405(value: &str) -> Result<SnmpValue, ParseError> {
     let sanitized_value = value.trim().to_lowercase().replace(' ', "");
 
     if sanitized_value.is_empty() {
-        return Err(ParseError::CantBeEmpty { name: "Value".to_string() });
+        return Err(ParseError::CantBeEmpty {
+            name: "Value".to_string(),
+        });
     }
 
     let bytes = match sanitized_value.strip_prefix("0x") {
@@ -88,17 +90,26 @@ pub fn to_stage_u405(value: &str) -> Result<SnmpValue, ParseError> {
                 });
             }
 
-            let as_digit = sanitized_value
-                .parse::<u32>()
-                .map_err(|_| ParseError::InvalidValue {
-                    value: value.to_string(),
-                    reason: "Allowed numbers in range 1..64".to_string(),
-                })?;
+            let as_digit =
+                sanitized_value
+                    .parse::<u32>()
+                    .map_err(|_| ParseError::InvalidValue {
+                        value: value.to_string(),
+                        reason: "Allowed numbers in range 1..64".to_string(),
+                    })?;
             stage_to_bitmask(as_digit)?
         }
     };
 
     Ok(SnmpValue::OctetString(bytes))
+}
+
+pub fn to_i32(value: &str) -> Result<SnmpValue, ParseError> {
+    encode_by_type(SnmpValueType::Integer, value)
+}
+
+pub fn to_u32(value: &str) -> Result<SnmpValue, ParseError> {
+    encode_by_type(SnmpValueType::Gauge32, value)
 }
 
 /// Кастомный OID (нет в реестре): кодируем значение по явному типу.
@@ -114,13 +125,14 @@ pub fn encode_by_type(ty: SnmpValueType, raw: &str) -> Result<SnmpValue, ParseEr
             })?;
             Ok(SnmpValue::OctetString(bytes))
         }
-        SnmpValueType::Integer => raw
-            .parse::<i32>()
-            .map(SnmpValue::Integer)
-            .map_err(|_| ParseError::InvalidValue {
-                value: raw.to_string(),
-                reason: "invalid i32 for Integer".to_string(),
-            }),
+        SnmpValueType::Integer => {
+            raw.parse::<i32>()
+                .map(SnmpValue::Integer)
+                .map_err(|_| ParseError::InvalidValue {
+                    value: raw.to_string(),
+                    reason: "invalid i32 for Integer".to_string(),
+                })
+        }
         SnmpValueType::Gauge32 | SnmpValueType::Unsigned32 => raw
             .parse::<u32>()
             .map(SnmpValue::Gauge32)
@@ -129,27 +141,30 @@ pub fn encode_by_type(ty: SnmpValueType, raw: &str) -> Result<SnmpValue, ParseEr
                 reason: "invalid u32 for Gauge32/Unsigned32".to_string(),
             }),
 
-        SnmpValueType::Counter32 => raw
-            .parse::<u32>()
-            .map(SnmpValue::Counter32)
-            .map_err(|_| ParseError::InvalidValue {
-                value: raw.to_string(),
-                reason: "invalid u32 for Counter32".to_string(),
-            }),
-        SnmpValueType::Counter64 => raw
-            .parse::<u64>()
-            .map(SnmpValue::Counter64)
-            .map_err(|_| ParseError::InvalidValue {
-                value: raw.to_string(),
-                reason: "invalid u64 for Counter64".to_string(),
-            }),
-        SnmpValueType::TimeTicks => raw
-            .parse::<u32>()
-            .map(SnmpValue::TimeTicks)
-            .map_err(|_| ParseError::InvalidValue {
-                value: raw.to_string(),
-                reason: "invalid u32 for TimeTicks".to_string(),
-            }),
+        SnmpValueType::Counter32 => {
+            raw.parse::<u32>()
+                .map(SnmpValue::Counter32)
+                .map_err(|_| ParseError::InvalidValue {
+                    value: raw.to_string(),
+                    reason: "invalid u32 for Counter32".to_string(),
+                })
+        }
+        SnmpValueType::Counter64 => {
+            raw.parse::<u64>()
+                .map(SnmpValue::Counter64)
+                .map_err(|_| ParseError::InvalidValue {
+                    value: raw.to_string(),
+                    reason: "invalid u64 for Counter64".to_string(),
+                })
+        }
+        SnmpValueType::TimeTicks => {
+            raw.parse::<u32>()
+                .map(SnmpValue::TimeTicks)
+                .map_err(|_| ParseError::InvalidValue {
+                    value: raw.to_string(),
+                    reason: "invalid u32 for TimeTicks".to_string(),
+                })
+        }
         SnmpValueType::IpAddress => {
             let parts: Vec<u8> = raw
                 .split('.')
@@ -232,12 +247,12 @@ mod tests {
     #[test]
     fn to_stage_u405_rejects_invalid() {
         assert!(to_stage_u405("0x0300").is_err()); // два активных бита
-        assert!(to_stage_u405("0x").is_err());     // пустой hex
-        assert!(to_stage_u405("0").is_err());      // стадия 0
-        assert!(to_stage_u405("65").is_err());     // вне 1..64
-        assert!(to_stage_u405("01").is_err());     // ведущий ноль
-        assert!(to_stage_u405("").is_err());       // пустая строка
-        assert!(to_stage_u405("abc").is_err());    // не число
+        assert!(to_stage_u405("0x").is_err()); // пустой hex
+        assert!(to_stage_u405("0").is_err()); // стадия 0
+        assert!(to_stage_u405("65").is_err()); // вне 1..64
+        assert!(to_stage_u405("01").is_err()); // ведущий ноль
+        assert!(to_stage_u405("").is_err()); // пустая строка
+        assert!(to_stage_u405("abc").is_err()); // не число
     }
 
     #[test]
@@ -257,10 +272,7 @@ mod tests {
 
     #[test]
     fn encode_by_type_octet_string() {
-        assert_eq!(
-            octet(encode_by_type(SnmpValueType::OctetString, "0x01").unwrap()),
-            vec![0x01]
-        );
+        assert_eq!(octet(encode_by_type(SnmpValueType::OctetString, "0x01").unwrap()), vec![0x01]);
         assert_eq!(
             octet(encode_by_type(SnmpValueType::OctetString, "01 02").unwrap()),
             vec![0x01, 0x02]
@@ -270,10 +282,7 @@ mod tests {
 
     #[test]
     fn encode_by_type_numbers() {
-        assert_eq!(
-            gauge(encode_by_type(SnmpValueType::Gauge32, "42").unwrap()),
-            42
-        );
+        assert_eq!(gauge(encode_by_type(SnmpValueType::Gauge32, "42").unwrap()), 42);
         assert!(matches!(
             encode_by_type(SnmpValueType::Integer, "-5").unwrap(),
             SnmpValue::Integer(-5)

@@ -5,7 +5,7 @@ use derive_more::{Constructor, Display};
 
 use crate::{Error, snmp::oid::SnmpOid};
 pub mod oids;
-pub use oids::STAGE_ALIASES;
+pub use oids::{SET_STAGE_ALIASES, STAGE_ALIASES};
 //pub use oids::stcip::*;
 //pub use oids::utmc_ug405::*;
 

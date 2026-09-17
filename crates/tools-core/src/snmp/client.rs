@@ -1,11 +1,10 @@
 use std::net::{IpAddr, SocketAddr};
 
-use async_snmp::{Auth, Client, Retry};
+use async_snmp::{Auth, Client, Retry, value};
 use tokio::time::Duration;
 
 use crate::snmp::{
-    SnmpError,
-    community::Community, oid::SnmpOid, value::SnmpValue, varbind::SnmpVarbind,
+    SnmpError, community::Community, oid::SnmpOid, value::SnmpValue, varbind::SnmpVarbind,
 };
 
 #[derive(Debug, Clone)]
@@ -84,10 +83,10 @@ impl SnmpClient {
     ) -> Result<Vec<SnmpVarbind>, SnmpError> {
         let varbinds: Vec<(async_snmp::Oid, async_snmp::Value)> = sets
             .iter()
-            .map(|(oid, value)| {
-                Ok((oid.inner().clone(), async_snmp::Value::try_from(value)?))
-            })
+            .map(|(oid, value)| Ok((oid.inner().clone(), async_snmp::Value::try_from(value)?)))
             .collect::<Result<Vec<_>, SnmpError>>()?;
+
+        tracing::debug!(target: "set_many", "to set: {:?}", varbinds);
 
         let result = self
             .client
@@ -118,7 +117,9 @@ fn map_snmp_error(e: async_snmp::Error) -> SnmpError {
                 reason: source.to_string(),
             }
         }
-        async_snmp::Error::Timeout { target, retries, .. } => SnmpError::Timeout { target, retries },
+        async_snmp::Error::Timeout {
+            target, retries, ..
+        } => SnmpError::Timeout { target, retries },
         async_snmp::Error::Auth { target } => SnmpError::Auth { target },
         async_snmp::Error::Snmp {
             target,

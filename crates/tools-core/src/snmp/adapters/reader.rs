@@ -3,20 +3,12 @@ use async_trait::async_trait;
 use crate::{
     polling::{AttemptError, Pollable},
     snmp::{
-        SnmpError, SnmpGetQueryItem, SnmpClient,
+        SnmpClient, SnmpError, ResolvedItem,
         business_value::BusinessValue,
         oid::SnmpOid,
-        parsers::OidValueParserFn,
-        profiles::SnmpProfile,
         response::{SnmpGetResponse, SnmpGetSample},
     },
 };
-
-struct ResolvedItem {
-    oid: SnmpOid,
-    name: Option<String>,
-    parser: Option<OidValueParserFn>,
-}
 
 pub struct SnmpReader {
     client: SnmpClient,
@@ -24,43 +16,9 @@ pub struct SnmpReader {
 }
 
 impl SnmpReader {
-    pub async fn new(
-        client: SnmpClient,
-        request: Vec<SnmpGetQueryItem>,
-        profile: Option<SnmpProfile>,
-    ) -> Result<Self, SnmpError> {
-        let mut items = Vec::with_capacity(request.len());
-
-        for item in request {
-            let metadata = profile
-                .as_ref()
-                .and_then(|p| p.get_metadata_by_oid(&item.oid));
-
-            let parser = item
-                .business_value_parser
-                .or_else(|| metadata.as_ref().and_then(|m| m.parser));
-            let name = item
-                .name
-                .or_else(|| metadata.as_ref().map(|m| m.name.to_string()));
-
-            items.push(ResolvedItem {
-                oid: item.oid,
-                name,
-                parser,
-            });
-        }
-
-        // SCN-резолюция: если профиль требует, дополняем OID идентификатором контроллера.
-        let oids: Vec<SnmpOid> = items.iter().map(|i| i.oid.clone()).collect();
-        let resolved_oids = match &profile {
-            Some(profile) => profile.resolve_oids(&client, &oids).await?,
-            None => oids,
-        };
-        for (item, oid) in items.iter_mut().zip(resolved_oids) {
-            item.oid = oid;
-        }
-
-        Ok(Self { client, items })
+    /// Чистая сборка из уже зарезолвленных элементов (см. `snmp::resolve`).
+    pub fn new(client: SnmpClient, items: Vec<ResolvedItem>) -> Self {
+        Self { client, items }
     }
 }
 

@@ -1,8 +1,14 @@
-use std::{fmt::{self, Formatter}, str::FromStr};
+use std::{
+    fmt::{self, Formatter},
+    str::FromStr,
+};
 
 use derive_more::Display;
 
-use crate::{snmp::{SnmpError, oid::SnmpOid}, utils::encode_to_hex};
+use crate::{
+    snmp::{SnmpError, oid::SnmpOid},
+    utils::encode_to_hex,
+};
 
 #[derive(Debug, Clone, Display)]
 pub enum SnmpValueType {
@@ -102,10 +108,26 @@ impl SnmpValue {
         }
     }
 
+    pub fn as_i32(&self) -> Option<i32> {
+        match self {
+            Self::Integer(v) => Some(*v),
+            _ => None,
+        }
+    }
+
     pub fn as_u32(&self) -> Option<u32> {
         match self {
             Self::Counter32(v) | Self::Gauge32(v) | Self::TimeTicks(v) => Some(*v),
             Self::Integer(v) if *v >= 0 => Some(*v as u32),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Counter64(v) => Some(*v),
+            Self::Counter32(v) | Self::Gauge32(v) | Self::TimeTicks(v) => Some(*v as u64),
+            Self::Integer(v) if *v >= 0 => Some(*v as u64),
             _ => None,
         }
     }

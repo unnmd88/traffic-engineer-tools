@@ -1,17 +1,17 @@
+use chrono::format::Item;
+use clap::builder::Str;
 use serde::Deserialize;
 use tokio::time::Duration;
 
 use tools_core::{
     error::Error,
     monitor::{
-        adapter::{Query, RawSnmpOidItem, SnmpGetQuery},
+        adapter::{Query, RawSnmpOidItem, RawSnmpSetItem, SnmpGetQuery, SnmpSetQuery},
         runtime::Application,
         task::TaskConfig,
     },
     polling::{AttemptConfig, PollConfig},
 };
-
-const DEFAULT_HISTORY_DEPTH: u8 = 3;
 
 /// DTO конфига (serde на границе CLI; сырые строки).
 #[derive(Debug, Deserialize)]
@@ -41,6 +41,7 @@ struct AttemptPollTimingsDto {
 #[serde(tag = "query_type", rename_all = "lowercase")]
 enum QueryDto {
     SnmpGet(SnmpGetQueryDto),
+    SnmpSet(SnmpSetQueryDto),
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,14 +61,36 @@ struct SnmpOidItemDto {
     oid: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SnmpSetQueryDto {
+    #[serde(default)]
+    profile: Option<String>,
+    host: String,
+    port: u16,
+    community: String,
+    #[serde(default)]
+    community_r: Option<String>,
+    oids: Vec<SnmpSetOidItemDto>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnmpSetOidItemDto {
+    #[serde(default)]
+    name: Option<String>,
+    oid: String,
+    #[serde(default)]
+    syntax: Option<String>,
+    value: String,
+}
+
 pub struct AppBuilder {
     specs: Vec<TaskConfig>,
 }
 
 impl AppBuilder {
     pub async fn from_yaml(content: &str) -> anyhow::Result<Application> {
-        let dto: AppConfigDto = serde_yaml::from_str(content)?;
-        let specs = dto
+        let app_dto: AppConfigDto = serde_yaml::from_str(content)?;
+        let specs = app_dto
             .tasks
             .into_iter()
             .map(TaskConfig::try_from)
@@ -110,13 +133,33 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
                     oids,
                 )?)
             }
+            QueryDto::SnmpSet(q) => {
+                let oids = q
+                    .oids
+                    .into_iter()
+                    .map(|item| RawSnmpSetItem {
+                        name: item.name,
+                        oid: item.oid,
+                        value: item.value,
+                        value_type: item.syntax,
+                    })
+                    .collect();
+                Query::SnmpSet(SnmpSetQuery::from_raw(
+                    q.host,
+                    q.port,
+                    q.community_r,
+                    q.community,
+                    q.profile,
+                    oids,
+                )?)
+            }
         };
 
         Ok(TaskConfig::try_new(
             dto.name,
             query,
             poll_config,
-            dto.deep_history.unwrap_or(DEFAULT_HISTORY_DEPTH),
+            dto.deep_history.unwrap_or_default(),
         )?)
     }
 }
