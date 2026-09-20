@@ -51,6 +51,8 @@ pub enum ParseError {
     InvalidType { expected: String, actual: String },
     #[error("{name} can`t be empty")]
     CantBeEmpty { name: String },
+    #[error("unknown alias: '{alias}'")]
+    UnknownAlias { alias: String },
     #[error("{message}")]
     Common { message: String },
 }

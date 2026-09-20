@@ -1,8 +1,8 @@
-//! Резолюция запроса в финальный план опроса.
+//! Подготовка запроса и резолюция в финальный план опроса.
 //!
 //! [`Resolver`] — единственная точка резолюции: держит клиент для чтения
-//! (SCN-фетч) и профиль, отвечает за обогащение метаданными и дополнение OID
-//! идентификатором контроллера (SCN).
+//! (SCN-фетч) и профиль, отвечает за обогащение метаданными (парсер/имя) и
+//! достройку OID идентификатором контроллера (SCN/инстанс).
 //!
 //! Контракт:
 //! - без профиля — библиотека ничего не резолвит (raw-режим);
@@ -13,16 +13,58 @@
 use crate::{
     ascii::Ascii,
     snmp::{
-        SnmpClient, SnmpError, SnmpGetQueryItem, SnmpSetItem, oid::SnmpOid, oid_metadata::OidKind,
-        parsers::OidValueParserFn, profiles::SnmpProfile, site_id::fetch_site_id_potok_ug405,
+        ParseError, SnmpClient, SnmpError,
+        builders::encode_by_type,
+        oid::SnmpOid,
+        oid_metadata::OidKind,
+        parsers::OidValueParserFn,
+        profiles::SnmpProfile,
+        site_id::fetch_site_id_potok_ug405,
+        value::{SnmpValue, SnmpValueType},
     },
 };
 
+/// План GET-элемента: OID (после резолюции — полный инстанс), имя и парсер.
+/// До резолюции `parser` пуст, резолвер заполняет его из реестра профиля.
 #[derive(Debug, Clone)]
-pub struct ResolvedItem {
+pub struct SnmpGetItem {
     pub oid: SnmpOid,
     pub name: Option<String>,
     pub parser: Option<OidValueParserFn>,
+}
+
+/// План SET-элемента: OID и значение уже готовы к отправке (резолвер только
+/// достраивает OID).
+#[derive(Debug, Clone)]
+pub struct SnmpSetItem {
+    pub name: Option<String>,
+    pub oid: SnmpOid,
+    pub value: SnmpValue,
+}
+
+/// Кодирует сырое значение SET в `SnmpValue`:
+/// 1) явный `value_type` → 2) builder из реестра профиля → 3) ошибка.
+pub fn encode_set_value(
+    oid: &SnmpOid,
+    value: &str,
+    value_type: Option<&str>,
+    profile: Option<&SnmpProfile>,
+) -> Result<SnmpValue, ParseError> {
+    if let Some(ty) = value_type {
+        let ty: SnmpValueType = ty.parse().map_err(|e| ParseError::Common { message: e })?;
+        return encode_by_type(ty, value);
+    }
+
+    if let Some(builder) = profile
+        .and_then(|p| p.get_metadata_by_oid(oid))
+        .and_then(|m| m.builder)
+    {
+        return builder(value);
+    }
+
+    Err(ParseError::Common {
+        message: format!("no builder and no value_type for oid {oid}"),
+    })
 }
 
 pub struct Resolver {
@@ -103,24 +145,19 @@ impl Resolver {
     /// GET: обогащает элементы метаданными профиля и резолвит OID.
     pub async fn resolve_get(
         &self,
-        items: Vec<SnmpGetQueryItem>,
-    ) -> Result<Vec<ResolvedItem>, SnmpError> {
+        items: Vec<SnmpGetItem>,
+    ) -> Result<Vec<SnmpGetItem>, SnmpError> {
         let mut resolved = Vec::with_capacity(items.len());
 
-        for item in items {
+        for mut item in items {
             let metadata = self.profile.and_then(|p| p.get_metadata_by_oid(&item.oid));
-            let parser = item
-                .business_value_parser
-                .or_else(|| metadata.as_ref().and_then(|m| m.parser));
-            let name = item
+            item.name = item
                 .name
                 .or_else(|| metadata.as_ref().map(|m| m.name.to_string()));
-
-            resolved.push(ResolvedItem {
-                oid: item.oid,
-                name,
-                parser,
-            });
+            item.parser = item
+                .parser
+                .or_else(|| metadata.as_ref().and_then(|m| m.parser));
+            resolved.push(item);
         }
 
         let oids: Vec<SnmpOid> = resolved.iter().map(|i| i.oid.clone()).collect();

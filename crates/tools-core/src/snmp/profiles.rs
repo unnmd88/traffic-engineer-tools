@@ -4,12 +4,13 @@ use itertools::Itertools;
 use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::snmp::{
+    ParseError,
     oid::SnmpOid,
     oid_metadata::OidMetadata,
     registry::oids::{
         POTOKS_UTC_TRAFFTECH_PHASE_STATUS_METADATA, SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_METADATA,
-        SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA, UTC_CONTROL_FN_METADATA, UTC_CONTROL_TO_METADATA,
-        UTC_REPLY_GN_UG405_METADATA, UTC_REPLY_SITE_ID_POTOK_METADATA,
+        SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA, UTC_CONTROL_FN_METADATA,
+        UTC_CONTROL_TO_METADATA, UTC_REPLY_GN_UG405_METADATA, UTC_REPLY_SITE_ID_POTOK_METADATA,
         UTC_TYPE2_OPERATION_MODE_METADATA,
     },
 };
@@ -46,18 +47,25 @@ impl SnmpProfile {
     }
 
     /// Получить OidMetadata по алиасу для этого профиля
-    pub fn get_metadata_by_name_or_alias(&self, alias: &str) -> Option<&'static OidMetadata> {
-        let alias_lower = alias.to_lowercase();
+    pub fn get_metadata_by_name_or_alias(
+        &self,
+        name_or_alias: &str,
+    ) -> Option<&'static OidMetadata> {
+        let name_or_alias = name_or_alias.trim();
 
         for m in self.registry().iter() {
-            if m.name.eq_ignore_ascii_case(&alias_lower) {
+            if m.name.eq_ignore_ascii_case(&name_or_alias) {
                 return Some(m);
             }
 
-            if m.aliases
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(&alias_lower))
-            {
+            if m.aliases.iter().any(|a| {
+                a.eq_ignore_ascii_case(
+                    &name_or_alias
+                        .to_lowercase()
+                        .replace(" ", "_")
+                        .replace("-", "_"),
+                )
+            }) {
                 return Some(m);
             }
         }
@@ -71,6 +79,25 @@ impl SnmpProfile {
         let oid_as_str = binding.as_str();
 
         self.registry().iter().find(|m| m.oid == oid_as_str)
+    }
+
+    /// Разрешает сырую строку (числовой OID или алиас) в OID этого профиля.
+    pub fn resolve_oid(&self, raw: &str) -> Result<SnmpOid, ParseError> {
+        let raw = raw.trim();
+
+        if let Ok(oid) = SnmpOid::parse(&raw) {
+            return Ok(oid);
+        }
+
+        let meta = self
+            .get_metadata_by_name_or_alias(&raw)
+            .ok_or(ParseError::UnknownAlias {
+                alias: raw.to_string(),
+            })?;
+
+        SnmpOid::parse(meta.oid).map_err(|_| ParseError::Common {
+            message: format!("invalid OID in profile registry: {}", meta.oid),
+        })
     }
 }
 
@@ -115,10 +142,7 @@ mod tests {
             for meta in profile.registry() {
                 for alias in meta.aliases {
                     let key = alias.trim().to_lowercase();
-                    assert!(
-                        seen.insert(key),
-                        "duplicate alias '{alias}' in profile {profile:?}"
-                    );
+                    assert!(seen.insert(key), "duplicate alias '{alias}' in profile {profile:?}");
                 }
             }
         }

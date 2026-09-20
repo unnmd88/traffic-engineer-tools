@@ -2,12 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     polling::{AttemptError, Pollable},
-    snmp::{
-        SnmpClient, SnmpError, SnmpSetItem,
-        oid::SnmpOid,
-        response::{SnmpSetResponse, SnmpSetSample},
-        value::SnmpValue,
-    },
+    snmp::{SnmpClient, SnmpError, SnmpSetItem, oid::SnmpOid, value::SnmpValue},
 };
 
 /// Адаптер записи: держит зарезолвленные (oid, value) и шлёт их атомарным
@@ -26,7 +21,7 @@ impl SnmpWriter {
 
 #[async_trait]
 impl Pollable for SnmpWriter {
-    type Output = SnmpSetResponse;
+    type Output = ();
 
     async fn poll(&self) -> Result<Self::Output, AttemptError> {
         let sets: Vec<(SnmpOid, SnmpValue)> = self
@@ -35,23 +30,12 @@ impl Pollable for SnmpWriter {
             .map(|i| (i.oid.clone(), i.value.clone()))
             .collect();
 
-        let varbinds = self
-            .client
+        self.client
             .set_many(&sets)
             .await
             .map_err(classify_snmp_error)?;
 
-        Ok(SnmpSetResponse {
-            samples: varbinds
-                .into_iter()
-                .zip(&self.items)
-                .map(|(vb, item)| SnmpSetSample {
-                    oid_name: item.name.clone(),
-                    oid: vb.oid,
-                    value: vb.value,
-                })
-                .collect(),
-        })
+        Ok(())
     }
 }
 

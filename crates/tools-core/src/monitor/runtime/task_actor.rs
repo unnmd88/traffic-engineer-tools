@@ -2,17 +2,21 @@ use std::panic::AssertUnwindSafe;
 
 use futures_util::FutureExt;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, sleep, sleep_until};
+use tokio::time::{Duration, Instant, sleep, sleep_until};
 
 use crate::monitor::event::{ChangeKind, TaskFact};
 use crate::{
     monitor::{
-        adapter::Adapter,
+        adapter::{Adapter, AdapterOutput},
         runtime::restart_policy::RestartPolicy,
         task::{HistoryEntryView, Task, TaskConfig, TaskId, TaskStatus, TaskView},
     },
-    polling::{Response, poll},
+    polling::{FatalError, Response, poll},
 };
+
+/// Сколько раз переспросить при панике, прежде чем сдаться.
+/// Паника может быть недетерминированной — ретрай даёт шанс пройти.
+const PANIC_RETRIES: usize = 3;
 
 /// Желание пользователя: запущено / остановлено.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -160,15 +164,43 @@ impl TaskActor {
         }
     }
 
-    /// Один опрос. Паника адаптера == фатальная ошибка.
+    /// Один опрос. Панику ловим здесь: логируем и ретраим несколько раз,
+    /// после исчерпания ретраев — `fail()` (backoff → rebuild).
     async fn do_poll(&mut self) {
         let attempt = self.data.spec().poll_config().attempt();
-        let outcome = AssertUnwindSafe(poll(&attempt, self.use_case.as_ref().unwrap()))
-            .catch_unwind()
-            .await;
 
-        match outcome {
-            Ok(Ok(response)) => {
+        let Some(use_case) = self.use_case.as_ref() else {
+            self.fail("internal: use_case is None in poll".to_string())
+                .await;
+            return;
+        };
+
+        for retry in 0..=PANIC_RETRIES {
+            match AssertUnwindSafe(poll(&attempt, use_case))
+                .catch_unwind()
+                .await
+            {
+                Ok(result) => {
+                    self.handle_poll_result(result).await;
+                    return;
+                }
+                Err(panic) => {
+                    let message = panic_message(panic);
+                    tracing::error!(target: "task_actor", retry, "panic during poll: {message}");
+                    if retry == PANIC_RETRIES {
+                        self.fail(format!("panic: {message}")).await;
+                        return;
+                    }
+                    sleep(Duration::from_secs(2 * retry as u64)).await;
+                }
+            }
+        }
+    }
+
+    /// Обработка результата опроса: штатный (`Success`/`NoResponse`) или фатальный.
+    async fn handle_poll_result(&mut self, result: Result<Response<AdapterOutput>, FatalError>) {
+        match result {
+            Ok(response) => {
                 let new_metrics = match &response {
                     Response::Success { elapsed, .. } => self.data.metrics().with_success(*elapsed),
                     Response::NoResponse { .. } => self.data.metrics().with_error(),
@@ -182,11 +214,8 @@ impl TaskActor {
                     self.emit(ChangeKind::Polled).await;
                 }
             }
-            Ok(Err(fatal)) => {
+            Err(fatal) => {
                 self.fail(format!("poll failed: {}", fatal.message)).await;
-            }
-            Err(panic) => {
-                self.fail(format!("panic: {}", panic_message(panic))).await;
             }
         }
     }

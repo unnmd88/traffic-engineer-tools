@@ -8,7 +8,7 @@ use crate::{
     monitor::adapter::{Query, SnmpGetQuery, SnmpSetQuery},
     polling::{AttemptConfig, AttemptError, Pollable},
     snmp::{
-        SnmpClient, SnmpClientConfig, SnmpGetQueryItem, SnmpGetResponse, SnmpSetResponse,
+        SnmpClient, SnmpClientConfig, SnmpGetSample,
         adapters::{SnmpReader, SnmpWriter},
         community::Community,
         resolve::Resolver,
@@ -27,8 +27,8 @@ pub enum Adapter {
 
 #[derive(Clone, Debug)]
 pub enum AdapterOutput {
-    SnmpGet(SnmpGetResponse),
-    SnmpSet(SnmpSetResponse),
+    SnmpGet(Vec<SnmpGetSample>),
+    SnmpSet(()),
     // HttpRead(HttpReadResponse),
 }
 
@@ -58,19 +58,9 @@ impl Adapter {
     ) -> Result<Self, AdapterBuildError> {
         let client = Self::connect(q.host, q.port, q.community, &attempt).await?;
 
-        let items = q
-            .oids
-            .into_iter()
-            .map(|item| SnmpGetQueryItem {
-                name: item.name,
-                oid: item.oid,
-                business_value_parser: None,
-            })
-            .collect();
-
         let resolver = Resolver::new(client.clone(), q.profile);
         let resolved = resolver
-            .resolve_get(items)
+            .resolve_get(q.oids)
             .await
             .map_err(|e| AdapterBuildError::Other(e.to_string()))?;
 

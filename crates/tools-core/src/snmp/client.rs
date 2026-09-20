@@ -77,30 +77,17 @@ impl SnmpClient {
             .collect())
     }
 
-    pub async fn set_many(
-        &self,
-        sets: &[(SnmpOid, SnmpValue)],
-    ) -> Result<Vec<SnmpVarbind>, SnmpError> {
+    pub async fn set_many(&self, sets: &[(SnmpOid, SnmpValue)]) -> Result<(), SnmpError> {
         let varbinds: Vec<(async_snmp::Oid, async_snmp::Value)> = sets
             .iter()
             .map(|(oid, value)| Ok((oid.inner().clone(), async_snmp::Value::try_from(value)?)))
             .collect::<Result<Vec<_>, SnmpError>>()?;
 
-        tracing::debug!(target: "set_many", "to set: {:?}", varbinds);
-
-        let result = self
-            .client
+        self.client
             .set_many(&varbinds)
             .await
-            .map_err(|e| map_snmp_error(*e))?;
-
-        Ok(result
-            .into_iter()
-            .map(|vb| SnmpVarbind {
-                oid: SnmpOid::new(vb.oid),
-                value: SnmpValue::from(&vb.value),
-            })
-            .collect())
+            .map(|_| ())
+            .map_err(|e| map_snmp_error(*e))
     }
 
     pub fn socket_addr(&self) -> SocketAddr {

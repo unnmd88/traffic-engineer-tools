@@ -82,18 +82,13 @@ fn format_task(view: &TaskView) -> String {
     // Response
     match view.result.as_ref() {
         Some(Response::Success { payload, .. }) => match payload {
-            AdapterOutput::SnmpGet(snmp) => {
+            AdapterOutput::SnmpGet(samples) => {
                 output.push_str("Snmp-get response:\n");
-                output.push_str(&format_oids(&snmp.samples));
+                output.push_str(&format_oids(samples));
                 output.push('\n');
             }
-            AdapterOutput::SnmpSet(snmp) => {
-                output.push_str("Snmp-set response:\n");
-                for s in &snmp.samples {
-                    let name = s.oid_name.as_deref().unwrap_or("-");
-                    output.push_str(&format!("  {name} [{}] = {}\n", s.oid, s.value.as_string()));
-                }
-                output.push('\n');
+            AdapterOutput::SnmpSet(()) => {
+                output.push_str("Snmp-set response: ok\n");
             }
         },
         Some(Response::NoResponse { errors, .. }) => {

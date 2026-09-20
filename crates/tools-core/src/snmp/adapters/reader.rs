@@ -3,28 +3,28 @@ use async_trait::async_trait;
 use crate::{
     polling::{AttemptError, Pollable},
     snmp::{
-        SnmpClient, SnmpError, ResolvedItem,
+        SnmpClient, SnmpError, SnmpGetItem,
         business_value::BusinessValue,
         oid::SnmpOid,
-        response::{SnmpGetResponse, SnmpGetSample},
+        response::SnmpGetSample,
     },
 };
 
 pub struct SnmpReader {
     client: SnmpClient,
-    items: Vec<ResolvedItem>,
+    items: Vec<SnmpGetItem>,
 }
 
 impl SnmpReader {
     /// Чистая сборка из уже зарезолвленных элементов (см. `snmp::resolve`).
-    pub fn new(client: SnmpClient, items: Vec<ResolvedItem>) -> Self {
+    pub fn new(client: SnmpClient, items: Vec<SnmpGetItem>) -> Self {
         Self { client, items }
     }
 }
 
 #[async_trait]
 impl Pollable for SnmpReader {
-    type Output = SnmpGetResponse;
+    type Output = Vec<SnmpGetSample>;
 
     async fn poll(&self) -> Result<Self::Output, AttemptError> {
         let oids: Vec<SnmpOid> = self.items.iter().map(|i| i.oid.clone()).collect();
@@ -54,7 +54,7 @@ impl Pollable for SnmpReader {
             })
             .collect();
 
-        Ok(SnmpGetResponse { samples })
+        Ok(samples)
     }
 }
 

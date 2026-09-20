@@ -1,22 +1,14 @@
 use std::net::IpAddr;
 
 use crate::snmp::{
-    ParseError, SnmpSetItem,
-    builders::encode_by_type,
+    ParseError,
     community::Community,
     oid::SnmpOid,
     profiles::SnmpProfile,
-    value::{SnmpValue, SnmpValueType},
+    resolve::{SnmpGetItem, SnmpSetItem, encode_set_value},
 };
 
 use super::error::SnmpQueryError;
-
-/// Валидированный OID-элемент запроса (`oid` уже распарсен из строки/алиаса).
-#[derive(Debug, Clone)]
-pub struct SnmpOidItem {
-    pub name: Option<String>,
-    pub oid: SnmpOid,
-}
 
 /// Сырое описание OID из конфига (до валидации алиасов).
 #[derive(Debug, Clone)]
@@ -41,7 +33,7 @@ pub struct SnmpGetQuery {
     pub host: IpAddr,
     pub port: u16,
     pub community: Community,
-    pub oids: Vec<SnmpOidItem>,
+    pub oids: Vec<SnmpGetItem>,
 }
 
 /// Валидированный SNMP SET запрос. OID и value полностью зарезолвлены.
@@ -90,9 +82,10 @@ impl SnmpGetQuery {
             .enumerate()
             .map(|(pos, raw)| {
                 let oid = resolve_oid(&raw.oid, profile.as_ref(), pos)?;
-                Ok(SnmpOidItem {
+                Ok(SnmpGetItem {
                     name: raw.name,
                     oid,
+                    parser: None,
                 })
             })
             .collect::<Result<Vec<_>, SnmpQueryError>>()?;
@@ -130,7 +123,9 @@ impl SnmpSetQuery {
             .enumerate()
             .map(|(pos, raw)| {
                 let oid = resolve_oid(&raw.oid, profile.as_ref(), pos)?;
-                let value = encode_set_value(&oid, &raw.value, raw.value_type, profile.as_ref())?;
+                let value =
+                    encode_set_value(&oid, &raw.value, raw.value_type.as_deref(), profile.as_ref())
+                        .map_err(|e| SnmpQueryError::Other(e.to_string()))?;
                 Ok(SnmpSetItem {
                     name: raw.name,
                     oid,
@@ -174,60 +169,27 @@ fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, SnmpQue
         .map_err(|e| SnmpQueryError::InvalidSnmpProfile { message: e })
 }
 
+/// Разрешает сырую строку OID (числовой или алиас) в `SnmpOid`.
 fn resolve_oid(
     raw: &str,
     profile: Option<&SnmpProfile>,
     pos: usize,
 ) -> Result<SnmpOid, SnmpQueryError> {
-    let raw = raw.trim().to_lowercase();
-
-    if let Ok(oid) = SnmpOid::parse(&raw) {
-        return Ok(oid);
+    match profile {
+        Some(p) => p.resolve_oid(raw).map_err(|e| match e {
+            ParseError::UnknownAlias { alias } => SnmpQueryError::UnknownAlias { pos, alias },
+            e => SnmpQueryError::Other(e.to_string()),
+        }),
+        None => SnmpOid::parse(raw.trim()).map_err(|_| SnmpQueryError::SnmpProfileMustBeProvided {
+            message: "SNMP profile is required for auto search oid by name".to_string(),
+        }),
     }
-
-    let profile = profile.ok_or(SnmpQueryError::SnmpProfileMustBeProvided {
-        message: "SNMP profile is required for auto search oid by name".to_string(),
-    })?;
-
-    let meta = profile
-        .get_metadata_by_name_or_alias(&raw)
-        .ok_or(SnmpQueryError::UnknownAlias {
-            pos,
-            alias: raw.clone(),
-        })?;
-
-    SnmpOid::parse(meta.oid).map_err(|_| SnmpQueryError::InvalidSnmpOid {
-        pos,
-        oid: meta.oid.to_string(),
-    })
-}
-
-/// Кодирует сырое значение SET в `SnmpValue`:
-/// 1) явный `value_type` → 2) builder из реестра → 3) ошибка.
-fn encode_set_value(
-    oid: &SnmpOid,
-    value: &str,
-    value_type: Option<String>,
-    profile: Option<&SnmpProfile>,
-) -> Result<SnmpValue, SnmpQueryError> {
-    if let Some(ty) = value_type {
-        let ty: SnmpValueType = ty.parse().map_err(SnmpQueryError::Other)?;
-        return encode_by_type(ty, value).map_err(|e| SnmpQueryError::Other(e.to_string()));
-    }
-
-    if let Some(builder) = profile
-        .and_then(|p| p.get_metadata_by_oid(oid))
-        .and_then(|m| m.builder)
-    {
-        return builder(value).map_err(|e| SnmpQueryError::Other(e.to_string()));
-    }
-
-    Err(SnmpQueryError::Other(format!("no builder and no value_type for oid {oid}")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::snmp::value::SnmpValue;
 
     fn raw(oid: &str) -> RawSnmpOidItem {
         RawSnmpOidItem {
