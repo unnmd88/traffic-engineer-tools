@@ -15,6 +15,7 @@ pub enum TaskStatus {
     Idle,
     Starting,
     Active,
+    Paused,
     Stopped,
     Completed,
     Restarting,

@@ -9,9 +9,3 @@ pub enum SupervisorError {
     #[error("supervisor channel closed")]
     ChannelClosed,
 }
-
-#[derive(Error, Debug, Clone)]
-pub enum ProjectorError {
-    #[error("projector channel closed")]
-    ChannelClosed,
-}

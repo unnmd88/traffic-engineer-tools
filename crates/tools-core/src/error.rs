@@ -18,7 +18,5 @@ pub enum Error {
     #[error(transparent)]
     MonitorSupervisor(#[from] crate::monitor::runtime::error::SupervisorError),
     #[error(transparent)]
-    MonitorProjector(#[from] crate::monitor::runtime::error::ProjectorError),
-    #[error(transparent)]
     PollingConfig(#[from] crate::polling::ConfigError),
 }

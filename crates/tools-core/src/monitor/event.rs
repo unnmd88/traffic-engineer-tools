@@ -10,14 +10,18 @@ pub enum ChangeKind {
     Starting,
     Started,
     Restarted,
+    Paused,
+    Resumed,
     Stopped,
     Completed,
     Failed { reason: String },
     BuildFailed { reason: String },
+    Panicked { reason: String },
     Polled,
 }
 
-/// Единое событие наружу (тот же тип для broadcast и mpsc).
+/// Единое доменное событие наружу. Уходит в оба канала: надёжный (запись)
+/// и ненадёжный (live). Строит его супервизор — единственный писатель.
 #[derive(Clone, Debug)]
 pub enum MonitorEvent {
     TaskChanged {
@@ -31,22 +35,4 @@ pub enum MonitorEvent {
         view: TaskView,
         at: DateTime<Local>,
     },
-}
-
-/// Факт: что актор сообщает проектору о задаче.
-///
-/// Актор — единственный владелец состояния задачи; проектор держит только
-/// проекцию (`TaskView`) и раздаёт события наружу.
-#[derive(Clone, Debug)]
-pub enum TaskFact {
-    /// Задача изменилась (добавлена / сменила статус / опросила и т.п.).
-    Changed {
-        task_id: TaskId,
-        kind: ChangeKind,
-        view: TaskView,
-    },
-    /// Задачу удалили — проектор убирает view и шлёт `TaskRemoved`.
-    Removed { task_id: TaskId },
-    /// Актор упал целиком (баг в собственной логике); данные уже в проекторе.
-    Crashed { task_id: TaskId, reason: String },
 }

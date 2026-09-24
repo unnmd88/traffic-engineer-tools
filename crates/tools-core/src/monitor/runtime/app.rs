@@ -5,8 +5,7 @@ use uuid::Uuid;
 use crate::monitor::{
     event::MonitorEvent,
     runtime::{
-        error::{ProjectorError, SupervisorError},
-        projector::{Projector, ProjectorHandle},
+        error::SupervisorError,
         supervisor::{Supervisor, SupervisorHandle},
     },
     task::{MonitorSnapshot, TaskConfig, TaskId},
@@ -21,27 +20,22 @@ impl ApplicationId {
     }
 }
 
-/// Собранный рантайм нового дизайна: проектор + супервизор + акторы.
+/// Собранный рантайм: супервизор (владелец состояния и оба канала) + воркеры.
 ///
-/// Тонкий фасад: команды уходят супервизору, снапшот/подписка — проектору.
+/// Тонкий фасад: команды, снапшот и подписка — всё через супервизор.
 pub struct Application {
     uid: ApplicationId,
     supervisor: SupervisorHandle,
-    projector: ProjectorHandle,
 }
 
 impl Application {
     pub fn new(hist_tx: Option<mpsc::Sender<MonitorEvent>>) -> Self {
-        let (projector, projector_handle) = Projector::new(hist_tx);
-        tokio::spawn(projector.run());
-
-        let (supervisor, supervisor_handle) = Supervisor::new(projector_handle.fact_sender());
+        let (supervisor, supervisor_handle) = Supervisor::new(hist_tx);
         tokio::spawn(supervisor.run());
 
         Self {
             uid: ApplicationId::generate(),
             supervisor: supervisor_handle,
-            projector: projector_handle,
         }
     }
 
@@ -70,6 +64,14 @@ impl Application {
         self.supervisor.start_task(task_id).await
     }
 
+    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
+        self.supervisor.pause_task(task_id).await
+    }
+
+    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
+        self.supervisor.resume_task(task_id).await
+    }
+
     pub async fn stop_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
         self.supervisor.stop_task(task_id).await
     }
@@ -82,12 +84,12 @@ impl Application {
         self.supervisor.update_task(task_id, spec).await
     }
 
-    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, ProjectorError> {
-        self.projector.get_snapshot().await
+    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, SupervisorError> {
+        self.supervisor.get_snapshot().await
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
-        self.projector.subscribe()
+        self.supervisor.subscribe()
     }
 
     pub async fn shutdown(&self) -> Result<(), SupervisorError> {
@@ -145,7 +147,7 @@ mod tests {
         let app = Application::new(None);
         let id = app.add_task(spec("t-1")).await.unwrap();
 
-        // задача появляется в снапшоте (eventually-consistent: актор шлёт Added асинхронно)
+        // задача появляется в снапшоте (eventually-consistent: Added уходит асинхронно)
         let snap = poll_until(&app, |s| !s.tasks.is_empty()).await;
         assert_eq!(snap.tasks.len(), 1);
         assert_eq!(snap.tasks[0].id, id);
