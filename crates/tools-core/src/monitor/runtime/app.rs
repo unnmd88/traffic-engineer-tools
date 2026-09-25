@@ -5,8 +5,8 @@ use uuid::Uuid;
 use crate::monitor::{
     event::MonitorEvent,
     runtime::{
-        error::SupervisorError,
-        supervisor::{Supervisor, SupervisorHandle},
+        error::OrchestratorError,
+        orchestrator::{Orchestrator, OrchestratorHandle},
     },
     task::{MonitorSnapshot, TaskConfig, TaskId},
 };
@@ -20,22 +20,22 @@ impl ApplicationId {
     }
 }
 
-/// Собранный рантайм: супервизор (владелец состояния и оба канала) + воркеры.
+/// Собранный рантайм: оркестратор (владелец состояния и оба канала) + воркеры.
 ///
-/// Тонкий фасад: команды, снапшот и подписка — всё через супервизор.
+/// Тонкий фасад: команды, снапшот и подписка — всё через оркестратор.
 pub struct Application {
     uid: ApplicationId,
-    supervisor: SupervisorHandle,
+    orchestrator: OrchestratorHandle,
 }
 
 impl Application {
     pub fn new(hist_tx: Option<mpsc::Sender<MonitorEvent>>) -> Self {
-        let (supervisor, supervisor_handle) = Supervisor::new(hist_tx);
-        tokio::spawn(supervisor.run());
+        let (orchestrator, orchestrator_handle) = Orchestrator::new(hist_tx);
+        tokio::spawn(orchestrator.run());
 
         Self {
             uid: ApplicationId::generate(),
-            supervisor: supervisor_handle,
+            orchestrator: orchestrator_handle,
         }
     }
 
@@ -43,7 +43,7 @@ impl Application {
         &self.uid
     }
 
-    pub async fn start(&self, specs: Vec<TaskConfig>) -> Result<(), SupervisorError> {
+    pub async fn start(&self, specs: Vec<TaskConfig>) -> Result<(), OrchestratorError> {
         for spec in specs {
             let task_id = self.add_task(spec).await?;
             self.start_task(task_id).await?;
@@ -52,48 +52,48 @@ impl Application {
         Ok(())
     }
 
-    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, SupervisorError> {
-        self.supervisor.add_task(spec).await
+    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, OrchestratorError> {
+        self.orchestrator.add_task(spec).await
     }
 
-    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.supervisor.remove_task(task_id).await
+    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+        self.orchestrator.remove_task(task_id).await
     }
 
-    pub async fn start_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.supervisor.start_task(task_id).await
+    pub async fn start_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+        self.orchestrator.start_task(task_id).await
     }
 
-    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.supervisor.pause_task(task_id).await
+    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+        self.orchestrator.pause_task(task_id).await
     }
 
-    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.supervisor.resume_task(task_id).await
+    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+        self.orchestrator.resume_task(task_id).await
     }
 
-    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
-        self.supervisor.stop_task(task_id).await
+    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+        self.orchestrator.stop_task(task_id).await
     }
 
     pub async fn update_task(
         &self,
         task_id: TaskId,
         spec: TaskConfig,
-    ) -> Result<(), SupervisorError> {
-        self.supervisor.update_task(task_id, spec).await
+    ) -> Result<(), OrchestratorError> {
+        self.orchestrator.update_task(task_id, spec).await
     }
 
-    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, SupervisorError> {
-        self.supervisor.get_snapshot().await
+    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, OrchestratorError> {
+        self.orchestrator.get_snapshot().await
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
-        self.supervisor.subscribe()
+        self.orchestrator.subscribe()
     }
 
-    pub async fn shutdown(&self) -> Result<(), SupervisorError> {
-        self.supervisor.shutdown().await
+    pub async fn shutdown(&self) -> Result<(), OrchestratorError> {
+        self.orchestrator.shutdown().await
     }
 }
 

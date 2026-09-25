@@ -16,7 +16,7 @@ pub enum Error {
     #[error(transparent)]
     AdapterBuild(#[from] crate::monitor::adapter::AdapterBuildError),
     #[error(transparent)]
-    MonitorSupervisor(#[from] crate::monitor::runtime::error::SupervisorError),
+    MonitorOrchestrator(#[from] crate::monitor::runtime::error::OrchestratorError),
     #[error(transparent)]
     PollingConfig(#[from] crate::polling::ConfigError),
 }

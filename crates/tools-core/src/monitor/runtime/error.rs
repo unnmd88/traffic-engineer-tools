@@ -3,9 +3,9 @@ use thiserror::Error;
 use crate::monitor::task::TaskId;
 
 #[derive(Error, Debug, Clone)]
-pub enum SupervisorError {
+pub enum OrchestratorError {
     #[error("task not found: {0}")]
     TaskNotFound(TaskId),
-    #[error("supervisor channel closed")]
+    #[error("orchestrator channel closed")]
     ChannelClosed,
 }

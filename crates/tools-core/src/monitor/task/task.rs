@@ -19,7 +19,6 @@ pub enum TaskStatus {
     Stopped,
     Completed,
     Restarting,
-    Failed,
 }
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]

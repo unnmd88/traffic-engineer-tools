@@ -8,7 +8,7 @@ use crate::{
     monitor::{
         event::{ChangeKind, MonitorEvent},
         runtime::{
-            error::SupervisorError,
+            error::OrchestratorError,
             restart_policy::RestartPolicy,
             worker::{Generation, Worker, WorkerCmd, WorkerReport},
         },
@@ -17,7 +17,6 @@ use crate::{
     polling::Response,
 };
 
-/// Единственный стейт задачи: и намерение, и факт — в одном месте.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskState {
     Idle,
@@ -46,32 +45,32 @@ struct WorkerHandle {
 enum Command {
     AddTask {
         spec: TaskConfig,
-        reply: oneshot::Sender<Result<TaskId, SupervisorError>>,
+        reply: oneshot::Sender<Result<TaskId, OrchestratorError>>,
     },
     RemoveTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), SupervisorError>>,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     StartTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), SupervisorError>>,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     PauseTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), SupervisorError>>,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     ResumeTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), SupervisorError>>,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     StopTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), SupervisorError>>,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     UpdateTask {
         task_id: TaskId,
         spec: TaskConfig,
-        reply: oneshot::Sender<Result<(), SupervisorError>>,
+        reply: oneshot::Sender<Result<(), OrchestratorError>>,
     },
     GetSnapshot {
         reply: oneshot::Sender<MonitorSnapshot>,
@@ -84,7 +83,7 @@ enum Command {
     },
 }
 
-pub struct Supervisor {
+pub struct Orchestrator {
     next_id: u64,
     entries: HashMap<TaskId, TaskEntry>,
     cmd_rx: mpsc::Receiver<Command>,
@@ -96,8 +95,8 @@ pub struct Supervisor {
     policy: RestartPolicy,
 }
 
-impl Supervisor {
-    pub fn new(hist_tx: Option<mpsc::Sender<MonitorEvent>>) -> (Self, SupervisorHandle) {
+impl Orchestrator {
+    pub fn new(hist_tx: Option<mpsc::Sender<MonitorEvent>>) -> (Self, OrchestratorHandle) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (report_tx, report_rx) = mpsc::channel(256);
         let (record_tx, record_rx) = mpsc::channel(1024);
@@ -116,7 +115,7 @@ impl Supervisor {
             record_tx,
             policy: RestartPolicy::default(),
         };
-        (this, SupervisorHandle { cmd_tx, live_tx })
+        (this, OrchestratorHandle { cmd_tx, live_tx })
     }
 
     pub async fn run(mut self) {
@@ -209,12 +208,12 @@ impl Supervisor {
         }
     }
 
-    async fn start(&mut self, id: TaskId) -> Result<(), SupervisorError> {
+    async fn start(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
         let should_start = match self.entries.get(&id) {
             Some(e) => {
                 matches!(e.state, TaskState::Idle | TaskState::Stopped | TaskState::Completed)
             }
-            None => return Err(SupervisorError::TaskNotFound(id)),
+            None => return Err(OrchestratorError::TaskNotFound(id)),
         };
         if !should_start {
             return Ok(());
@@ -231,13 +230,13 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn pause(&mut self, id: TaskId) -> Result<(), SupervisorError> {
+    async fn pause(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
         // forward — шлём команду живому воркеру; set_state — воркера нет, пауза сразу
         let (forward, set_state) = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(SupervisorError::TaskNotFound(id))?;
+                .ok_or(OrchestratorError::TaskNotFound(id))?;
             match entry.state {
                 TaskState::Starting | TaskState::Active => {
                     (entry.worker.is_some(), entry.worker.is_none())
@@ -266,13 +265,13 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn resume(&mut self, id: TaskId) -> Result<(), SupervisorError> {
+    async fn resume(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
         // forward — живому воркеру; spawn — воркера нет, поднимаем заново
         let (forward, spawn) = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(SupervisorError::TaskNotFound(id))?;
+                .ok_or(OrchestratorError::TaskNotFound(id))?;
             match entry.state {
                 TaskState::Paused => (entry.worker.is_some(), entry.worker.is_none()),
                 _ => (false, false),
@@ -299,12 +298,12 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn stop(&mut self, id: TaskId) -> Result<(), SupervisorError> {
+    async fn stop(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
         let stopped = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(SupervisorError::TaskNotFound(id))?;
+                .ok_or(OrchestratorError::TaskNotFound(id))?;
             match entry.state {
                 TaskState::Idle | TaskState::Stopped => false, // нечего останавливать
                 _ => {
@@ -323,12 +322,12 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn update(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), SupervisorError> {
+    async fn update(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), OrchestratorError> {
         let respawn = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(SupervisorError::TaskNotFound(id))?;
+                .ok_or(OrchestratorError::TaskNotFound(id))?;
             entry.task.update_spec(spec);
             matches!(entry.state, TaskState::Starting | TaskState::Active | TaskState::Restarting)
         };
@@ -357,11 +356,11 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn remove(&mut self, id: TaskId) -> Result<(), SupervisorError> {
+    async fn remove(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
         let entry = self
             .entries
             .remove(&id)
-            .ok_or(SupervisorError::TaskNotFound(id))?;
+            .ok_or(OrchestratorError::TaskNotFound(id))?;
         if let Some(w) = &entry.worker {
             w.abort.abort();
         }
@@ -462,6 +461,18 @@ impl Supervisor {
                     (
                         Some(ChangeKind::Panicked {
                             reason: format!("poll: {reason}"),
+                        }),
+                        Some(delay),
+                    )
+                }
+                WorkerReport::WorkerPanicked { reason, .. } => {
+                    entry.worker = None;
+                    entry.attempts += 1;
+                    entry.state = TaskState::Restarting;
+                    let delay = self.policy.delay(entry.attempts);
+                    (
+                        Some(ChangeKind::Panicked {
+                            reason: format!("worker: {reason}"),
                         }),
                         Some(delay),
                     )
@@ -574,7 +585,7 @@ impl Supervisor {
             name: spec.name().to_string(),
             revision: spec.revision(),
             target: spec.query().target(),
-            status: self.status(entry),
+            status: status(entry),
             interval: spec.poll_config().interval(),
             limit: spec.poll_config().limit(),
             metrics: t.metrics(),
@@ -584,22 +595,22 @@ impl Supervisor {
         }
     }
 
-    fn status(&self, entry: &TaskEntry) -> TaskStatus {
-        match entry.state {
-            TaskState::Idle => TaskStatus::Idle,
-            TaskState::Starting => TaskStatus::Starting,
-            TaskState::Active => TaskStatus::Active,
-            TaskState::Paused => TaskStatus::Paused,
-            TaskState::Restarting => TaskStatus::Restarting,
-            TaskState::Completed => TaskStatus::Completed,
-            TaskState::Stopped => TaskStatus::Stopped,
-        }
-    }
-
     fn snapshot(&self) -> MonitorSnapshot {
         let mut tasks: Vec<TaskView> = self.entries.values().map(|e| self.view(e)).collect();
         tasks.sort_by_key(|v| v.id);
         MonitorSnapshot { tasks }
+    }
+}
+
+fn status(entry: &TaskEntry) -> TaskStatus {
+    match entry.state {
+        TaskState::Idle => TaskStatus::Idle,
+        TaskState::Starting => TaskStatus::Starting,
+        TaskState::Active => TaskStatus::Active,
+        TaskState::Paused => TaskStatus::Paused,
+        TaskState::Restarting => TaskStatus::Restarting,
+        TaskState::Completed => TaskStatus::Completed,
+        TaskState::Stopped => TaskStatus::Stopped,
     }
 }
 
@@ -625,71 +636,71 @@ async fn log_writer(
 }
 
 #[derive(Clone)]
-pub struct SupervisorHandle {
+pub struct OrchestratorHandle {
     cmd_tx: mpsc::Sender<Command>,
     live_tx: broadcast::Sender<MonitorEvent>,
 }
 
-impl SupervisorHandle {
-    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, SupervisorError> {
+impl OrchestratorHandle {
+    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::AddTask { spec, reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)?
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
+    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::RemoveTask { task_id, reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)?
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn start_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
+    pub async fn start_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::StartTask { task_id, reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)?
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
+    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::PauseTask { task_id, reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)?
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
+    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::ResumeTask { task_id, reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)?
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), SupervisorError> {
+    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::StopTask { task_id, reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)?
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
     pub async fn update_task(
         &self,
         task_id: TaskId,
         spec: TaskConfig,
-    ) -> Result<(), SupervisorError> {
+    ) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::UpdateTask {
@@ -698,29 +709,29 @@ impl SupervisorHandle {
                 reply: tx,
             })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)?
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
     }
 
-    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, SupervisorError> {
+    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::GetSnapshot { reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
         self.live_tx.subscribe()
     }
 
-    pub async fn shutdown(&self) -> Result<(), SupervisorError> {
+    pub async fn shutdown(&self) -> Result<(), OrchestratorError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::Shutdown { reply: tx })
             .await
-            .map_err(|_| SupervisorError::ChannelClosed)?;
-        rx.await.map_err(|_| SupervisorError::ChannelClosed)
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
     }
 }

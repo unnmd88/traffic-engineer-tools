@@ -27,14 +27,14 @@ impl Generation {
     }
 }
 
-/// Команда супервизора воркеру: только управление темпом, не состояние задачи.
+/// Команда оркестратора воркеру: только управление темпом, не состояние задачи.
 #[derive(Debug)]
 pub enum WorkerCmd {
     Pause,
     Resume,
 }
 
-/// Отчёт воркера супервизору. `generation` позволяет супервизору отбросить
+/// Отчёт воркера оркестратору. `generation` позволяет оркестратору отбросить
 /// отчёт от уже неактуального воркера (пересоздан или убит, а отчёт в очереди).
 #[derive(Debug)]
 pub enum WorkerReport {
@@ -67,6 +67,11 @@ pub enum WorkerReport {
         reason: String,
     },
     PollPanicked {
+        task_id: TaskId,
+        generation: Generation,
+        reason: String,
+    },
+    WorkerPanicked {
         task_id: TaskId,
         generation: Generation,
         reason: String,
@@ -118,6 +123,11 @@ impl WorkerReport {
                 generation,
                 ..
             }
+            | Self::WorkerPanicked {
+                task_id,
+                generation,
+                ..
+            }
             | Self::Paused {
                 task_id,
                 generation,
@@ -130,10 +140,6 @@ impl WorkerReport {
     }
 }
 
-/// Воркер: маленький state machine `опрашивает / на паузе`.
-/// Держит адаптер, опрашивает по таймеру, слушает команды Pause/Resume
-/// и докладывает факты. На терминальном исходе (fatal/таймаут/паника) —
-/// отчёт и выход; респавн решает супервизор.
 pub struct Worker {
     task_id: TaskId,
     generation: Generation,
@@ -165,7 +171,22 @@ impl Worker {
         }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(self) {
+        let task_id = self.task_id;
+        let generation = self.generation;
+        let report_tx = self.report_tx.clone();
+        if let Err(panic) = AssertUnwindSafe(self.run_inner()).catch_unwind().await {
+            let _ = report_tx
+                .send(WorkerReport::WorkerPanicked {
+                    task_id,
+                    generation,
+                    reason: panic_message(panic),
+                })
+                .await;
+        }
+    }
+
+    async fn run_inner(mut self) {
         let attempt = self.poll.attempt();
 
         let built = AssertUnwindSafe(tokio::time::timeout(
@@ -280,10 +301,12 @@ impl Worker {
                 Some(cmd) = self.cmd_rx.recv() => match cmd {
                     WorkerCmd::Pause => {
                         paused = true;
-                        let _ = self.report_tx.send(WorkerReport::Paused {
+                        if self.report_tx.send(WorkerReport::Paused {
                             task_id: self.task_id,
                             generation: self.generation,
-                        }).await;
+                        }).await.is_err() {
+                            return ;
+                        };
                     }
                     WorkerCmd::Resume => {}
                 },
