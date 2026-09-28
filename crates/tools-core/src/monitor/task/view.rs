@@ -3,13 +3,12 @@ use tokio::time::Duration;
 
 use crate::{
     monitor::{
-        adapter::AdapterOutput,
+        adapter::{AdapterOutput, Query},
         task::{SpecRevision, TaskId, TaskStatus, task::Health},
     },
-    polling::{Metrics, Response},
+    polling::{AttemptConfig, Metrics, Response},
 };
 
-/// Неизменяемое представление одной задачи для интерфейса (read-model).
 #[derive(Debug, Clone)]
 pub struct TaskView {
     pub id: TaskId,
@@ -19,6 +18,9 @@ pub struct TaskView {
     pub status: TaskStatus,
     pub interval: Duration,
     pub limit: u64,
+    pub query: Query,
+    pub attempt: AttemptConfig,
+    pub deep_history: u8,
     pub metrics: Metrics,
     pub result: Option<Response<AdapterOutput>>,
     pub history: Vec<HistoryEntryView>,
@@ -31,7 +33,6 @@ pub struct HistoryEntryView {
     pub result: Option<Response<AdapterOutput>>,
 }
 
-/// Полный снапшот монитора задач.
 #[derive(Debug, Clone)]
 pub struct MonitorSnapshot {
     pub tasks: Vec<TaskView>,
