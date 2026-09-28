@@ -4,7 +4,7 @@ use crate::monitor::formatters::constants::{LINE_DOTTED_LN, LINE_THIN_LN};
 
 use super::format_oids;
 use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::adapter::AdapterOutput;
+use tools_core::monitor::adapter::{AdapterOutput, Query, SnmpGetQuery};
 use tools_core::monitor::task::{MonitorSnapshot, TaskId, TaskView};
 use tools_core::polling::Response;
 
@@ -24,12 +24,30 @@ fn format_task(view: &TaskView) -> String {
     let mut output = String::new();
 
     // Metadata
-    output.push_str(&format!("{} [ID: {}]  Target: {}\n", view.name, view.id, view.target,));
+    output.push_str(&format!("Name: '{}' | Target: {}\n", view.name, view.target,));
+
+    let meta = match &view.query {
+        Query::SnmpGet(q) => {
+            let _ = q
+                .profile
+                .as_ref()
+                .map(|p| output.push_str(&format!("Profile: {} | ", p.to_string())));
+            let _ = output.push_str(&format!("Oids to request:\n"));
+            for oid in q.oids.iter() {
+                output.push_str(&format!(" - {}", oid.oid));
+                if let Some(n) = &oid.name {
+                    output.push_str(&format!("[{n}]"));
+                }
+                output.push('\n');
+            }
+        }
+        _ => {}
+    };
 
     let limit = match view.limit {
-        0 => "infinity".to_string(),
+        0 => "no limit".to_string(),
         _ => format!(
-            "{}({} remained)",
+            "{}(remained {})",
             view.limit,
             view.limit.saturating_sub(view.metrics.total_attempts)
         ),
@@ -37,7 +55,7 @@ fn format_task(view: &TaskView) -> String {
 
     output.push_str(&format!("Interval: {} Limit: {limit}\n", view.interval.as_secs()));
 
-    output.push_str(LINE_THIN_LN);
+    //output.push_str(LINE_THIN_LN);
 
     // Metrics
     let latency = if view.metrics.successful > 0 {
@@ -51,7 +69,7 @@ fn format_task(view: &TaskView) -> String {
         "n/a".to_string()
     };
     output.push_str(&format!(
-        "Status: {}\nRequests: {} (✓{} ✗{})  |  Latency: {}\n",
+        "Status: {}\nRequests: {} (success: {} failed: {})  |  Latency: {}\n",
         view.status,
         view.metrics.total_attempts,
         view.metrics.successful,
@@ -61,7 +79,7 @@ fn format_task(view: &TaskView) -> String {
 
     // History
     if !view.history.is_empty() {
-        output.push_str(&format!("History: {}\n", view.history.len()));
+        output.push_str(&format!("Previous(history):{}\n", view.history.len()));
         for h in &view.history {
             output.push_str(&format!(
                 "{} {}\n",

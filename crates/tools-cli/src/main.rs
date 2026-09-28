@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
                     let max = max(max_t, start.elapsed().as_micros());
 
                     println!(
-                        "{LINE_DOUBLE_LN}\nMonitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
+                        "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
                         format_snapshot(&dashboard)
                     );
                 }
