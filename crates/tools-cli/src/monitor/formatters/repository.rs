@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::monitor::formatters::constants::{LINE_DOTTED_LN, LINE_THIN_LN};
 
 use super::format_oids;
 use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::adapter::{AdapterOutput, Query, SnmpGetQuery};
-use tools_core::monitor::task::{MonitorSnapshot, TaskId, TaskView};
+use tools_core::monitor::adapter::{AdapterOutput, Query};
+use tools_core::monitor::task::{TaskId, TaskView};
 use tools_core::polling::Response;
 
 pub fn format_snapshot(tasks: &BTreeMap<TaskId, TaskView>) -> String {
@@ -26,23 +26,19 @@ fn format_task(view: &TaskView) -> String {
     // Metadata
     output.push_str(&format!("Name: '{}' | Target: {}\n", view.name, view.target,));
 
-    let meta = match &view.query {
-        Query::SnmpGet(q) => {
-            let _ = q
-                .profile
-                .as_ref()
-                .map(|p| output.push_str(&format!("Profile: {} | ", p.to_string())));
-            let _ = output.push_str(&format!("Oids to request:\n"));
-            for oid in q.oids.iter() {
-                output.push_str(&format!(" - {}", oid.oid));
-                if let Some(n) = &oid.name {
-                    output.push_str(&format!("[{n}]"));
-                }
-                output.push('\n');
-            }
+    if let Query::SnmpGet(q) = &view.query {
+        if let Some(p) = &q.profile {
+            output.push_str(&format!("Profile: {} | ", p.to_string()));
         }
-        _ => {}
-    };
+        output.push_str("Oids to request:\n");
+        for oid in &q.oids {
+            output.push_str(&format!(" - {}", oid.oid));
+            if let Some(n) = &oid.name {
+                output.push_str(&format!("[{n}]"));
+            }
+            output.push('\n');
+        }
+    }
 
     let limit = match view.limit {
         0 => "no limit".to_string(),
@@ -79,7 +75,7 @@ fn format_task(view: &TaskView) -> String {
 
     // History
     if !view.history.is_empty() {
-        output.push_str(&format!("Previous(history):{}\n", view.history.len()));
+        output.push_str(&format!("History: {}\n", view.history.len()));
         for h in &view.history {
             output.push_str(&format!(
                 "{} {}\n",
