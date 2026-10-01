@@ -33,3 +33,13 @@ pub fn as_u64(value: &SnmpValue) -> Result<BusinessValue, ParseError> {
     })?;
     Ok(BusinessValue::Unsigned64(v))
 }
+
+pub fn octet_string_as_utf8_lossy(value: &SnmpValue) -> Result<BusinessValue, ParseError> {
+    let bytes = value.as_bytes().ok_or(ParseError::Common {
+        message: "snmp-oid value is empty".to_string(),
+    })?;
+
+    let string = String::from_utf8_lossy(bytes).into_owned();
+
+    Ok(BusinessValue::Text(string))
+}

@@ -8,6 +8,7 @@ use crate::snmp::{
     oid::SnmpOid,
     oid_metadata::OidMetadata,
     registry::oids::{
+        POTOK_UG405_FIRMWARE_VERSION, POTOK_UG405_GROUPS_STATE_FROM1_TO66,
         POTOKS_UTC_TRAFFTECH_PHASE_STATUS_METADATA, SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_METADATA,
         SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA, UTC_CONTROL_FN_METADATA,
         UTC_CONTROL_TO_METADATA, UTC_REPLY_GN_UG405_METADATA, UTC_REPLY_SITE_ID_POTOK_METADATA,
@@ -39,6 +40,8 @@ impl SnmpProfile {
                 UTC_TYPE2_OPERATION_MODE_METADATA,
                 UTC_CONTROL_TO_METADATA,
                 UTC_CONTROL_FN_METADATA,
+                POTOK_UG405_FIRMWARE_VERSION,
+                POTOK_UG405_GROUPS_STATE_FROM1_TO66,
             ],
             Self::PotokUtmc => &[],
             Self::SignalSxtp => &[],

@@ -17,24 +17,20 @@ use crate::{
         builders::encode_by_type,
         oid::SnmpOid,
         oid_metadata::OidKind,
-        parsers::OidValueParserFn,
+        parsers::OidValueDisplayFn,
         profiles::SnmpProfile,
         site_id::fetch_site_id_potok_ug405,
         value::{SnmpValue, SnmpValueType},
     },
 };
 
-/// План GET-элемента: OID (после резолюции — полный инстанс), имя и парсер.
-/// До резолюции `parser` пуст, резолвер заполняет его из реестра профиля.
 #[derive(Debug, Clone)]
 pub struct SnmpGetItem {
     pub oid: SnmpOid,
     pub name: Option<String>,
-    pub parser: Option<OidValueParserFn>,
+    pub parser: Option<OidValueDisplayFn>,
 }
 
-/// План SET-элемента: OID и значение уже готовы к отправке (резолвер только
-/// достраивает OID).
 #[derive(Debug, Clone)]
 pub struct SnmpSetItem {
     pub name: Option<String>,
@@ -156,7 +152,7 @@ impl Resolver {
                 .or_else(|| metadata.as_ref().map(|m| m.name.to_string()));
             item.parser = item
                 .parser
-                .or_else(|| metadata.as_ref().and_then(|m| m.parser));
+                .or_else(|| metadata.as_ref().and_then(|m| m.display));
             resolved.push(item);
         }
 

@@ -2,26 +2,27 @@ use crate::snmp::{
     builders::{to_i32, to_stage_u405, to_stage_val_swarco_8stages},
     oid_metadata::{AccessType, OidKind, OidMetadata},
     parsers::{
-        parse_ug405_stage, site_id_ug405_potok,
+        group_state_potok::group_state_from1_to66_potok_ug405,
+        octet_string_as_utf8_lossy, parse_ug405_stage, site_id_ug405_potok,
         stage_stcip::{parse_stcip_stage_potok, parse_stcip_stage_swarco},
     },
     registry::{
         SET_STAGE_ALIASES, STAGE_ALIASES,
-        oids::{OPERATION_MODE_ALIASES, TO_BIT_ALIASES},
+        oids::{FIRMWARE_VERSION, GROUP_STATE, OPERATION_MODE_ALIASES, TO_BIT_ALIASES},
     },
     value::SnmpValueType,
 };
 
 /// utcReplySiteID for Potok — колонка с фикс. индексом 0, OID уже полный.
 pub const UTC_REPLY_SITE_ID_POTOK_METADATA: OidMetadata = OidMetadata {
-    oid: "1.3.6.1.4.1.13267.3.2.5.1.1.2.0",
+    oid: "1.3.6.1.4.1.13267.3.2.5.1.1.2",
     name: "utcReplySiteID",
     aliases: &["scn"],
     description: "Identifies which, of possibly several, equipment at this site the\nobject should be applied to. The format is a Free Text ASCII String\nTypically this could be an SCN, IP address, or a number. Potok use only index 0",
-    kind: OidKind::Exact,
+    kind: OidKind::Scalar,
     access: AccessType::ReadOnly,
     syntax: SnmpValueType::OctetString,
-    parser: Some(site_id_ug405_potok),
+    display: Some(site_id_ug405_potok),
     builder: None,
 };
 
@@ -34,7 +35,7 @@ pub const UTC_REPLY_GN_UG405_METADATA: OidMetadata = OidMetadata {
     kind: OidKind::ScnIndexed,
     access: AccessType::ReadOnly,
     syntax: SnmpValueType::OctetString,
-    parser: Some(parse_ug405_stage),
+    display: Some(parse_ug405_stage),
     builder: None,
 };
 
@@ -47,7 +48,7 @@ pub const UTC_REPLY_GN_UTMC_METADATA: OidMetadata = OidMetadata {
     kind: OidKind::Exact,
     access: AccessType::ReadOnly,
     syntax: SnmpValueType::OctetString,
-    parser: Some(parse_ug405_stage),
+    display: Some(parse_ug405_stage),
     builder: None,
 };
 
@@ -60,7 +61,7 @@ pub const SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA: OidMetadata = OidMetadata 
     access: AccessType::ReadOnly,
     syntax: SnmpValueType::Unsigned32,
     kind: OidKind::Scalar,
-    parser: Some(parse_stcip_stage_swarco),
+    display: Some(parse_stcip_stage_swarco),
     builder: None,
 };
 
@@ -73,7 +74,7 @@ pub const SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_METADATA: OidMetadata = OidMetadata
     access: AccessType::ReadWrite,
     syntax: SnmpValueType::Unsigned32,
     kind: OidKind::Scalar,
-    parser: None,
+    display: None,
     builder: Some(to_stage_val_swarco_8stages),
 };
 
@@ -86,7 +87,7 @@ pub const POTOKS_UTC_TRAFFTECH_PHASE_STATUS_METADATA: OidMetadata = OidMetadata 
     access: AccessType::ReadOnly,
     syntax: SnmpValueType::Unsigned32,
     kind: OidKind::Scalar,
-    parser: Some(parse_stcip_stage_potok),
+    display: Some(parse_stcip_stage_potok),
     builder: None,
 };
 
@@ -99,7 +100,7 @@ pub const UTC_TYPE2_OPERATION_MODE_METADATA: OidMetadata = OidMetadata {
     access: AccessType::ReadWrite,
     syntax: SnmpValueType::Integer,
     kind: OidKind::Scalar,
-    parser: None,
+    display: None,
     builder: Some(to_i32),
 };
 
@@ -112,7 +113,7 @@ pub const UTC_CONTROL_TO_METADATA: OidMetadata = OidMetadata {
     access: AccessType::ReadWrite,
     syntax: SnmpValueType::Integer,
     kind: OidKind::ScnIndexed,
-    parser: None,
+    display: None,
     builder: Some(to_i32),
 };
 
@@ -125,6 +126,70 @@ pub const UTC_CONTROL_FN_METADATA: OidMetadata = OidMetadata {
     access: AccessType::ReadWrite,
     syntax: SnmpValueType::OctetString,
     kind: OidKind::ScnIndexed,
-    parser: Some(parse_ug405_stage),
+    display: Some(parse_ug405_stage),
     builder: Some(to_stage_u405),
+};
+
+/// potokFirmwareVersion
+pub const POTOK_UG405_FIRMWARE_VERSION: OidMetadata = OidMetadata {
+    oid: "1.3.6.1.4.1.13267.3.2.1.2",
+    name: "potokFirmwareVersion",
+    aliases: FIRMWARE_VERSION,
+    description: "Получение версии.",
+    access: AccessType::ReadOnly,
+    syntax: SnmpValueType::OctetString,
+    kind: OidKind::Scalar,
+    display: Some(octet_string_as_utf8_lossy),
+    builder: None,
+};
+
+/// potokFirmwareVersion
+pub const POTOK_UG405_GROUPS_STATE_FROM1_TO66: OidMetadata = OidMetadata {
+    oid: "1.3.6.1.4.1.13267.3.2.5.1.1.3.2.1",
+    name: "potokGroupStateFrom1To66",
+    aliases: GROUP_STATE,
+    description: "Возвращает байтовое значение
+сигнальных групп с 1 по 65.
+Позиция байта отвечает за номер
+сигнальной группы.
+Соответствие цветов байтам:
+OFF
+ = 0
+RED_AMBER
+ = 1
+RED
+ = 2
+GREEN
+ = 3
+GREEN_FLASH
+ = 4
+AMBER
+ = 5
+AMBER_FLASH
+ = 6
+ARROW_RED_AMBER = 7
+ARROW_RED
+ = 8
+ARROW_GREEN
+ = 9
+ARROW_GREEN_FLASH = 10
+ARROW_AMBER
+ = 11
+ARROW_FLASH_RED_AMBER = 13
+ARROW_FLASH_RED
+ = 14
+ARROW_FLASH_GREEN
+ = 15
+ARROW_FLASH_GREEN_FLASH = 16
+ARROW_FLASH_AMBER
+ = 17
+ARROW
+ = 21
+ARROW_FLASH
+ = 22",
+    access: AccessType::ReadOnly,
+    syntax: SnmpValueType::OctetString,
+    kind: OidKind::ScnIndexed,
+    display: Some(group_state_from1_to66_potok_ug405),
+    builder: None,
 };

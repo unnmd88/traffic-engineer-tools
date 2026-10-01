@@ -11,6 +11,7 @@ pub use resolve::{Resolver, SnmpGetItem, SnmpSetItem, encode_set_value};
 pub mod builders;
 pub mod business_value;
 pub mod community;
+pub mod group_state_potok_ug405;
 pub mod oid;
 pub mod oid_metadata;
 pub mod profiles;

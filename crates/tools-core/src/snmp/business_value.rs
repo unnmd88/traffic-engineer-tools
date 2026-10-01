@@ -2,7 +2,10 @@ use std::fmt::{self, Display, Formatter, write};
 
 use tokio::time::error::Elapsed;
 
-use crate::stage::Stage;
+use crate::{
+    snmp::group_state_potok_ug405::{GroupState, GroupStatePotokUg405},
+    stage::Stage,
+};
 
 #[derive(Debug, Clone)]
 pub enum BusinessValue {
@@ -14,6 +17,7 @@ pub enum BusinessValue {
     Flags { bits: Vec<bool> },
     Text(String),
     SiteId { bytes: Vec<u8> },
+    GroupStatePotokUg405 { groups: Vec<GroupStatePotokUg405> },
 }
 
 impl Display for BusinessValue {
@@ -30,6 +34,27 @@ impl Display for BusinessValue {
             }
             Self::Text(s) => write!(f, "{s}"),
             Self::SiteId { bytes } => write!(f, "{}", String::from_utf8_lossy(&bytes)),
+            Self::GroupStatePotokUg405 { groups } => {
+                //write!(f, "\n")?;
+                for g in groups.iter() {
+                    write!(f, "\n")?;
+                    let num_group = g.num_group();
+                    match g.state() {
+                        Some(s) => {
+                            let (group, arrow) = s.split_state();
+                            write!(f, "G{num_group}={group} → A={arrow}")?;
+                        }
+                        None => {
+                            write!(
+                                f,
+                                "Group № {num_group}: unexpected state code {}",
+                                g.source_code()
+                            )?;
+                        }
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
