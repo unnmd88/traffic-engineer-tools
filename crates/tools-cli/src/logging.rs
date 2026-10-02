@@ -1,10 +1,7 @@
-use tracing_appender::{
-    non_blocking::WorkerGuard,
-    rolling::{RollingFileAppender, Rotation},
-};
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Инициализирует логирование в файл (с ежедневной ротацией).
+/// Инициализирует логирование в файл.
 ///
 /// # Аргументы
 /// * `log_dir` - директория для логов (например, "logs")
@@ -31,12 +28,3 @@ pub fn init_file_logging(log_dir: &str, file_prefix: &str) -> anyhow::Result<Wor
     Ok(guard)
 }
 
-/// Инициализирует логирование в консоль.
-///
-/// # Пример
-/// ```
-/// init_console_logging();
-/// ```
-pub fn init_console_logging() {
-    tracing_subscriber::fmt::init();
-}

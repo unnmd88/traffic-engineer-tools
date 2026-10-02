@@ -13,17 +13,9 @@ impl ScnResult {
     pub fn as_pretty_string(&self) -> String {
         format!("Ввод={:?}\nScn={:?}\nЗакодированный Scn={}", self.input, self.decoded, self.scn)
     }
-
-    pub fn as_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self)
-    }
-
-    pub fn as_json_pretty(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string_pretty(&self)
-    }
 }
 
-pub async fn run_from_string(input: String) -> Result<ScnResult> {
+pub fn run_from_string(input: String) -> Result<ScnResult> {
     let engine = Scn::from_str(&input)?;
 
     Ok(ScnResult {
@@ -33,7 +25,7 @@ pub async fn run_from_string(input: String) -> Result<ScnResult> {
     })
 }
 
-pub async fn run_from_scn(input: String) -> Result<ScnResult> {
+pub fn run_from_scn(input: String) -> Result<ScnResult> {
     let engine = Scn::from_scn_index(&input)?;
 
     Ok(ScnResult {

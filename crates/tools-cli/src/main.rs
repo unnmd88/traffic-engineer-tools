@@ -1,13 +1,9 @@
-use std::{
-    cmp::max,
-    collections::{BTreeMap, HashMap},
-};
+use std::collections::BTreeMap;
 
 use chrono::Local;
 use clap::Parser;
 mod cli;
 use cli::Cli;
-use tokio::time::Instant;
 use tools_core::{
     DT_FMT,
     monitor::{
@@ -15,7 +11,6 @@ use tools_core::{
         task::{TaskId, TaskView},
     },
 };
-use tracing::{error, info};
 mod logging;
 mod monitor;
 mod scn;
@@ -29,13 +24,6 @@ use crate::{
     },
 };
 
-use crossterm::{
-    cursor::MoveTo,
-    execute,
-    terminal::{Clear, ClearType},
-};
-use std::io::stdout;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -45,12 +33,10 @@ async fn main() -> anyhow::Result<()> {
     let log_dir_str = log_dir.to_str().expect("Invalid log directory path");
     let _guard = init_file_logging(log_dir_str, "traffic")?;
 
-    tracing::info!("Logger initialized successfully!");
-
     match cli.command {
         cli::Commands::Poll { config } => {
             let content = std::fs::read_to_string(config)?;
-            let mut app = AppBuilder::from_yaml(&content).await?;
+            let app = AppBuilder::from_yaml(&content).await?;
             let mut rx = app.subscribe();
 
             let app_created_at = Local::now();
@@ -59,7 +45,6 @@ async fn main() -> anyhow::Result<()> {
             let mut dashboard: BTreeMap<TaskId, TaskView> = BTreeMap::new();
 
             tokio::spawn(async move {
-                //let app = app_builder.start().await?;
                 let monitor_id = app.id().clone();
 
                 let snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
@@ -67,20 +52,21 @@ async fn main() -> anyhow::Result<()> {
                     dashboard.insert(t.id, t);
                 }
 
-                let mut max_t = 0;
-
                 while let Ok(ev) = rx.recv().await {
-                    let start = Instant::now();
                     match ev {
                         MonitorEvent::TaskChanged {
                             task_id,
-                            kind,
+                            kind: _,
                             view,
-                            at,
+                            at: _,
                         } => {
                             dashboard.insert(task_id, view);
                         }
-                        MonitorEvent::TaskRemoved { task_id, view, at } => {
+                        MonitorEvent::TaskRemoved {
+                            task_id,
+                            view: _,
+                            at: _,
+                        } => {
                             dashboard.remove(&task_id);
                         }
                     }
@@ -88,8 +74,6 @@ async fn main() -> anyhow::Result<()> {
                     let uptime = Local::now() - app_created_at;
                     let minutes = uptime.num_minutes();
                     let seconds = uptime.num_seconds() % 60;
-
-                    let max = max(max_t, start.elapsed().as_micros());
 
                     println!(
                         "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {minutes}m {seconds}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
@@ -103,14 +87,13 @@ async fn main() -> anyhow::Result<()> {
         }
 
         cli::Commands::ToScn { input, output } => {
-            let res = scn::run_from_string(input).await?;
+            let res = scn::run_from_string(input)?;
             let _ = print_output(output, &res.as_pretty_string(), &res)?;
         }
         cli::Commands::FromScn { input, output } => {
-            let res = scn::run_from_scn(input).await?;
+            let res = scn::run_from_scn(input)?;
             let _ = print_output(output, &res.as_pretty_string(), &res)?;
         }
-        _ => {}
     }
 
     Ok(())
@@ -134,17 +117,4 @@ fn clear_screen() -> std::io::Result<()> {
     use std::io::stdout;
     execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
 }
-/*
-fn clear_screen2() {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(&["/c", "cls"])
-            .status();
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = std::process::Command::new("clear").status();
-    }
-}
-*/
+
