@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::Serialize;
-use tools_core::ascii::Ascii;
+use tools_core::scn::Scn;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ScnResult {
@@ -24,7 +24,7 @@ impl ScnResult {
 }
 
 pub async fn run_from_string(input: String) -> Result<ScnResult> {
-    let engine = Ascii::from_str(&input)?;
+    let engine = Scn::from_str(&input)?;
 
     Ok(ScnResult {
         input,
@@ -34,7 +34,7 @@ pub async fn run_from_string(input: String) -> Result<ScnResult> {
 }
 
 pub async fn run_from_scn(input: String) -> Result<ScnResult> {
-    let engine = Ascii::parse_scn_index(&input)?;
+    let engine = Scn::from_scn_index(&input)?;
 
     Ok(ScnResult {
         input,

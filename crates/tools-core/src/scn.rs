@@ -2,7 +2,7 @@ use thiserror::Error;
 
 /// Ошибка работы с ASCII/SCN-строками.
 #[derive(Debug, Clone, Error)]
-pub enum AsciiError {
+pub enum ScnError {
     #[error("String is empty")]
     Empty,
     #[error("Contains non-ASCII characters: {0:?}")]
@@ -34,10 +34,10 @@ pub enum AsciiError {
 ///
 /// ## Создание из строки
 /// ```
-/// use tools_core::Ascii;
+/// use tools_core::Scn;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let s = Ascii::from_str("ABC")?;
+/// let s = Scn::from_str("ABC")?;
 /// assert_eq!(s.as_str(), "ABC");
 /// assert_eq!(s.as_bytes(), &[65, 66, 67]);
 /// # Ok(())
@@ -46,10 +46,10 @@ pub enum AsciiError {
 ///
 /// ## Создание из байт
 /// ```
-/// use tools_core::Ascii;
+/// use tools_core::Scn;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let s = Ascii::from_bytes(&[65, 66, 67])?;
+/// let s = Scn::from_bytes(&[65, 66, 67])?;
 /// assert_eq!(s.as_str(), "ABC");
 /// # Ok(())
 /// # }
@@ -57,22 +57,22 @@ pub enum AsciiError {
 ///
 /// ## Парсинг разных форматов
 /// ```
-/// use tools_core::Ascii;
+/// use tools_core::Scn;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let s1 = Ascii::parse_dotted("65.66.67")?;
-/// let s2 = Ascii::parse_utc_index(".1.3.65.66.67")?;
+/// let s1 = Scn::from_dotted("65.66.67")?;
+/// let s2 = Scn::from_utc_index(".1.3.65.66.67")?;
 /// assert_eq!(s1, s2);
 /// assert_eq!(s1.as_str(), "ABC");
 /// # Ok(())
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Ascii {
+pub struct Scn {
     s: String,
 }
 
-impl Ascii {
+impl Scn {
     /// Создает ASCII строку из обычной строки.
     ///
     /// # Валидация
@@ -81,34 +81,34 @@ impl Ascii {
     /// 3. Проверяет, что все символы - ASCII
     ///
     /// # Ошибки
-    /// - `AsciiError::Empty` - если после обрезки строка пустая
-    /// - `AsciiError::NonAsciiCharacters` - если есть не-ASCII символы
+    /// - `ScnError::Empty` - если после обрезки строка пустая
+    /// - `ScnError::NonAsciiCharacters` - если есть не-ASCII символы
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// // Пробелы по краям будут обрезаны
-    /// let s = Ascii::from_str("  CO4500  ")?;
+    /// let s = Scn::from_str("  CO4500  ")?;
     /// assert_eq!(s.as_str(), "CO4500");
     ///
     /// // Не-ASCII символы вызовут ошибку
-    /// assert!(Ascii::from_str("Привет").is_err());
+    /// assert!(Scn::from_str("Привет").is_err());
     /// # Ok(())
     /// # }
     /// ```
-    pub fn from_str(s: &str) -> Result<Self, AsciiError> {
+    pub fn from_str(s: &str) -> Result<Self, ScnError> {
         let trimmed = s.trim();
 
         if trimmed.is_empty() {
-            return Err(AsciiError::Empty);
+            return Err(ScnError::Empty);
         }
 
         let non_ascii: Vec<char> = trimmed.chars().filter(|c| !c.is_ascii()).collect();
 
         if !non_ascii.is_empty() {
-            return Err(AsciiError::NonAsciiCharacters(non_ascii));
+            return Err(ScnError::NonAsciiCharacters(non_ascii));
         }
 
         Ok(Self {
@@ -123,36 +123,36 @@ impl Ascii {
     /// 2. Проверяет, что все байты - ASCII
     ///
     /// # Ошибки
-    /// - `AsciiError::Empty` - если массив пустой
-    /// - `AsciiError::NonAsciiCharacters` - если есть не-ASCII байты
+    /// - `ScnError::Empty` - если массив пустой
+    /// - `ScnError::NonAsciiCharacters` - если есть не-ASCII байты
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_bytes(b"ABC")?;
+    /// let s = Scn::from_bytes(b"ABC")?;
     /// assert_eq!(s.as_str(), "ABC");
     /// assert_eq!(s.as_bytes(), &[65, 66, 67]);
     ///
     /// // Управляющие символы тоже ASCII
-    /// let s = Ascii::from_bytes(b"\n\tABC")?;
+    /// let s = Scn::from_bytes(b"\n\tABC")?;
     /// assert_eq!(s.as_str(), "\n\tABC");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AsciiError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ScnError> {
         // Пустой массив недопустим
         if bytes.is_empty() {
-            return Err(AsciiError::Empty);
+            return Err(ScnError::Empty);
         }
 
-        let s = std::str::from_utf8(bytes).map_err(|_| AsciiError::InvalidFormat)?;
+        let s = std::str::from_utf8(bytes).map_err(|_| ScnError::InvalidFormat)?;
 
         let non_ascii: Vec<char> = s.chars().filter(|c| !c.is_ascii()).collect();
 
         if !non_ascii.is_empty() {
-            return Err(AsciiError::NonAsciiCharacters(non_ascii));
+            return Err(ScnError::NonAsciiCharacters(non_ascii));
         }
 
         Ok(Self { s: s.to_string() })
@@ -160,10 +160,10 @@ impl Ascii {
 
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert_eq!(s.as_str(), "ABC");
     /// # Ok(())
     /// # }
@@ -174,10 +174,10 @@ impl Ascii {
 
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert_eq!(s.as_bytes(), &[65, 66, 67]);
     /// # Ok(())
     /// # }
@@ -190,10 +190,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert_eq!(s.len(), 3);
     /// # Ok(())
     /// # }
@@ -210,10 +210,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert_eq!(s.to_dotted(), "65.66.67");
     /// # Ok(())
     /// # }
@@ -233,10 +233,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert_eq!(s.to_scn_index(), "3.65.66.67");
     /// # Ok(())
     /// # }
@@ -255,10 +255,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert_eq!(s.to_utc_index(), ".1.3.65.66.67");
     /// # Ok(())
     /// # }
@@ -271,10 +271,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert_eq!(s.to_delimited(","), "65,66,67");
     /// assert_eq!(s.to_delimited("-"), "65-66-67");
     /// # Ok(())
@@ -290,27 +290,27 @@ impl Ascii {
 
     /// Парсит строку с кодами через точку.
     ///
-    /// Формат: `"65.66.67"` → `Ascii("ABC")`
+    /// Формат: `"65.66.67"` → `Scn("ABC")`
     ///
     /// # Ошибки
-    /// - `AsciiError::Empty` - если строка пустая
-    /// - `AsciiError::InvalidFormat` - если есть пустые части (например, "65..67")
-    /// - `AsciiError::InvalidCode` - если код не число или вне диапазона 0-255
+    /// - `ScnError::Empty` - если строка пустая
+    /// - `ScnError::InvalidFormat` - если есть пустые части (например, "65..67")
+    /// - `ScnError::InvalidCode` - если код не число или вне диапазона 0-255
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::parse_dotted("65.66.67")?;
+    /// let s = Scn::from_dotted("65.66.67")?;
     /// assert_eq!(s.as_str(), "ABC");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn parse_dotted(s: &str) -> Result<Self, AsciiError> {
+    pub fn from_dotted(s: &str) -> Result<Self, ScnError> {
         // Пустая строка - ошибка
         if s.is_empty() {
-            return Err(AsciiError::Empty);
+            return Err(ScnError::Empty);
         }
 
         // Разбиваем по точке
@@ -321,18 +321,18 @@ impl Ascii {
         for part in parts {
             // Пустая часть - ошибка формата (например, "65..67")
             if part.is_empty() {
-                return Err(AsciiError::InvalidFormat);
+                return Err(ScnError::InvalidFormat);
             }
 
             // Парсим как u8 (0-255)
             let byte: u8 = part
                 .parse()
-                .map_err(|_| AsciiError::InvalidCode(part.to_string()))?;
+                .map_err(|_| ScnError::InvalidCode(part.to_string()))?;
 
             bytes.push(byte);
         }
 
-        // Создаем Ascii из байт
+        // Создаем Scn из байт
         Self::from_bytes(&bytes)
     }
 
@@ -340,28 +340,28 @@ impl Ascii {
     ///
     /// Это «чистая» кодировка SCN (без timestamp-префикса).
     ///
-    /// Пример: `"3.65.66.67"` → `Ascii("ABC")`.
+    /// Пример: `"3.65.66.67"` → `Scn("ABC")`.
     ///
     /// # Ошибки
-    /// - `AsciiError::Empty` - если строка пустая
-    /// - `AsciiError::InvalidFormat` - если формат не соответствует
-    /// - `AsciiError::InvalidLength` - если длина не число
-    /// - `AsciiError::LengthMismatch` - если длина не совпадает с количеством кодов
+    /// - `ScnError::Empty` - если строка пустая
+    /// - `ScnError::InvalidFormat` - если формат не соответствует
+    /// - `ScnError::InvalidLength` - если длина не число
+    /// - `ScnError::LengthMismatch` - если длина не совпадает с количеством кодов
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::parse_scn_index("3.65.66.67")?;
+    /// let s = Scn::from_scn_index("3.65.66.67")?;
     /// assert_eq!(s.as_str(), "ABC");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn parse_scn_index(s: &str) -> Result<Self, AsciiError> {
+    pub fn from_scn_index(s: &str) -> Result<Self, ScnError> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
-            return Err(AsciiError::Empty);
+            return Err(ScnError::Empty);
         }
 
         // "3.65.66.67" → ["3", "65", "66", "67"]
@@ -369,63 +369,63 @@ impl Ascii {
 
         // Минимум: длина + хотя бы один код
         if parts.len() < 2 {
-            return Err(AsciiError::InvalidFormat);
+            return Err(ScnError::InvalidFormat);
         }
 
         // Парсим ожидаемую длину
         let expected_len: usize = parts[0]
             .parse()
-            .map_err(|_| AsciiError::InvalidLength(parts[0].to_string()))?;
+            .map_err(|_| ScnError::InvalidLength(parts[0].to_string()))?;
 
         let mut bytes = Vec::with_capacity(expected_len);
         for part in &parts[1..] {
             if part.is_empty() {
-                return Err(AsciiError::InvalidFormat);
+                return Err(ScnError::InvalidFormat);
             }
 
             let byte: u8 = part
                 .parse()
-                .map_err(|_| AsciiError::InvalidCode(part.to_string()))?;
+                .map_err(|_| ScnError::InvalidCode(part.to_string()))?;
             bytes.push(byte);
         }
 
         if bytes.len() != expected_len {
-            return Err(AsciiError::LengthMismatch {
+            return Err(ScnError::LengthMismatch {
                 expected: expected_len,
                 actual: bytes.len(),
             });
         }
 
-        // Создаем Ascii из байт
+        // Создаем Scn из байт
         Self::from_bytes(&bytes)
     }
 
     /// Парсит полный индексный суффикс UTC-таблицы: `.1.{длина}.{коды_через_точку}`.
     ///
     /// `.1` — `utcType2TimeStamp` со значением «now»; после него идёт SCN как
-    /// OCTET-STRING-индекс (см. [`parse_scn_index`]). Вход `".1.3.65.66.67"`
-    /// даёт `Ascii("ABC")`.
+    /// OCTET-STRING-индекс (см. [`from_scn_index`]). Вход `".1.3.65.66.67"`
+    /// даёт `Scn("ABC")`.
     ///
     /// # Ошибки
-    /// - `AsciiError::Empty` - если строка пустая
-    /// - `AsciiError::InvalidFormat` - если формат не соответствует
-    /// - `AsciiError::InvalidLength` - если длина не число
-    /// - `AsciiError::LengthMismatch` - если длина не совпадает с количеством кодов
+    /// - `ScnError::Empty` - если строка пустая
+    /// - `ScnError::InvalidFormat` - если формат не соответствует
+    /// - `ScnError::InvalidLength` - если длина не число
+    /// - `ScnError::LengthMismatch` - если длина не совпадает с количеством кодов
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::parse_utc_index(".1.3.65.66.67")?;
+    /// let s = Scn::from_utc_index(".1.3.65.66.67")?;
     /// assert_eq!(s.as_str(), "ABC");
     /// # Ok(())
     /// # }
     /// ```
-    pub fn parse_utc_index(s: &str) -> Result<Self, AsciiError> {
+    pub fn from_utc_index(s: &str) -> Result<Self, ScnError> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
-            return Err(AsciiError::Empty);
+            return Err(ScnError::Empty);
         }
 
         // ".1.3.65.66.67" → ["1", "3", "65", "66", "67"]
@@ -433,21 +433,21 @@ impl Ascii {
 
         // Проверяем минимальную длину и префикс utcType2TimeStamp == "now" (1)
         if parts.len() < 3 || parts[0] != "1" {
-            return Err(AsciiError::InvalidFormat);
+            return Err(ScnError::InvalidFormat);
         }
 
         // Всё, что после ".1", — это SCN-индекс: "3.65.66.67"
-        Self::parse_scn_index(&parts[1..].join("."))
+        Self::from_scn_index(&parts[1..].join("."))
     }
 
     /// Проверяет, начинается ли строка с указанного префикса.
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert!(s.starts_with("A"));
     /// assert!(!s.starts_with("B"));
     /// # Ok(())
@@ -461,10 +461,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// assert!(s.contains("B"));
     /// assert!(!s.contains("D"));
     /// # Ok(())
@@ -478,10 +478,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// let bytes: Vec<u8> = s.iter_bytes().collect();
     /// assert_eq!(bytes, vec![65, 66, 67]);
     /// # Ok(())
@@ -495,10 +495,10 @@ impl Ascii {
     ///
     /// # Пример
     /// ```
-    /// use tools_core::Ascii;
+    /// use tools_core::Scn;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let s = Ascii::from_str("ABC")?;
+    /// let s = Scn::from_str("ABC")?;
     /// let chars: Vec<char> = s.iter_chars().collect();
     /// assert_eq!(chars, vec!['A', 'B', 'C']);
     /// # Ok(())
@@ -509,66 +509,66 @@ impl Ascii {
     }
 }
 
-/// Позволяет использовать `"ABC".parse::<Ascii>()`
-impl std::str::FromStr for Ascii {
-    type Err = AsciiError;
+/// Позволяет использовать `"ABC".parse::<Scn>()`
+impl std::str::FromStr for Scn {
+    type Err = ScnError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::from_str(s)
     }
 }
 
-/// Позволяет использовать `println!("{}", ascii)`
-impl std::fmt::Display for Ascii {
+/// Позволяет использовать `println!("{}", scn)`
+impl std::fmt::Display for Scn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
-/// Позволяет использовать `&[u8]` там, где ожидается Ascii
-impl AsRef<[u8]> for Ascii {
+/// Позволяет использовать `&[u8]` там, где ожидается Scn
+impl AsRef<[u8]> for Scn {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
     }
 }
 
-/// Позволяет использовать `&str` там, где ожидается Ascii
-impl AsRef<str> for Ascii {
+/// Позволяет использовать `&str` там, где ожидается Scn
+impl AsRef<str> for Scn {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-/// Позволяет использовать `Ascii::try_from(&[65, 66, 67])`
-impl TryFrom<&[u8]> for Ascii {
-    type Error = AsciiError;
+/// Позволяет использовать `Scn::try_from(&[65, 66, 67])`
+impl TryFrom<&[u8]> for Scn {
+    type Error = ScnError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         Self::from_bytes(bytes)
     }
 }
 
-/// Позволяет использовать `Ascii::try_from(vec![65, 66, 67])`
-impl TryFrom<Vec<u8>> for Ascii {
-    type Error = AsciiError;
+/// Позволяет использовать `Scn::try_from(vec![65, 66, 67])`
+impl TryFrom<Vec<u8>> for Scn {
+    type Error = ScnError;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         Self::from_bytes(&bytes)
     }
 }
 
-/// Позволяет использовать `Ascii::try_from("ABC".to_string())`
-impl TryFrom<String> for Ascii {
-    type Error = AsciiError;
+/// Позволяет использовать `Scn::try_from("ABC".to_string())`
+impl TryFrom<String> for Scn {
+    type Error = ScnError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         Self::from_str(&s)
     }
 }
 
-/// Позволяет использовать `Ascii::try_from("ABC")`
-impl TryFrom<&str> for Ascii {
-    type Error = AsciiError;
+/// Позволяет использовать `Scn::try_from("ABC")`
+impl TryFrom<&str> for Scn {
+    type Error = ScnError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         Self::from_str(s)
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn from_str_basic() {
-        let s = Ascii::from_str("ABC").unwrap();
+        let s = Scn::from_str("ABC").unwrap();
         assert_eq!(s.as_str(), "ABC");
         assert_eq!(s.as_bytes(), &[65, 66, 67]);
         assert_eq!(s.len(), 3);
@@ -589,28 +589,28 @@ mod tests {
 
     #[test]
     fn from_str_with_spaces() {
-        let s = Ascii::from_str("  ABC  ").unwrap();
+        let s = Scn::from_str("  ABC  ").unwrap();
         assert_eq!(s.as_str(), "ABC");
         assert_eq!(s.as_bytes(), &[65, 66, 67]);
     }
 
     #[test]
     fn from_str_empty() {
-        let err = Ascii::from_str("").unwrap_err();
-        assert!(matches!(err, AsciiError::Empty));
+        let err = Scn::from_str("").unwrap_err();
+        assert!(matches!(err, ScnError::Empty));
     }
 
     #[test]
     fn from_str_whitespace_only() {
-        let err = Ascii::from_str("   ").unwrap_err();
-        assert!(matches!(err, AsciiError::Empty));
+        let err = Scn::from_str("   ").unwrap_err();
+        assert!(matches!(err, ScnError::Empty));
     }
 
     #[test]
     fn from_str_non_ascii() {
-        let err = Ascii::from_str("Привет").unwrap_err();
+        let err = Scn::from_str("Привет").unwrap_err();
         match err {
-            AsciiError::NonAsciiCharacters(chars) => {
+            ScnError::NonAsciiCharacters(chars) => {
                 assert_eq!(chars, vec!['П', 'р', 'и', 'в', 'е', 'т']);
             }
             _ => panic!("Expected NonAsciiCharacters"),
@@ -619,9 +619,9 @@ mod tests {
 
     #[test]
     fn from_str_mixed_ascii_non_ascii() {
-        let err = Ascii::from_str("ABCПривет").unwrap_err();
+        let err = Scn::from_str("ABCПривет").unwrap_err();
         match err {
-            AsciiError::NonAsciiCharacters(chars) => {
+            ScnError::NonAsciiCharacters(chars) => {
                 assert_eq!(chars, vec!['П', 'р', 'и', 'в', 'е', 'т']);
             }
             _ => panic!("Expected NonAsciiCharacters"),
@@ -630,22 +630,22 @@ mod tests {
 
     #[test]
     fn from_bytes_basic() {
-        let s = Ascii::from_bytes(b"ABC").unwrap();
+        let s = Scn::from_bytes(b"ABC").unwrap();
         assert_eq!(s.as_str(), "ABC");
         assert_eq!(s.as_bytes(), &[65, 66, 67]);
     }
 
     #[test]
     fn from_bytes_empty() {
-        let err = Ascii::from_bytes(b"").unwrap_err();
-        assert!(matches!(err, AsciiError::Empty));
+        let err = Scn::from_bytes(b"").unwrap_err();
+        assert!(matches!(err, ScnError::Empty));
     }
 
     #[test]
     fn from_bytes_non_ascii() {
-        let err = Ascii::from_bytes(&[65, 66, 208, 184]).unwrap_err();
+        let err = Scn::from_bytes(&[65, 66, 208, 184]).unwrap_err();
         match err {
-            AsciiError::NonAsciiCharacters(chars) => {
+            ScnError::NonAsciiCharacters(chars) => {
                 assert_eq!(chars, vec!['и']);
             }
             _ => panic!("Expected NonAsciiCharacters"),
@@ -654,156 +654,156 @@ mod tests {
 
     #[test]
     fn from_bytes_control_chars() {
-        let s = Ascii::from_bytes(b"\n\tABC").unwrap();
+        let s = Scn::from_bytes(b"\n\tABC").unwrap();
         assert_eq!(s.as_str(), "\n\tABC");
         assert_eq!(s.as_bytes(), &[10, 9, 65, 66, 67]);
     }
 
     #[test]
     fn to_dotted() {
-        let s = Ascii::from_str("ABC").unwrap();
+        let s = Scn::from_str("ABC").unwrap();
         assert_eq!(s.to_dotted(), "65.66.67");
     }
 
     #[test]
     fn to_scn_index() {
-        let s = Ascii::from_str("ABC").unwrap();
+        let s = Scn::from_str("ABC").unwrap();
         assert_eq!(s.to_scn_index(), "3.65.66.67");
     }
 
     #[test]
     fn to_scn_index_complex() {
-        let s = Ascii::from_str("CO4500").unwrap();
+        let s = Scn::from_str("CO4500").unwrap();
         assert_eq!(s.to_scn_index(), "6.67.79.52.53.48.48");
     }
 
     #[test]
     fn to_utc_index() {
-        let s = Ascii::from_str("ABC").unwrap();
+        let s = Scn::from_str("ABC").unwrap();
         assert_eq!(s.to_utc_index(), ".1.3.65.66.67");
     }
 
     #[test]
     fn to_utc_index_complex() {
-        let s = Ascii::from_str("CO4500").unwrap();
+        let s = Scn::from_str("CO4500").unwrap();
         assert_eq!(s.to_utc_index(), ".1.6.67.79.52.53.48.48");
     }
 
     #[test]
     fn to_delimited() {
-        let s = Ascii::from_str("ABC").unwrap();
+        let s = Scn::from_str("ABC").unwrap();
         assert_eq!(s.to_delimited(","), "65,66,67");
         assert_eq!(s.to_delimited("-"), "65-66-67");
         assert_eq!(s.to_delimited(""), "656667");
     }
 
     #[test]
-    fn parse_dotted_basic() {
-        let s = Ascii::parse_dotted("65.66.67").unwrap();
+    fn from_dotted_basic() {
+        let s = Scn::from_dotted("65.66.67").unwrap();
         assert_eq!(s.as_str(), "ABC");
         assert_eq!(s.as_bytes(), &[65, 66, 67]);
     }
 
     #[test]
-    fn parse_dotted_single() {
-        let s = Ascii::parse_dotted("65").unwrap();
+    fn from_dotted_single() {
+        let s = Scn::from_dotted("65").unwrap();
         assert_eq!(s.as_str(), "A");
         assert_eq!(s.as_bytes(), &[65]);
     }
 
     #[test]
-    fn parse_dotted_empty() {
-        let err = Ascii::parse_dotted("").unwrap_err();
-        assert!(matches!(err, AsciiError::Empty));
+    fn from_dotted_empty() {
+        let err = Scn::from_dotted("").unwrap_err();
+        assert!(matches!(err, ScnError::Empty));
     }
 
     #[test]
-    fn parse_dotted_invalid() {
-        let err = Ascii::parse_dotted("65.abc.67").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidCode(_)));
+    fn from_dotted_invalid() {
+        let err = Scn::from_dotted("65.abc.67").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidCode(_)));
     }
 
     #[test]
-    fn parse_dotted_empty_parts() {
-        let err = Ascii::parse_dotted("65..67").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidFormat));
+    fn from_dotted_empty_parts() {
+        let err = Scn::from_dotted("65..67").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidFormat));
     }
 
     #[test]
-    fn parse_dotted_out_of_range() {
-        let err = Ascii::parse_dotted("65.256.67").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidCode(_)));
+    fn from_dotted_out_of_range() {
+        let err = Scn::from_dotted("65.256.67").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidCode(_)));
     }
 
     #[test]
-    fn parse_scn_index_basic() {
-        let s = Ascii::parse_scn_index("3.65.66.67").unwrap();
+    fn from_scn_index_basic() {
+        let s = Scn::from_scn_index("3.65.66.67").unwrap();
         assert_eq!(s.as_str(), "ABC");
         assert_eq!(s.as_bytes(), &[65, 66, 67]);
     }
 
     #[test]
-    fn parse_scn_index_complex() {
-        let s = Ascii::parse_scn_index("6.67.79.52.53.48.48").unwrap();
+    fn from_scn_index_complex() {
+        let s = Scn::from_scn_index("6.67.79.52.53.48.48").unwrap();
         assert_eq!(s.as_str(), "CO4500");
         assert_eq!(s.as_bytes(), &[67, 79, 52, 53, 48, 48]);
     }
 
     #[test]
-    fn parse_scn_index_single() {
-        let s = Ascii::parse_scn_index("1.65").unwrap();
+    fn from_scn_index_single() {
+        let s = Scn::from_scn_index("1.65").unwrap();
         assert_eq!(s.as_str(), "A");
         assert_eq!(s.as_bytes(), &[65]);
     }
 
     #[test]
-    fn parse_scn_index_invalid_format() {
-        let err = Ascii::parse_scn_index("invalid").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidFormat));
+    fn from_scn_index_invalid_format() {
+        let err = Scn::from_scn_index("invalid").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidFormat));
     }
 
     #[test]
-    fn parse_scn_index_invalid_length() {
-        let err = Ascii::parse_scn_index("abc.65.66.67").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidLength(_)));
+    fn from_scn_index_invalid_length() {
+        let err = Scn::from_scn_index("abc.65.66.67").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidLength(_)));
     }
 
     #[test]
-    fn parse_utc_index_basic() {
-        let s = Ascii::parse_utc_index(".1.3.65.66.67").unwrap();
+    fn from_utc_index_basic() {
+        let s = Scn::from_utc_index(".1.3.65.66.67").unwrap();
         assert_eq!(s.as_str(), "ABC");
         assert_eq!(s.as_bytes(), &[65, 66, 67]);
     }
 
     #[test]
-    fn parse_utc_index_complex() {
-        let s = Ascii::parse_utc_index(".1.6.67.79.52.53.48.48").unwrap();
+    fn from_utc_index_complex() {
+        let s = Scn::from_utc_index(".1.6.67.79.52.53.48.48").unwrap();
         assert_eq!(s.as_str(), "CO4500");
         assert_eq!(s.as_bytes(), &[67, 79, 52, 53, 48, 48]);
     }
 
     #[test]
-    fn parse_utc_index_single() {
-        let s = Ascii::parse_utc_index(".1.1.65").unwrap();
+    fn from_utc_index_single() {
+        let s = Scn::from_utc_index(".1.1.65").unwrap();
         assert_eq!(s.as_str(), "A");
         assert_eq!(s.as_bytes(), &[65]);
     }
 
     #[test]
-    fn parse_utc_index_invalid_format() {
-        let err = Ascii::parse_utc_index("invalid").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidFormat));
+    fn from_utc_index_invalid_format() {
+        let err = Scn::from_utc_index("invalid").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidFormat));
     }
 
     #[test]
-    fn parse_utc_index_invalid_prefix() {
-        let err = Ascii::parse_utc_index(".2.3.65.66.67").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidFormat));
+    fn from_utc_index_invalid_prefix() {
+        let err = Scn::from_utc_index(".2.3.65.66.67").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidFormat));
     }
 
     #[test]
-    fn parse_utc_index_invalid_length() {
-        let err = Ascii::parse_utc_index(".1.abc.65.66.67").unwrap_err();
-        assert!(matches!(err, AsciiError::InvalidLength(_)));
+    fn from_utc_index_invalid_length() {
+        let err = Scn::from_utc_index(".1.abc.65.66.67").unwrap_err();
+        assert!(matches!(err, ScnError::InvalidLength(_)));
     }
 }

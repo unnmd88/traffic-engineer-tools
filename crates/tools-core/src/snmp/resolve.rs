@@ -11,7 +11,7 @@
 //!   опрашиваем «сырой» OID, когда нужен SCN).
 
 use crate::{
-    ascii::Ascii,
+    scn::Scn,
     snmp::{
         ParseError, SnmpClient, SnmpError,
         builders::encode_by_type,
@@ -77,13 +77,13 @@ impl Resolver {
         self.profile
     }
 
-    pub async fn fetch_scn(&self) -> Result<Option<Ascii>, SnmpError> {
+    pub async fn fetch_scn(&self) -> Result<Option<Scn>, SnmpError> {
         match self.profile {
             Some(SnmpProfile::PotokUg405) => {
                 let bytes = fetch_site_id_potok_ug405(&self.client).await?;
-                let ascii =
-                    Ascii::from_bytes(&bytes).map_err(|e| SnmpError::ConvertScn(e.to_string()))?;
-                Ok(Some(ascii))
+                let scn =
+                    Scn::from_bytes(&bytes).map_err(|e| SnmpError::ConvertScn(e.to_string()))?;
+                Ok(Some(scn))
             }
             _ => Ok(None),
         }
@@ -113,8 +113,8 @@ impl Resolver {
 
         let scn_suffix = if needs_scn {
             match self.fetch_scn().await? {
-                Some(ascii) => {
-                    let suffix = SnmpOid::parse(&ascii.to_utc_index())
+                Some(scn) => {
+                    let suffix = SnmpOid::parse(&scn.to_utc_index())
                         .map_err(|e| SnmpError::ResolveOid(e.to_string()))?;
                     Some(suffix)
                 }

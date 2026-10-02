@@ -8,7 +8,7 @@ pub enum Error {
     #[error(transparent)]
     Parse(#[from] crate::snmp::ParseError),
     #[error(transparent)]
-    Ascii(#[from] crate::ascii::AsciiError),
+    Scn(#[from] crate::scn::ScnError),
     #[error(transparent)]
     SnmpQuery(#[from] crate::monitor::adapter::SnmpQueryError),
     #[error(transparent)]
