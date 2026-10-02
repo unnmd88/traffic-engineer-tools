@@ -4,33 +4,30 @@ use tools_core::scn::Scn;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ScnResult {
-    input: String,
-    decoded: String,
     scn: String,
+    index: String,
 }
 
-impl ScnResult {
-    pub fn as_pretty_string(&self) -> String {
-        format!("Ввод={:?}\nScn={:?}\nЗакодированный Scn={}", self.input, self.decoded, self.scn)
+impl std::fmt::Display for ScnResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "scn: '{}'\nindex: '{}'", self.scn, self.index)
     }
 }
 
 pub fn run_from_string(input: String) -> Result<ScnResult> {
-    let engine = Scn::from_str(&input)?;
+    let scn = Scn::from_str(&input)?;
 
     Ok(ScnResult {
-        input,
-        decoded: engine.as_str().to_string(),
-        scn: engine.to_scn_index(),
+        scn: scn.as_str().to_string(),
+        index: scn.to_scn_index(),
     })
 }
 
 pub fn run_from_scn(input: String) -> Result<ScnResult> {
-    let engine = Scn::from_scn_index(&input)?;
+    let scn = Scn::from_scn_index(&input)?;
 
     Ok(ScnResult {
-        input,
-        decoded: engine.as_str().to_string(),
-        scn: engine.to_scn_index(),
+        scn: scn.as_str().to_string(),
+        index: scn.to_scn_index(),
     })
 }

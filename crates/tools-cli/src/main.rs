@@ -88,11 +88,11 @@ async fn main() -> anyhow::Result<()> {
 
         cli::Commands::ToScn { input, output } => {
             let res = scn::run_from_string(input)?;
-            let _ = print_output(output, &res.as_pretty_string(), &res)?;
+            print_output(output, &res)?;
         }
         cli::Commands::FromScn { input, output } => {
             let res = scn::run_from_scn(input)?;
-            let _ = print_output(output, &res.as_pretty_string(), &res)?;
+            print_output(output, &res)?;
         }
     }
 

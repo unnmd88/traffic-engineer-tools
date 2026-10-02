@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt::Display, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -31,7 +31,6 @@ pub enum Commands {
 
     ToScn {
         input: String,
-
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Human)]
         output: OutputFormat,
     },
@@ -44,17 +43,11 @@ pub enum Commands {
 }
 
 /// Универсальная функция для вывода результата в нужном формате
-pub fn print_output<T: Serialize>(format: OutputFormat, text: &str, data: &T) -> Result<()> {
+pub fn print_output<T: Display + Serialize>(format: OutputFormat, value: &T) -> Result<()> {
     match format {
-        OutputFormat::Human => {
-            println!("{}", text);
-        }
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string(data)?);
-        }
-        OutputFormat::PrettyJson => {
-            println!("{}", serde_json::to_string_pretty(data)?);
-        }
+        OutputFormat::Human => println!("{value}"),
+        OutputFormat::Json => println!("{}", serde_json::to_string(value)?),
+        OutputFormat::PrettyJson => println!("{}", serde_json::to_string_pretty(value)?),
     }
     Ok(())
 }
