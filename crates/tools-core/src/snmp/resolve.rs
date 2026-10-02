@@ -111,9 +111,13 @@ impl Resolver {
             plans.push((oid.clone(), kind));
         }
 
-        let scn = if needs_scn {
+        let scn_suffix = if needs_scn {
             match self.fetch_scn().await? {
-                Some(ascii) => ascii.to_utc_index(),
+                Some(ascii) => {
+                    let suffix = SnmpOid::parse(&ascii.to_utc_index())
+                        .map_err(|e| SnmpError::ResolveOid(e.to_string()))?;
+                    Some(suffix)
+                }
                 None => {
                     tracing::error!(target: "resolve_oids", profile=?profile.to_string(), "Bug: snmp profile must have scn.");
                     return Err(SnmpError::ScnError {
@@ -123,17 +127,21 @@ impl Resolver {
                 }
             }
         } else {
-            String::new()
+            None
         };
 
         plans
             .into_iter()
             .map(|(oid, kind)| match kind {
                 OidKind::Exact => Ok(oid),
-                OidKind::Scalar => SnmpOid::parse(&format!("{}.0", oid))
-                    .map_err(|e| SnmpError::ResolveOid(e.to_string())),
-                OidKind::ScnIndexed => SnmpOid::parse(&format!("{}{}", oid, scn))
-                    .map_err(|e| SnmpError::ResolveOid(e.to_string())),
+                OidKind::Scalar => Ok(oid.child(0)),
+                OidKind::ScnIndexed => match scn_suffix.as_ref() {
+                    Some(suffix) => Ok(oid.with_suffix(suffix)),
+                    None => Err(SnmpError::ScnError {
+                        profile: profile.to_string(),
+                        message: "Scn not found".to_string(),
+                    }),
+                },
             })
             .collect()
     }

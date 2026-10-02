@@ -14,4 +14,18 @@ impl SnmpOid {
     pub fn inner(&self) -> &async_snmp::Oid {
         &self.0
     }
+
+    pub fn child(&self, arc: u32) -> Self {
+        Self(self.0.child(arc))
+    }
+
+    pub fn with_suffix(&self, suffix: &SnmpOid) -> Self {
+        let arcs = self
+            .0
+            .arcs()
+            .iter()
+            .copied()
+            .chain(suffix.0.arcs().iter().copied());
+        Self(async_snmp::Oid::new(arcs))
+    }
 }
