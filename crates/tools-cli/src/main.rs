@@ -4,7 +4,6 @@ mod cli;
 mod commands;
 mod logging;
 mod monitor;
-mod scn;
 
 use cli::Cli;
 
@@ -22,11 +21,11 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         cli::Commands::Poll { config } => commands::poll::run(config).await?,
         cli::Commands::ToScn { input, output } => {
-            let res = scn::run_from_string(input)?;
+            let res = commands::scn::run_from_string(input)?;
             print_output(output, &res)?;
         }
         cli::Commands::FromScn { input, output } => {
-            let res = scn::run_from_scn(input)?;
+            let res = commands::scn::run_from_scn(input)?;
             print_output(output, &res)?;
         }
     }
