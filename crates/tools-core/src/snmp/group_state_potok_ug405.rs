@@ -27,7 +27,7 @@ ARROW_FLASH = 22
 pub struct GroupStatePotokUg405 {
     num_group: u8,
     source_code: u8,
-    state: Option<GroupState>,
+    state: Option<GroupStateDefinition>,
 }
 
 impl GroupStatePotokUg405 {
@@ -35,7 +35,7 @@ impl GroupStatePotokUg405 {
         Self {
             num_group,
             source_code: byte_code,
-            state: GroupState::from_byte(byte_code),
+            state: GroupStateDefinition::from_byte(byte_code),
         }
     }
 
@@ -47,13 +47,13 @@ impl GroupStatePotokUg405 {
         self.num_group
     }
 
-    pub fn state(&self) -> Option<&GroupState> {
+    pub fn state(&self) -> Option<&GroupStateDefinition> {
         self.state.as_ref()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GroupState {
+pub enum GroupStateDefinition {
     Off,
     RedAmber,
     Red,
@@ -75,7 +75,7 @@ pub enum GroupState {
     ArrowFlash,
 }
 
-impl GroupState {
+impl GroupStateDefinition {
     pub const OFF: &'static str = "OFF";
     pub const RED_AMBER: &'static str = "RED_AMBER";
     pub const RED: &'static str = "RED";
@@ -194,7 +194,7 @@ impl GroupState {
     }
 }
 
-impl std::fmt::Display for GroupState {
+impl std::fmt::Display for GroupStateDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }

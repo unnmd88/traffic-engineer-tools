@@ -3,7 +3,7 @@ use std::fmt::{self, Display, Formatter, write};
 use tokio::time::error::Elapsed;
 
 use crate::{
-    snmp::group_state_potok_ug405::{GroupState, GroupStatePotokUg405},
+    snmp::group_state_potok_ug405::{GroupStateDefinition, GroupStatePotokUg405},
     stage::Stage,
 };
 
