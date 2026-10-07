@@ -3,7 +3,6 @@ use clap::Parser;
 mod cli;
 mod commands;
 mod logging;
-mod monitor;
 
 use cli::Cli;
 

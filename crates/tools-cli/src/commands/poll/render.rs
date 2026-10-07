@@ -8,6 +8,9 @@ use tools_core::monitor::task::{TaskId, TaskView};
 use tools_core::polling::Response;
 use tools_core::snmp::SnmpGetSample;
 
+pub const LINE_DOUBLE_LN: &str =
+    "════════════════════════════════════════════════════════════════════════════════\n";
+
 pub fn format_snapshot(tasks: &BTreeMap<TaskId, TaskView>) -> String {
     let mut out = String::new();
 

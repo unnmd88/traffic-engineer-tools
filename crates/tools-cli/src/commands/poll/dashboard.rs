@@ -12,7 +12,7 @@ use tools_core::{
     },
 };
 
-use super::formatters::{constants::LINE_DOUBLE_LN, format_snapshot};
+use super::render::{LINE_DOUBLE_LN, format_snapshot};
 
 /// Подписка на события + живой вывод дашборда.
 pub async fn run(app: Application, mut rx: broadcast::Receiver<MonitorEvent>) {
