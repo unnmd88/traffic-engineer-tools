@@ -33,8 +33,18 @@ fn format_card(view: &TaskView) -> String {
 
     lines.push(labeled("Name", &view.name));
     lines.push(labeled("Target", &view.target));
+    lines.push(labeled("Revision", &view.revision.to_string()));
 
-    lines.push(labeled("Interval", &format!("{}s", view.interval.as_secs())));
+    let timings = format!(
+        "Interval: {:?} retries: {} timeout: {:?} retry_delay: {:?}",
+        view.interval,
+        view.attempt.retries(),
+        view.attempt.timeout(),
+        view.attempt.retry_delay()
+    );
+
+    //lines.push(labeled("Interval", &format!("{:?}", view.interval)));
+    lines.push(timings);
     lines.push(labeled("Limit", &format_limit(view)));
 
     push_query(&mut lines, &view.query);
@@ -46,7 +56,10 @@ fn format_card(view: &TaskView) -> String {
 fn format_results(view: &TaskView) -> String {
     let mut out = String::new();
 
-    out.push_str(&format!("Status: {}\n", view.status));
+    match &view.health.last_error {
+        Some(err) => out.push_str(&format!("Status: {} ({err})\n", view.status)),
+        None => out.push_str(&format!("Status: {}\n", view.status)),
+    }
     out.push_str(&format!(
         "Requests: {} (success: {} failed: {})  |  Latency: {}\n",
         view.metrics.total_attempts,
