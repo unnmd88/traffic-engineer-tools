@@ -10,7 +10,7 @@ pub struct ScnResult {
 
 impl std::fmt::Display for ScnResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "scn: '{}'\nindex: '{}'", self.scn, self.index)
+        write!(f, "scn: '{}'\nutc: '{}'", self.scn, self.index)
     }
 }
 
@@ -19,15 +19,15 @@ pub fn run_from_string(input: String) -> Result<ScnResult> {
 
     Ok(ScnResult {
         scn: scn.as_str().to_string(),
-        index: scn.to_scn_index(),
+        index: scn.to_utc_index(),
     })
 }
 
 pub fn run_from_scn(input: String) -> Result<ScnResult> {
-    let scn = Scn::from_scn_index(&input)?;
+    let scn = Scn::from_utc_index(&input)?;
 
     Ok(ScnResult {
         scn: scn.as_str().to_string(),
-        index: scn.to_scn_index(),
+        index: scn.to_utc_index(),
     })
 }
