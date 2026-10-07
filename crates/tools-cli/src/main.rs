@@ -8,6 +8,7 @@ use tools_core::{
     DT_FMT,
     monitor::{
         event::MonitorEvent,
+        runtime::Application,
         task::{TaskId, TaskView},
     },
 };
@@ -19,7 +20,7 @@ use crate::{
     cli::print_output,
     logging::init_file_logging,
     monitor::{
-        app::AppBuilder,
+        app::load_tasks_from_yaml,
         formatters::{constants::LINE_DOUBLE_LN, format_snapshot},
     },
 };
@@ -36,7 +37,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         cli::Commands::Poll { config } => {
             let content = std::fs::read_to_string(config)?;
-            let app = AppBuilder::from_yaml(&content).await?;
+            let tasks = load_tasks_from_yaml(&content)?;
+            let app = Application::new(None);
+            app.start(tasks).await?;
             let mut rx = app.subscribe();
 
             let app_created_at = Local::now();

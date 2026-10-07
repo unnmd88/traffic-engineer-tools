@@ -5,7 +5,6 @@ use tools_core::{
     error::Error,
     monitor::{
         adapter::{Query, RawSnmpOidItem, RawSnmpSetItem, SnmpGetQuery, SnmpSetQuery},
-        runtime::Application,
         task::TaskConfig,
     },
     polling::{AttemptConfig, PollConfig},
@@ -49,14 +48,7 @@ struct SnmpGetQueryDto {
     host: String,
     port: u16,
     community: String,
-    oids: Vec<SnmpOidItemDto>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SnmpOidItemDto {
-    #[serde(default)]
-    name: Option<String>,
-    oid: String,
+    oids: Vec<RawSnmpOidItem>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,37 +60,18 @@ struct SnmpSetQueryDto {
     community: String,
     #[serde(default)]
     community_r: Option<String>,
-    oids: Vec<SnmpSetOidItemDto>,
+    oids: Vec<RawSnmpSetItem>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SnmpSetOidItemDto {
-    #[serde(default)]
-    name: Option<String>,
-    oid: String,
-    #[serde(default)]
-    syntax: Option<String>,
-    value: String,
-}
-
-pub struct AppBuilder {
-    specs: Vec<TaskConfig>,
-}
-
-impl AppBuilder {
-    pub async fn from_yaml(content: &str) -> anyhow::Result<Application> {
-        let app_dto: AppConfigDto = serde_yaml::from_str(content)?;
-        let specs = app_dto
-            .tasks
-            .into_iter()
-            .map(TaskConfig::try_from)
-            .collect::<Result<Vec<_>, Error>>()?;
-        let app = Application::new(None);
-
-        app.start(specs).await?;
-
-        Ok(app)
-    }
+/// Загружает и валидирует задачи из YAML.
+pub fn load_tasks_from_yaml(content: &str) -> anyhow::Result<Vec<TaskConfig>> {
+    let app_dto: AppConfigDto = serde_yaml::from_str(content)?;
+    let specs = app_dto
+        .tasks
+        .into_iter()
+        .map(TaskConfig::try_from)
+        .collect::<Result<Vec<_>, Error>>()?;
+    Ok(specs)
 }
 
 impl TryFrom<TaskConfigDto> for TaskConfig {
@@ -115,42 +88,16 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
 
         let query = match dto.query {
             QueryDto::SnmpGet(q) => {
-                let oids = q
-                    .oids
-                    .into_iter()
-                    .map(|item| RawSnmpOidItem {
-                        name: item.name,
-                        oid: item.oid,
-                    })
-                    .collect();
-                Query::SnmpGet(SnmpGetQuery::from_raw(
-                    q.host,
-                    q.port,
-                    q.community,
-                    q.profile,
-                    oids,
-                )?)
+                Query::SnmpGet(SnmpGetQuery::from_raw(q.host, q.port, q.community, q.profile, q.oids)?)
             }
-            QueryDto::SnmpSet(q) => {
-                let oids = q
-                    .oids
-                    .into_iter()
-                    .map(|item| RawSnmpSetItem {
-                        name: item.name,
-                        oid: item.oid,
-                        value: item.value,
-                        value_type: item.syntax,
-                    })
-                    .collect();
-                Query::SnmpSet(SnmpSetQuery::from_raw(
-                    q.host,
-                    q.port,
-                    q.community_r,
-                    q.community,
-                    q.profile,
-                    oids,
-                )?)
-            }
+            QueryDto::SnmpSet(q) => Query::SnmpSet(SnmpSetQuery::from_raw(
+                q.host,
+                q.port,
+                q.community_r,
+                q.community,
+                q.profile,
+                q.oids,
+            )?),
         };
 
         Ok(TaskConfig::try_new(

@@ -1,5 +1,7 @@
 use std::net::IpAddr;
 
+use serde::Deserialize;
+
 use crate::snmp::{
     ParseError,
     community::Community,
@@ -11,18 +13,19 @@ use crate::snmp::{
 use super::error::SnmpQueryError;
 
 /// Сырое описание OID из конфига (до валидации алиасов).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RawSnmpOidItem {
     pub name: Option<String>,
     pub oid: String,
 }
 
 /// Сырое описание SET-элемента из конфига.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RawSnmpSetItem {
     pub name: Option<String>,
     pub oid: String,
     pub value: String,
+    #[serde(alias = "syntax")]
     pub value_type: Option<String>,
 }
 
