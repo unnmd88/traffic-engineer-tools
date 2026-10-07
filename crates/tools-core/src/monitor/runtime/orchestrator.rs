@@ -389,6 +389,7 @@ impl Orchestrator {
                 WorkerReport::Built { .. } => {
                     let was_restart = entry.attempts > 0;
                     entry.attempts = 0;
+                    entry.task.clear_error();
                     entry.state = TaskState::Active;
                     let kind = if was_restart {
                         ChangeKind::Restarted
@@ -402,6 +403,7 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
+                    entry.task.record_error(reason.clone());
                     (Some(ChangeKind::BuildFailed { reason }), Some(delay))
                 }
                 WorkerReport::BuildTimeout { .. } => {
@@ -409,6 +411,7 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
+                    entry.task.record_error("build timeout".to_string());
                     (
                         Some(ChangeKind::BuildFailed {
                             reason: "build timeout".to_string(),
@@ -421,12 +424,9 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    (
-                        Some(ChangeKind::Panicked {
-                            reason: format!("build: {reason}"),
-                        }),
-                        Some(delay),
-                    )
+                    let reason = format!("build: {reason}");
+                    entry.task.record_error(reason.clone());
+                    (Some(ChangeKind::Panicked { reason }), Some(delay))
                 }
                 WorkerReport::Polled { response, .. } => {
                     let new_metrics = match &response {
@@ -451,6 +451,7 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
+                    entry.task.record_error(reason.clone());
                     (Some(ChangeKind::Failed { reason }), Some(delay))
                 }
                 WorkerReport::PollPanicked { reason, .. } => {
@@ -458,24 +459,18 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    (
-                        Some(ChangeKind::Panicked {
-                            reason: format!("poll: {reason}"),
-                        }),
-                        Some(delay),
-                    )
+                    let reason = format!("poll: {reason}");
+                    entry.task.record_error(reason.clone());
+                    (Some(ChangeKind::Panicked { reason }), Some(delay))
                 }
                 WorkerReport::WorkerPanicked { reason, .. } => {
                     entry.worker = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    (
-                        Some(ChangeKind::Panicked {
-                            reason: format!("worker: {reason}"),
-                        }),
-                        Some(delay),
-                    )
+                    let reason = format!("worker: {reason}");
+                    entry.task.record_error(reason.clone());
+                    (Some(ChangeKind::Panicked { reason }), Some(delay))
                 }
                 WorkerReport::Paused { .. } => {
                     entry.state = TaskState::Paused;

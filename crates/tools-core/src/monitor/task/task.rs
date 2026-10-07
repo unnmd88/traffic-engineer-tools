@@ -96,6 +96,14 @@ impl Health {
             }
         }
     }
+
+    pub fn record_error(&mut self, reason: String) {
+        self.last_error = Some(reason);
+    }
+
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+    }
 }
 
 /// Данные одной задачи: что опрашивать + что получили. Без статуса (он производный).
@@ -172,6 +180,16 @@ impl Task {
         }
         self.metrics = metrics;
         self.updated_at = ts;
+    }
+
+    /// Записать причину сбоя (для диагностики «почему Restarting»).
+    pub fn record_error(&mut self, reason: String) {
+        self.health.record_error(reason);
+    }
+
+    /// Сбросить причину после успешной сборки/опроса.
+    pub fn clear_error(&mut self) {
+        self.health.clear_error();
     }
 
     /// Заменить спеку (value object) и поднять версию.
