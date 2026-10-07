@@ -14,6 +14,7 @@ use super::error::SnmpQueryError;
 
 /// Сырое описание OID из конфига (до валидации алиасов).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawSnmpOidItem {
     pub name: Option<String>,
     pub oid: String,
@@ -21,6 +22,7 @@ pub struct RawSnmpOidItem {
 
 /// Сырое описание SET-элемента из конфига.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawSnmpSetItem {
     pub name: Option<String>,
     pub oid: String,

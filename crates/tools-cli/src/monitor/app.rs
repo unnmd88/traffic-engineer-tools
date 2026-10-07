@@ -1,5 +1,6 @@
+use std::time::Duration;
+
 use serde::Deserialize;
-use tokio::time::Duration;
 
 use tools_core::{
     error::Error,
@@ -12,14 +13,17 @@ use tools_core::{
 
 /// DTO конфига (serde на границе CLI; сырые строки).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AppConfigDto {
     tasks: Vec<TaskConfigDto>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskConfigDto {
     name: String,
-    interval_seconds: u64,
+    #[serde(with = "humantime_serde")]
+    interval: Duration,
     limit: u64,
     #[serde(default)]
     deep_history: Option<u8>,
@@ -28,10 +32,13 @@ struct TaskConfigDto {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AttemptPollTimingsDto {
-    timeout_ms: u64,
+    #[serde(with = "humantime_serde")]
+    timeout: Duration,
     retries: u8,
-    retry_delay_ms: u64,
+    #[serde(with = "humantime_serde")]
+    retry_delay: Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +49,7 @@ enum QueryDto {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SnmpGetQueryDto {
     #[serde(default)]
     profile: Option<String>,
@@ -52,6 +60,7 @@ struct SnmpGetQueryDto {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SnmpSetQueryDto {
     #[serde(default)]
     profile: Option<String>,
@@ -65,7 +74,8 @@ struct SnmpSetQueryDto {
 
 /// Загружает и валидирует задачи из YAML.
 pub fn load_tasks_from_yaml(content: &str) -> anyhow::Result<Vec<TaskConfig>> {
-    let app_dto: AppConfigDto = serde_yaml::from_str(content)?;
+    let de = serde_norway::Deserializer::from_str(content);
+    let app_dto: AppConfigDto = serde_path_to_error::deserialize(de)?;
     let specs = app_dto
         .tasks
         .into_iter()
@@ -79,12 +89,11 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
 
     fn try_from(dto: TaskConfigDto) -> Result<Self, Self::Error> {
         let attempt = AttemptConfig::try_new(
-            Duration::from_millis(dto.attempt_config.timeout_ms),
+            dto.attempt_config.timeout,
             dto.attempt_config.retries,
-            Duration::from_millis(dto.attempt_config.retry_delay_ms),
+            dto.attempt_config.retry_delay,
         )?;
-        let poll_config =
-            PollConfig::try_new(Duration::from_secs(dto.interval_seconds), dto.limit, attempt)?;
+        let poll_config = PollConfig::try_new(dto.interval, dto.limit, attempt)?;
 
         let query = match dto.query {
             QueryDto::SnmpGet(q) => {
@@ -118,12 +127,12 @@ mod tests {
         let yaml = r#"
 tasks:
   - name: T-1
-    interval_seconds: 5
+    interval: 5s
     limit: 100
     attempt_config:
-      timeout_ms: 1000
+      timeout: 1s
       retries: 2
-      retry_delay_ms: 200
+      retry_delay: 200ms
     query:
       query_type: snmpget
       host: 127.0.0.1
@@ -133,7 +142,8 @@ tasks:
         - oid: 1.3.6.1.4.1.1618.3.7.2.11.2
 "#;
 
-        let dto: AppConfigDto = serde_yaml::from_str(yaml).unwrap();
+        let de = serde_norway::Deserializer::from_str(yaml);
+        let dto: AppConfigDto = serde_path_to_error::deserialize(de).unwrap();
         let specs = dto
             .tasks
             .into_iter()
