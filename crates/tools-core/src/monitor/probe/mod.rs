@@ -11,6 +11,7 @@ use crate::{
 pub use error::{ProbeBuildError, SnmpQueryError};
 pub use snmp::{
     RawSnmpOidItem, RawSnmpSetItem, SnmpGetProbe, SnmpGetSpec, SnmpSetProbe, SnmpSetSpec,
+    build_timeout,
 };
 
 #[derive(Clone, Debug)]

@@ -14,7 +14,6 @@ impl SpecRevision {
     }
 }
 
-/// Валидированное декларативное описание (Spec) — неизменяемый value object.
 #[derive(Clone, Debug)]
 pub struct TaskConfig {
     name: String,
@@ -23,7 +22,6 @@ pub struct TaskConfig {
     deep_history: u8,
 }
 
-/// Спека + версия и время постановки
 #[derive(Clone, Debug)]
 pub struct TaskSpec {
     value: TaskConfig,
@@ -124,14 +122,8 @@ mod tests {
 
     fn valid_query() -> ProbeSpec {
         ProbeSpec::SnmpGet(
-            SnmpGetSpec::from_raw(
-                "127.0.0.1".to_string(),
-                161,
-                "public".to_string(),
-                None,
-                vec![],
-            )
-            .unwrap(),
+            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap(),
         )
     }
 

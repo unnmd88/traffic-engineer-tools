@@ -18,7 +18,15 @@ use crate::{
     },
 };
 
-const CLIENT_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
+const TRANSPORT_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
+
+fn transport_timeout(attempt: &AttemptConfig) -> Duration {
+    attempt.timeout().saturating_add(TRANSPORT_TIMEOUT_MARGIN)
+}
+
+pub fn build_timeout(attempt: &AttemptConfig) -> Duration {
+    transport_timeout(attempt).saturating_mul(2)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,7 +186,8 @@ impl SnmpGetSpec {
     }
 
     pub async fn build(self, attempt: AttemptConfig) -> Result<SnmpGetProbe, ProbeBuildError> {
-        let client = connect(self.host, self.port, self.community, &attempt).await?;
+        let transport_timeout = transport_timeout(&attempt);
+        let client = connect(self.host, self.port, self.community, transport_timeout).await?;
 
         let resolver = Resolver::new(client.clone(), self.profile);
         let resolved = resolver
@@ -234,10 +243,11 @@ impl SnmpSetSpec {
     }
 
     pub async fn build(self, attempt: AttemptConfig) -> Result<SnmpSetProbe, ProbeBuildError> {
-        let client = connect(self.host, self.port, self.community, &attempt).await?;
+        let transport_timeout = transport_timeout(&attempt);
+        let client = connect(self.host, self.port, self.community, transport_timeout).await?;
 
         let scn_client = match self.community_r {
-            Some(c) => connect(self.host, self.port, c, &attempt).await?,
+            Some(c) => connect(self.host, self.port, c, transport_timeout).await?,
             None => client.clone(),
         };
 
@@ -255,15 +265,15 @@ async fn connect(
     host: IpAddr,
     port: u16,
     community: Community,
-    attempt: &AttemptConfig,
+    transport_timeout: Duration,
 ) -> Result<SnmpClient, ProbeBuildError> {
     let config = SnmpClientConfig {
         target: host,
         port,
         community,
-        timeout: attempt.timeout().saturating_add(CLIENT_TIMEOUT_MARGIN),
+        timeout: transport_timeout,
         retries: 0,
-        retry_delay: attempt.retry_delay(),
+        retry_delay: Duration::ZERO,
     };
 
     SnmpClient::new(config)

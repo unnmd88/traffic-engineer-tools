@@ -7,6 +7,7 @@ use tokio::time::{Duration, sleep};
 use crate::{
     monitor::{
         event::{ChangeKind, MonitorEvent},
+        probe,
         runtime::{
             error::OrchestratorError,
             restart_policy::RestartPolicy,
@@ -499,7 +500,7 @@ impl Orchestrator {
         entry.next_generation = generation.next();
         let probe = entry.task.spec().probe().clone();
         let poll = entry.task.spec().poll_config();
-        let build_timeout = poll.attempt().budget();
+        let build_timeout = probe::build_timeout(&poll.attempt());
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let worker = Worker::new(
             task_id,
