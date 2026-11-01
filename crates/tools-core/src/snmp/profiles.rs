@@ -16,6 +16,8 @@ use crate::snmp::{
     },
 };
 
+pub const POTOK_UG405_PROFILE: SnmpProfile = SnmpProfile::PotokUg405;
+
 #[derive(Debug, Clone, Copy, PartialEq, Display)]
 pub enum SnmpProfile {
     Swarco,

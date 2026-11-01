@@ -3,9 +3,7 @@ use async_trait::async_trait;
 use crate::{
     polling::{AttemptError, Pollable},
     snmp::{
-        SnmpClient, SnmpError, SnmpGetItem,
-        business_value::BusinessValue,
-        oid::SnmpOid,
+        SnmpClient, SnmpError, SnmpGetItem, business_value::BusinessValue, oid::SnmpOid,
         response::SnmpGetSample,
     },
 };
@@ -16,7 +14,6 @@ pub struct SnmpReader {
 }
 
 impl SnmpReader {
-    /// Чистая сборка из уже зарезолвленных элементов (см. `snmp::resolve`).
     pub fn new(client: SnmpClient, items: Vec<SnmpGetItem>) -> Self {
         Self { client, items }
     }

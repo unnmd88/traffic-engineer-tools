@@ -21,7 +21,9 @@ tracing = { workspace = true }
 itertools = { workspace = true }
 strum = { workspace = true }
 futures-util = { workspace = true }
-hex = "0.4.3"
+hex ={ workspace = true }
+memchr = { workspace = true }
+
 
 
 [[example]]
