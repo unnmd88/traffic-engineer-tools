@@ -10,11 +10,11 @@ pub enum Error {
     #[error(transparent)]
     Scn(#[from] crate::scn::ScnError),
     #[error(transparent)]
-    SnmpQuery(#[from] crate::monitor::adapter::SnmpQueryError),
+    SnmpQuery(#[from] crate::monitor::probe::SnmpQueryError),
     #[error(transparent)]
     Task(#[from] crate::monitor::task::TaskError),
     #[error(transparent)]
-    AdapterBuild(#[from] crate::monitor::adapter::AdapterBuildError),
+    ProbeBuild(#[from] crate::monitor::probe::ProbeBuildError),
     #[error(transparent)]
     MonitorOrchestrator(#[from] crate::monitor::runtime::error::OrchestratorError),
     #[error(transparent)]

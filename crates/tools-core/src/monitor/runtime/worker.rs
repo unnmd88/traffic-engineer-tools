@@ -6,7 +6,7 @@ use tokio::time::{Duration, sleep};
 
 use crate::{
     monitor::{
-        adapter::{Adapter, AdapterOutput, Query},
+        probe::{ProbeOutput, ProbeSpec},
         task::TaskId,
     },
     polling::{PollConfig, Response, poll},
@@ -59,7 +59,7 @@ pub enum WorkerReport {
     Polled {
         task_id: TaskId,
         generation: Generation,
-        response: Response<AdapterOutput>,
+        response: Response<ProbeOutput>,
     },
     PollFailed {
         task_id: TaskId,
@@ -143,7 +143,7 @@ impl WorkerReport {
 pub struct Worker {
     task_id: TaskId,
     generation: Generation,
-    query: Query,
+    probe: ProbeSpec,
     poll: PollConfig,
     build_timeout: Duration,
     report_tx: mpsc::Sender<WorkerReport>,
@@ -154,7 +154,7 @@ impl Worker {
     pub fn new(
         task_id: TaskId,
         generation: Generation,
-        query: Query,
+        probe: ProbeSpec,
         poll: PollConfig,
         build_timeout: Duration,
         report_tx: mpsc::Sender<WorkerReport>,
@@ -163,7 +163,7 @@ impl Worker {
         Self {
             task_id,
             generation,
-            query,
+            probe,
             poll,
             build_timeout,
             report_tx,
@@ -191,7 +191,7 @@ impl Worker {
 
         let built = AssertUnwindSafe(tokio::time::timeout(
             self.build_timeout,
-            Adapter::build(self.query, attempt),
+            self.probe.build(attempt),
         ))
         .catch_unwind()
         .await;
@@ -211,8 +211,8 @@ impl Worker {
             }
         };
 
-        let adapter = match built {
-            Ok(Ok(adapter)) => adapter,
+        let probe = match built {
+            Ok(Ok(probe)) => probe,
             Ok(Err(err)) => {
                 let _ = self
                     .report_tx
@@ -269,7 +269,7 @@ impl Worker {
 
             tokio::select! {
                 _ = sleep(interval) => {
-                    let polled = AssertUnwindSafe(poll(&attempt, &adapter))
+                    let polled = AssertUnwindSafe(poll(&attempt, &probe))
                         .catch_unwind()
                         .await;
                     match polled {

@@ -2,7 +2,7 @@ use std::{collections::VecDeque, mem};
 
 use crate::{
     monitor::{
-        adapter::AdapterOutput,
+        probe::ProbeOutput,
         task::{SpecRevision, TaskConfig, TaskSpec},
     },
     polling::{Metrics, PollConfig, Response},
@@ -28,7 +28,7 @@ pub struct TaskId(pub u64);
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
     pub timestamp: DateTime<Local>,
-    pub result: Response<AdapterOutput>,
+    pub result: Response<ProbeOutput>,
 }
 
 /// Кольцо последних N результатов. `deep_history == 0` → всегда пустое.
@@ -83,7 +83,7 @@ pub struct Health {
 }
 
 impl Health {
-    pub fn record(&mut self, r: &Response<AdapterOutput>) {
+    pub fn record(&mut self, r: &Response<ProbeOutput>) {
         self.last_poll_at = Some(Local::now());
         match r {
             Response::Success { .. } => {
@@ -111,7 +111,7 @@ impl Health {
 pub struct Task {
     id: TaskId,
     spec: TaskSpec,
-    last_result: Option<Response<AdapterOutput>>,
+    last_result: Option<Response<ProbeOutput>>,
     history: History,
     metrics: Metrics,
     health: Health,
@@ -144,7 +144,7 @@ impl Task {
         &self.spec
     }
 
-    pub fn last_result(&self) -> Option<&Response<AdapterOutput>> {
+    pub fn last_result(&self) -> Option<&Response<ProbeOutput>> {
         self.last_result.as_ref()
     }
 
@@ -169,7 +169,7 @@ impl Task {
     }
 
     /// Пришёл результат опроса: старый → история, новый → текущий, обновить метрики и здоровье.
-    pub fn apply_poll(&mut self, result: Response<AdapterOutput>, metrics: Metrics) {
+    pub fn apply_poll(&mut self, result: Response<ProbeOutput>, metrics: Metrics) {
         self.health.record(&result);
         let ts = Local::now();
         if let Some(prev) = mem::replace(&mut self.last_result, Some(result)) {

@@ -3,7 +3,7 @@ use tokio::time::Duration;
 
 use crate::{
     monitor::{
-        adapter::{AdapterOutput, Query},
+        probe::{ProbeOutput, ProbeSpec},
         task::{SpecRevision, TaskId, TaskStatus, task::Health},
     },
     polling::{AttemptConfig, Metrics, Response},
@@ -18,11 +18,11 @@ pub struct TaskView {
     pub status: TaskStatus,
     pub interval: Duration,
     pub limit: u64,
-    pub query: Query,
+    pub probe: ProbeSpec,
     pub attempt: AttemptConfig,
     pub deep_history: u8,
     pub metrics: Metrics,
-    pub result: Option<Response<AdapterOutput>>,
+    pub result: Option<Response<ProbeOutput>>,
     pub history: Vec<HistoryEntryView>,
     pub health: Health,
 }
@@ -30,7 +30,7 @@ pub struct TaskView {
 #[derive(Debug, Clone)]
 pub struct HistoryEntryView {
     pub timestamp: DateTime<Local>,
-    pub result: Option<Response<AdapterOutput>>,
+    pub result: Option<Response<ProbeOutput>>,
 }
 
 #[derive(Debug, Clone)]

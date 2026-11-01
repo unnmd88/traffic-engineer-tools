@@ -1,18 +1,25 @@
 use std::net::IpAddr;
 
+use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::time::Duration;
 
-use crate::snmp::{
-    ParseError,
-    community::Community,
-    oid::SnmpOid,
-    profiles::SnmpProfile,
-    resolve::{SnmpGetItem, SnmpSetItem, encode_set_value},
+use crate::{
+    monitor::probe::error::{ProbeBuildError, SnmpQueryError},
+    polling::{AttemptConfig, AttemptError, Pollable},
+    snmp::{
+        ParseError, SnmpClient, SnmpClientConfig, SnmpError, SnmpGetSample,
+        business_value::BusinessValue,
+        community::Community,
+        oid::SnmpOid,
+        profiles::SnmpProfile,
+        resolve::{Resolver, SnmpGetItem, SnmpSetItem, encode_set_value},
+        value::SnmpValue,
+    },
 };
 
-use super::error::SnmpQueryError;
+const CLIENT_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
 
-/// Сырое описание OID из конфига (до валидации алиасов).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawSnmpOidItem {
@@ -20,7 +27,6 @@ pub struct RawSnmpOidItem {
     pub oid: String,
 }
 
-/// Сырое описание SET-элемента из конфига.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawSnmpSetItem {
@@ -31,9 +37,8 @@ pub struct RawSnmpSetItem {
     pub value_type: Option<String>,
 }
 
-/// Валидированный SNMP GET запрос: доменные типы вместо сырых строк.
 #[derive(Debug, Clone)]
-pub struct SnmpGetQuery {
+pub struct SnmpGetSpec {
     pub profile: Option<SnmpProfile>,
     pub host: IpAddr,
     pub port: u16,
@@ -41,9 +46,8 @@ pub struct SnmpGetQuery {
     pub oids: Vec<SnmpGetItem>,
 }
 
-/// Валидированный SNMP SET запрос. OID и value полностью зарезолвлены.
 #[derive(Debug, Clone)]
-pub struct SnmpSetQuery {
+pub struct SnmpSetSpec {
     pub profile: Option<SnmpProfile>,
     pub host: IpAddr,
     pub port: u16,
@@ -52,25 +56,94 @@ pub struct SnmpSetQuery {
     pub sets: Vec<SnmpSetItem>,
 }
 
-/// Запрос задачи. Валидация сырых значений происходит при построении
-#[derive(Clone, Debug)]
-pub enum Query {
-    SnmpGet(SnmpGetQuery),
-    SnmpSet(SnmpSetQuery),
-    // HttpRead(QueryHttpRead),
+pub struct SnmpGetProbe {
+    client: SnmpClient,
+    items: Vec<SnmpGetItem>,
 }
 
-impl Query {
-    pub fn target(&self) -> String {
-        match self {
-            Self::SnmpGet(q) => format!("{}:{}", q.host, q.port),
-            Self::SnmpSet(q) => format!("{}:{}", q.host, q.port),
-        }
+impl SnmpGetProbe {
+    pub fn new(client: SnmpClient, items: Vec<SnmpGetItem>) -> Self {
+        Self { client, items }
     }
 }
 
-impl SnmpGetQuery {
-    /// Собрать валидированный SNMP GET запрос из сырых значений конфига.
+#[async_trait]
+impl Pollable for SnmpGetProbe {
+    type Output = Vec<SnmpGetSample>;
+
+    async fn poll(&self) -> Result<Self::Output, AttemptError> {
+        let oids: Vec<SnmpOid> = self.items.iter().map(|i| i.oid.clone()).collect();
+
+        let samples = self
+            .client
+            .get_many(&oids)
+            .await
+            .map_err(classify_snmp_error)?
+            .into_iter()
+            .zip(&self.items)
+            .map(|(vb, item)| {
+                let parsed_value = item.parser.map(|parser| match parser(&vb.value) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        tracing::error!(target: "snmp_reader", value = ?&vb.value, "{e}");
+                        BusinessValue::Text("parse error".to_string())
+                    }
+                });
+
+                SnmpGetSample {
+                    oid_name: item.name.clone(),
+                    oid: vb.oid,
+                    raw_value: vb.value,
+                    value: parsed_value,
+                }
+            })
+            .collect();
+
+        Ok(samples)
+    }
+}
+
+pub struct SnmpSetProbe {
+    client: SnmpClient,
+    items: Vec<SnmpSetItem>,
+}
+
+impl SnmpSetProbe {
+    pub fn new(client: SnmpClient, items: Vec<SnmpSetItem>) -> Self {
+        Self { client, items }
+    }
+}
+
+#[async_trait]
+impl Pollable for SnmpSetProbe {
+    type Output = ();
+
+    async fn poll(&self) -> Result<Self::Output, AttemptError> {
+        let sets: Vec<(SnmpOid, SnmpValue)> = self
+            .items
+            .iter()
+            .map(|i| (i.oid.clone(), i.value.clone()))
+            .collect();
+
+        self.client
+            .set_many(&sets)
+            .await
+            .map_err(classify_snmp_error)?;
+
+        Ok(())
+    }
+}
+
+fn classify_snmp_error(e: SnmpError) -> AttemptError {
+    match e {
+        SnmpError::Network { .. } | SnmpError::Timeout { .. } => {
+            AttemptError::Transient(e.to_string())
+        }
+        _ => AttemptError::Fatal(e.to_string()),
+    }
+}
+
+impl SnmpGetSpec {
     pub fn from_raw(
         host: String,
         port: u16,
@@ -103,10 +176,21 @@ impl SnmpGetQuery {
             oids,
         })
     }
+
+    pub async fn build(self, attempt: AttemptConfig) -> Result<SnmpGetProbe, ProbeBuildError> {
+        let client = connect(self.host, self.port, self.community, &attempt).await?;
+
+        let resolver = Resolver::new(client.clone(), self.profile);
+        let resolved = resolver
+            .resolve_get(self.oids)
+            .await
+            .map_err(|e| ProbeBuildError::Other(e.to_string()))?;
+
+        Ok(SnmpGetProbe::new(client, resolved))
+    }
 }
 
-impl SnmpSetQuery {
-    /// Собрать валидированный SNMP SET запрос из сырых значений конфига.
+impl SnmpSetSpec {
     pub fn from_raw(
         host: String,
         port: u16,
@@ -148,6 +232,43 @@ impl SnmpSetQuery {
             sets,
         })
     }
+
+    pub async fn build(self, attempt: AttemptConfig) -> Result<SnmpSetProbe, ProbeBuildError> {
+        let client = connect(self.host, self.port, self.community, &attempt).await?;
+
+        let scn_client = match self.community_r {
+            Some(c) => connect(self.host, self.port, c, &attempt).await?,
+            None => client.clone(),
+        };
+
+        let resolver = Resolver::new(scn_client, self.profile);
+        let resolved = resolver
+            .resolve_set(self.sets)
+            .await
+            .map_err(|e| ProbeBuildError::Other(e.to_string()))?;
+
+        Ok(SnmpSetProbe::new(client, resolved))
+    }
+}
+
+async fn connect(
+    host: IpAddr,
+    port: u16,
+    community: Community,
+    attempt: &AttemptConfig,
+) -> Result<SnmpClient, ProbeBuildError> {
+    let config = SnmpClientConfig {
+        target: host,
+        port,
+        community,
+        timeout: attempt.timeout().saturating_add(CLIENT_TIMEOUT_MARGIN),
+        retries: 0,
+        retry_delay: attempt.retry_delay(),
+    };
+
+    SnmpClient::new(config)
+        .await
+        .map_err(|_| ProbeBuildError::SnmpClientCreate)
 }
 
 fn parse_ip(ip: &str) -> Result<IpAddr, SnmpQueryError> {
@@ -174,7 +295,6 @@ fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, SnmpQue
         .map_err(|e| SnmpQueryError::InvalidSnmpProfile { message: e })
 }
 
-/// Разрешает сырую строку OID (числовой или алиас) в `SnmpOid`.
 fn resolve_oid(
     raw: &str,
     profile: Option<&SnmpProfile>,
@@ -205,7 +325,7 @@ mod tests {
 
     #[test]
     fn resolves_numeric_oids_without_profile() {
-        let q = SnmpGetQuery::from_raw(
+        let q = SnmpGetSpec::from_raw(
             "127.0.0.1".to_string(),
             161,
             "public".to_string(),
@@ -221,7 +341,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_ip() {
-        let err = SnmpGetQuery::from_raw(
+        let err = SnmpGetSpec::from_raw(
             "not-an-ip".to_string(),
             161,
             "public".to_string(),
@@ -235,7 +355,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_community() {
-        let err = SnmpGetQuery::from_raw("127.0.0.1".to_string(), 161, String::new(), None, vec![])
+        let err = SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, String::new(), None, vec![])
             .unwrap_err();
 
         assert!(matches!(err, SnmpQueryError::SnmpCommunityIsEmpty));
@@ -243,7 +363,7 @@ mod tests {
 
     #[test]
     fn rejects_alias_without_profile() {
-        let err = SnmpGetQuery::from_raw(
+        let err = SnmpGetSpec::from_raw(
             "127.0.0.1".to_string(),
             161,
             "public".to_string(),
@@ -266,7 +386,7 @@ mod tests {
 
     #[test]
     fn snmp_set_numeric_oid_with_explicit_type() {
-        let q = SnmpSetQuery::from_raw(
+        let q = SnmpSetSpec::from_raw(
             "127.0.0.1".to_string(),
             161,
             None,
@@ -290,7 +410,7 @@ mod tests {
 
     #[test]
     fn snmp_set_alias_with_profile_uses_builder() {
-        let q = SnmpSetQuery::from_raw(
+        let q = SnmpSetSpec::from_raw(
             "127.0.0.1".to_string(),
             161,
             None,
@@ -306,7 +426,7 @@ mod tests {
 
     #[test]
     fn snmp_set_rejects_alias_without_profile() {
-        let err = SnmpSetQuery::from_raw(
+        let err = SnmpSetSpec::from_raw(
             "127.0.0.1".to_string(),
             161,
             None,
@@ -321,7 +441,7 @@ mod tests {
 
     #[test]
     fn snmp_set_rejects_without_builder_or_type() {
-        let err = SnmpSetQuery::from_raw(
+        let err = SnmpSetSpec::from_raw(
             "127.0.0.1".to_string(),
             161,
             None,

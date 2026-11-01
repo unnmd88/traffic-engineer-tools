@@ -1,4 +1,3 @@
-pub mod adapters;
 mod client;
 mod error;
 pub mod parsers;

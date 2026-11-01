@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use tabled::{Table, Tabled, settings::Style};
 
 use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::adapter::{AdapterOutput, Query};
+use tools_core::monitor::probe::{ProbeOutput, ProbeSpec};
 use tools_core::monitor::task::{TaskId, TaskView};
 use tools_core::polling::Response;
 use tools_core::snmp::SnmpGetSample;
@@ -50,7 +50,7 @@ fn format_card(view: &TaskView) -> String {
     lines.push(timings);
     lines.push(labeled("Limit", &format_limit(view)));
 
-    push_query(&mut lines, &view.query);
+    push_query(&mut lines, &view.probe);
 
     bordered(&lines)
 }
@@ -84,10 +84,10 @@ fn format_results(view: &TaskView) -> String {
 fn format_response(view: &TaskView) -> String {
     match view.result.as_ref() {
         Some(Response::Success { payload, .. }) => match payload {
-            AdapterOutput::SnmpGet(samples) => {
+            ProbeOutput::SnmpGet(samples) => {
                 format!("Snmp-get response:\n{}\n", format_oids_table(samples))
             }
-            AdapterOutput::SnmpSet(()) => "Snmp-set response: ok\n".to_string(),
+            ProbeOutput::SnmpSet(()) => "Snmp-set response: ok\n".to_string(),
         },
         Some(Response::NoResponse { errors, .. }) => {
             format!("No response: {} attempts\n", errors.len())
@@ -111,16 +111,16 @@ fn format_history(view: &TaskView) -> String {
     out
 }
 
-fn push_query(lines: &mut Vec<String>, q: &Query) {
+fn push_query(lines: &mut Vec<String>, q: &ProbeSpec) {
     match q {
-        Query::SnmpGet(q) => {
+        ProbeSpec::SnmpGet(q) => {
             lines.push("Oids to request:".to_string());
             for item in &q.oids {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{}", item.oid));
             }
         }
-        Query::SnmpSet(q) => {
+        ProbeSpec::SnmpSet(q) => {
             lines.push("Oids to set:".to_string());
             for item in &q.sets {
                 let name = item.name.as_deref().unwrap_or("-");

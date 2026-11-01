@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
-pub enum AdapterBuildError {
+pub enum ProbeBuildError {
     #[error("can't create snmp-driver, try again later")]
     SnmpClientCreate,
     #[error("{0}")]

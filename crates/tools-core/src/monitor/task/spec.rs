@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local};
 use derive_more::{Constructor, Display};
 
-use crate::{monitor::adapter::Query, polling::PollConfig};
+use crate::{monitor::probe::ProbeSpec, polling::PollConfig};
 
 use super::error::TaskError;
 
@@ -18,7 +18,7 @@ impl SpecRevision {
 #[derive(Clone, Debug)]
 pub struct TaskConfig {
     name: String,
-    query: Query,
+    probe: ProbeSpec,
     poll_config: PollConfig,
     deep_history: u8,
 }
@@ -52,8 +52,8 @@ impl TaskSpec {
         &self.value.name()
     }
 
-    pub fn query(&self) -> &Query {
-        &self.value.query()
+    pub fn probe(&self) -> &ProbeSpec {
+        &self.value.probe()
     }
 
     pub fn poll_config(&self) -> PollConfig {
@@ -76,7 +76,7 @@ impl TaskSpec {
 impl TaskConfig {
     pub fn try_new(
         name: String,
-        query: Query,
+        probe: ProbeSpec,
         poll_config: PollConfig,
         deep_history: u8,
     ) -> Result<Self, TaskError> {
@@ -86,7 +86,7 @@ impl TaskConfig {
 
         Ok(Self {
             name,
-            query,
+            probe,
             poll_config,
             deep_history,
         })
@@ -96,8 +96,8 @@ impl TaskConfig {
         &self.name
     }
 
-    pub fn query(&self) -> &Query {
-        &self.query
+    pub fn probe(&self) -> &ProbeSpec {
+        &self.probe
     }
 
     pub fn poll_config(&self) -> PollConfig {
@@ -112,7 +112,7 @@ impl TaskConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{monitor::adapter::SnmpGetQuery, polling::AttemptConfig};
+    use crate::{monitor::probe::SnmpGetSpec, polling::AttemptConfig};
     use tokio::time::Duration;
 
     fn valid_poll_config() -> PollConfig {
@@ -122,9 +122,9 @@ mod tests {
         PollConfig::try_new(Duration::from_secs(1), 0, attempt).unwrap()
     }
 
-    fn valid_query() -> Query {
-        Query::SnmpGet(
-            SnmpGetQuery::from_raw(
+    fn valid_query() -> ProbeSpec {
+        ProbeSpec::SnmpGet(
+            SnmpGetSpec::from_raw(
                 "127.0.0.1".to_string(),
                 161,
                 "public".to_string(),

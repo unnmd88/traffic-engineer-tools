@@ -5,7 +5,7 @@ use serde::Deserialize;
 use tools_core::{
     error::Error,
     monitor::{
-        adapter::{Query, RawSnmpOidItem, RawSnmpSetItem, SnmpGetQuery, SnmpSetQuery},
+        probe::{ProbeSpec, RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
         task::TaskConfig,
     },
     polling::{AttemptConfig, PollConfig},
@@ -95,11 +95,11 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
         )?;
         let poll_config = PollConfig::try_new(dto.interval, dto.limit, attempt)?;
 
-        let query = match dto.query {
+        let probe = match dto.query {
             QueryDto::SnmpGet(q) => {
-                Query::SnmpGet(SnmpGetQuery::from_raw(q.host, q.port, q.community, q.profile, q.oids)?)
+                ProbeSpec::SnmpGet(SnmpGetSpec::from_raw(q.host, q.port, q.community, q.profile, q.oids)?)
             }
-            QueryDto::SnmpSet(q) => Query::SnmpSet(SnmpSetQuery::from_raw(
+            QueryDto::SnmpSet(q) => ProbeSpec::SnmpSet(SnmpSetSpec::from_raw(
                 q.host,
                 q.port,
                 q.community_r,
@@ -111,7 +111,7 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
 
         Ok(TaskConfig::try_new(
             dto.name,
-            query,
+            probe,
             poll_config,
             dto.deep_history.unwrap_or_default(),
         )?)

@@ -497,14 +497,14 @@ impl Orchestrator {
         };
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
-        let query = entry.task.spec().query().clone();
+        let probe = entry.task.spec().probe().clone();
         let poll = entry.task.spec().poll_config();
         let build_timeout = poll.attempt().budget();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let worker = Worker::new(
             task_id,
             generation,
-            query,
+            probe,
             poll,
             build_timeout,
             self.report_tx.clone(),
@@ -579,11 +579,11 @@ impl Orchestrator {
             id: t.id(),
             name: spec.name().to_string(),
             revision: spec.revision(),
-            target: spec.query().target(),
+            target: spec.probe().target(),
             status: status(entry),
             interval: spec.poll_config().interval(),
             limit: spec.poll_config().limit(),
-            query: spec.query().clone(),
+            probe: spec.probe().clone(),
             attempt: spec.poll_config().attempt(),
             deep_history: spec.deep_history(),
             metrics: t.metrics(),
