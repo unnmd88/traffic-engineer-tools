@@ -49,3 +49,13 @@ AGENTS.md
 
 # Compiled binaries
 /tctl
+
+# Локальные заметки и справочные материалы (не коммитятся)
+/docs/arch_new.txt
+/docs/monitor_dispatcher.png
+/docs/potok_backup_1.5.15/
+/docs/prompt.txt
+/docs/snmp-set-phase.md
+/docs/SWARCO-UTC-FULL-MIB.txt
+/docs/UTMC-UTMCFULLUTCTYPE2-MIB.txt
+/docs/обсудить.txt
