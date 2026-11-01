@@ -159,7 +159,7 @@ impl SnmpGetSpec {
             .into_iter()
             .enumerate()
             .map(|(pos, raw)| {
-                let oid = resolve_oid(&raw.oid, profile.as_ref(), pos)?;
+                let oid = lookup_oid(&raw.oid, profile.as_ref(), pos)?;
                 Ok(SnmpGetItem {
                     name: raw.name,
                     oid,
@@ -211,7 +211,7 @@ impl SnmpSetSpec {
             .into_iter()
             .enumerate()
             .map(|(pos, raw)| {
-                let oid = resolve_oid(&raw.oid, profile.as_ref(), pos)?;
+                let oid = lookup_oid(&raw.oid, profile.as_ref(), pos)?;
                 let value =
                     encode_set_value(&oid, &raw.value, raw.value_type.as_deref(), profile.as_ref())
                         .map_err(|e| SnmpQueryError::Other(e.to_string()))?;
@@ -295,7 +295,7 @@ fn parse_profile(profile: Option<String>) -> Result<Option<SnmpProfile>, SnmpQue
         .map_err(|e| SnmpQueryError::InvalidSnmpProfile { message: e })
 }
 
-fn resolve_oid(
+fn lookup_oid(
     raw: &str,
     profile: Option<&SnmpProfile>,
     pos: usize,
