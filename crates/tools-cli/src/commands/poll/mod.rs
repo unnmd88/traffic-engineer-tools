@@ -4,12 +4,12 @@ mod render;
 
 use std::path::PathBuf;
 
-use tools_core::monitor::runtime::Application;
+use tools_core::monitor::runtime::{AppConfig, Application};
 
 pub async fn run(config: PathBuf) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(config)?;
     let tasks = config::load_tasks_from_yaml(&content)?;
-    let app = Application::new(None);
+    let app = Application::new(AppConfig::default());
     app.start(tasks).await?;
     let rx = app.subscribe();
 

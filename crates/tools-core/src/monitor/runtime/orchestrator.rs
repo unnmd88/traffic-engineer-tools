@@ -92,18 +92,24 @@ pub struct Orchestrator {
     report_rx: mpsc::Receiver<WorkerReport>,
     report_tx: mpsc::Sender<WorkerReport>,
     live_tx: broadcast::Sender<MonitorEvent>,
-    record_tx: mpsc::Sender<MonitorEvent>,
+    record_tx: Option<mpsc::Sender<MonitorEvent>>,
     policy: RestartPolicy,
 }
 
 impl Orchestrator {
-    pub fn new(hist_tx: Option<mpsc::Sender<MonitorEvent>>) -> (Self, OrchestratorHandle) {
+    pub fn new(
+        history_sink: Option<mpsc::Sender<MonitorEvent>>,
+        restart: RestartPolicy,
+    ) -> (Self, OrchestratorHandle) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (report_tx, report_rx) = mpsc::channel(256);
-        let (record_tx, record_rx) = mpsc::channel(1024);
         let (live_tx, _) = broadcast::channel(1024);
 
-        tokio::spawn(log_writer(record_rx, hist_tx));
+        let record_tx = history_sink.as_ref().map(|sink| {
+            let (record_tx, record_rx) = mpsc::channel(1024);
+            tokio::spawn(log_writer(record_rx, Some(sink.clone())));
+            record_tx
+        });
 
         let this = Self {
             next_id: 1,
@@ -114,7 +120,7 @@ impl Orchestrator {
             report_tx,
             live_tx: live_tx.clone(),
             record_tx,
-            policy: RestartPolicy::default(),
+            policy: restart,
         };
         (this, OrchestratorHandle { cmd_tx, live_tx })
     }
@@ -556,12 +562,12 @@ impl Orchestrator {
     }
 
     async fn emit_event(&mut self, ev: MonitorEvent) {
-        // live: fire-and-forget, отстающие отваливаются сами
         if self.live_tx.receiver_count() > 0 {
             let _ = self.live_tx.send(ev.clone());
         }
-        // запись: backpressure — не теряем события
-        let _ = self.record_tx.send(ev).await;
+        if let Some(record_tx) = &self.record_tx {
+            let _ = record_tx.send(ev).await;
+        }
     }
 
     fn view(&self, entry: &TaskEntry) -> TaskView {

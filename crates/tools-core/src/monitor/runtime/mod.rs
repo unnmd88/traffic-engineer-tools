@@ -4,5 +4,5 @@ pub mod restart_policy;
 pub mod orchestrator;
 pub mod worker;
 
-pub use app::Application;
+pub use app::{AppConfig, Application};
 pub use orchestrator::{Orchestrator, OrchestratorHandle};

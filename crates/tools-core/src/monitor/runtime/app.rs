@@ -7,6 +7,7 @@ use crate::monitor::{
     runtime::{
         error::OrchestratorError,
         orchestrator::{Orchestrator, OrchestratorHandle},
+        restart_policy::RestartPolicy,
     },
     task::{MonitorSnapshot, TaskConfig, TaskId},
 };
@@ -20,6 +21,12 @@ impl ApplicationId {
     }
 }
 
+#[derive(Default)]
+pub struct AppConfig {
+    pub history_sink: Option<mpsc::Sender<MonitorEvent>>,
+    pub restart: RestartPolicy,
+}
+
 /// Собранный рантайм: оркестратор (владелец состояния и оба канала) + воркеры.
 ///
 /// Тонкий фасад: команды, снапшот и подписка — всё через оркестратор.
@@ -29,8 +36,9 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(hist_tx: Option<mpsc::Sender<MonitorEvent>>) -> Self {
-        let (orchestrator, orchestrator_handle) = Orchestrator::new(hist_tx);
+    pub fn new(config: AppConfig) -> Self {
+        let (orchestrator, orchestrator_handle) =
+            Orchestrator::new(config.history_sink, config.restart);
         tokio::spawn(orchestrator.run());
 
         Self {
@@ -104,7 +112,7 @@ mod tests {
     use crate::{
         monitor::{
             probe::{ProbeSpec, SnmpGetSpec},
-            runtime::Application,
+            runtime::{Application, AppConfig},
             task::{MonitorSnapshot, TaskConfig, TaskStatus},
         },
         polling::{AttemptConfig, PollConfig},
@@ -144,7 +152,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_then_snapshot_then_remove() {
-        let app = Application::new(None);
+        let app = Application::new(AppConfig::default());
         let id = app.add_task(spec("t-1")).await.unwrap();
 
         // задача появляется в снапшоте (eventually-consistent: Added уходит асинхронно)
