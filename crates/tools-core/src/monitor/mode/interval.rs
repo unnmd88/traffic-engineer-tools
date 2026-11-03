@@ -1,9 +1,11 @@
 use tokio::time::{Duration, Instant};
 
 use crate::{
-    monitor::probe::{BuiltProbe, ProbeOutput},
-    polling::{AttemptConfig, FatalError, Response, poll},
+    monitor::probe::BuiltProbe,
+    polling::{AttemptConfig, FatalError, poll},
 };
+
+use super::Outcome;
 
 pub struct IntervalMode {
     probe: BuiltProbe,
@@ -24,7 +26,9 @@ impl IntervalMode {
         Instant::now() + self.interval
     }
 
-    pub async fn do_work(&self) -> Result<Response<ProbeOutput>, FatalError> {
-        poll(&self.attempt, &self.probe).await
+    pub async fn do_work(&self) -> Result<Option<Outcome>, FatalError> {
+        poll(&self.attempt, &self.probe)
+            .await
+            .map(|r| Some(Outcome::Polled(r)))
     }
 }

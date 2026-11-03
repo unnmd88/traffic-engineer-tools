@@ -6,7 +6,7 @@ use tokio::time::{Duration, sleep_until};
 
 use crate::{
     monitor::{
-        mode::IntervalMode,
+        mode::{IntervalMode, Mode, Outcome},
         probe::{ProbeOutput, ProbeSpec},
         task::TaskId,
     },
@@ -237,7 +237,7 @@ impl Worker {
             }
         };
 
-        let mode = IntervalMode::new(probe, self.poll.interval(), attempt);
+        let mode = Mode::Interval(IntervalMode::new(probe, self.poll.interval(), attempt));
 
         // 2) готов опрашивать
         let _ = self
@@ -275,13 +275,17 @@ impl Worker {
                         .catch_unwind()
                         .await;
                     match polled {
-                        Ok(Ok(response)) => {
+                        Ok(Ok(Some(Outcome::Polled(response)))) => {
                             let _ = self.report_tx.send(WorkerReport::Polled {
                                 task_id: self.task_id,
                                 generation: self.generation,
                                 response,
                             }).await;
                         }
+                        Ok(Ok(Some(Outcome::PhaseSet(_)))) => {
+                            unreachable!("coordination not implemented")
+                        }
+                        Ok(Ok(None)) => {}
                         Ok(Err(fatal)) => {
                             let _ = self.report_tx.send(WorkerReport::PollFailed {
                                 task_id: self.task_id,
