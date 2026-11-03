@@ -36,7 +36,6 @@ struct TaskEntry {
     state: TaskState,
     attempts: u32,
     next_generation: Generation,
-    /// Поколение текущего (или последнего) воркера — для меты событий.
     generation: Generation,
     worker: Option<WorkerHandle>,
 }

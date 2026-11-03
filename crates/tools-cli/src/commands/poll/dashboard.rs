@@ -20,8 +20,6 @@ pub async fn run(app: Application, mut rx: broadcast::Receiver<MonitorEvent>) {
     let app_created_at = Local::now();
     let app_created_at_fmt = Local::now().format(DT_FMT);
 
-    // События больше не несут полный view — таблица строится из снапшота
-    // (событие служит триггером перерисовки).
     while rx.recv().await.is_ok() {
         let snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
         let mut dashboard: BTreeMap<TaskId, TaskView> = BTreeMap::new();
