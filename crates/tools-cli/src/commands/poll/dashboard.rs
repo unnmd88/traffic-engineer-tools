@@ -20,21 +20,13 @@ pub async fn run(app: Application, mut rx: broadcast::Receiver<MonitorEvent>) {
     let app_created_at = Local::now();
     let app_created_at_fmt = Local::now().format(DT_FMT);
 
-    let mut dashboard: BTreeMap<TaskId, TaskView> = BTreeMap::new();
-
-    let snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
-    for t in snapshot.tasks {
-        dashboard.insert(t.id, t);
-    }
-
-    while let Ok(ev) = rx.recv().await {
-        match ev {
-            MonitorEvent::TaskChanged { task_id, view, .. } => {
-                dashboard.insert(task_id, view);
-            }
-            MonitorEvent::TaskRemoved { task_id, .. } => {
-                dashboard.remove(&task_id);
-            }
+    // События больше не несут полный view — таблица строится из снапшота
+    // (событие служит триггером перерисовки).
+    while rx.recv().await.is_ok() {
+        let snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
+        let mut dashboard: BTreeMap<TaskId, TaskView> = BTreeMap::new();
+        for t in snapshot.tasks {
+            dashboard.insert(t.id, t);
         }
 
         clear_screen();

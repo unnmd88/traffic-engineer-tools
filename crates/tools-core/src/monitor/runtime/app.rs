@@ -37,12 +37,13 @@ pub struct Application {
 
 impl Application {
     pub fn new(config: AppConfig) -> Self {
+        let uid = ApplicationId::generate();
         let (orchestrator, orchestrator_handle) =
-            Orchestrator::new(config.history_sink, config.restart);
+            Orchestrator::new(config.history_sink, config.restart, uid.to_string());
         tokio::spawn(orchestrator.run());
 
         Self {
-            uid: ApplicationId::generate(),
+            uid,
             orchestrator: orchestrator_handle,
         }
     }

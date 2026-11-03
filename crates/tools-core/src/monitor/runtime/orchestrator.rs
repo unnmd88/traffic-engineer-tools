@@ -1,18 +1,21 @@
 use std::collections::HashMap;
 
-use chrono::Local;
+use chrono::Utc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{Duration, sleep};
 
 use crate::{
     monitor::{
-        event::{ChangeKind, MonitorEvent},
+        event::{EventData, EventMeta, MonitorEvent},
         runtime::{
             error::OrchestratorError,
             restart_policy::RestartPolicy,
             worker::{Generation, Worker, WorkerCmd, WorkerReport},
         },
-        task::{HistoryEntryView, MonitorSnapshot, Task, TaskConfig, TaskId, TaskStatus, TaskView},
+        task::{
+            HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
+            TaskView,
+        },
     },
     polling::Response,
 };
@@ -33,6 +36,8 @@ struct TaskEntry {
     state: TaskState,
     attempts: u32,
     next_generation: Generation,
+    /// Поколение текущего (или последнего) воркера — для меты событий.
+    generation: Generation,
     worker: Option<WorkerHandle>,
 }
 
@@ -93,12 +98,15 @@ pub struct Orchestrator {
     live_tx: broadcast::Sender<MonitorEvent>,
     record_tx: Option<mpsc::Sender<MonitorEvent>>,
     policy: RestartPolicy,
+    seq: u64,
+    source: String,
 }
 
 impl Orchestrator {
     pub fn new(
         history_sink: Option<mpsc::Sender<MonitorEvent>>,
         restart: RestartPolicy,
+        source: String,
     ) -> (Self, OrchestratorHandle) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (report_tx, report_rx) = mpsc::channel(256);
@@ -120,6 +128,8 @@ impl Orchestrator {
             live_tx: live_tx.clone(),
             record_tx,
             policy: restart,
+            seq: 0,
+            source,
         };
         (this, OrchestratorHandle { cmd_tx, live_tx })
     }
@@ -152,10 +162,11 @@ impl Orchestrator {
                         state: TaskState::Idle,
                         attempts: 0,
                         next_generation: Generation::first(),
+                        generation: Generation::first(),
                         worker: None,
                     },
                 );
-                self.emit(id, ChangeKind::Added).await;
+                self.emit(id, EventData::TaskAdded).await;
                 let _ = reply.send(Ok(id));
                 true
             }
@@ -208,7 +219,7 @@ impl Orchestrator {
                 false
             }
             Command::Respawn { task_id } => {
-                self.maybe_respawn(task_id);
+                self.maybe_respawn(task_id).await;
                 true
             }
         }
@@ -232,7 +243,7 @@ impl Orchestrator {
             entry.state = TaskState::Starting;
         }
         self.spawn_worker(id);
-        self.emit(id, ChangeKind::Starting).await;
+        self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
         Ok(())
     }
 
@@ -266,7 +277,7 @@ impl Orchestrator {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.state = TaskState::Paused;
             }
-            self.emit(id, ChangeKind::Paused).await;
+            self.emit(id, EventData::TaskPaused).await;
         }
         Ok(())
     }
@@ -300,6 +311,7 @@ impl Orchestrator {
                 entry.state = TaskState::Starting;
             }
             self.spawn_worker(id);
+            self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
         }
         Ok(())
     }
@@ -323,7 +335,7 @@ impl Orchestrator {
             }
         };
         if stopped {
-            self.emit(id, ChangeKind::Stopped).await;
+            self.emit(id, EventData::TaskStopped).await;
         }
         Ok(())
     }
@@ -339,7 +351,7 @@ impl Orchestrator {
         };
         let paused = matches!(self.entries.get(&id), Some(e) if e.state == TaskState::Paused);
 
-        self.emit(id, ChangeKind::SpecUpdated).await;
+        self.emit(id, EventData::TaskSpecUpdated).await;
 
         if respawn {
             {
@@ -370,11 +382,12 @@ impl Orchestrator {
         if let Some(w) = &entry.worker {
             w.abort.abort();
         }
-        let view = self.view(&entry);
-        self.emit_event(MonitorEvent::TaskRemoved {
-            task_id: id,
-            view,
-            at: Local::now(),
+        let generation = entry.generation;
+        let revision = entry.task.spec().revision();
+        let metadata = self.next_meta(id, generation, revision);
+        self.emit_event(MonitorEvent {
+            metadata,
+            data: EventData::TaskRemoved,
         })
         .await;
         Ok(())
@@ -383,7 +396,7 @@ impl Orchestrator {
     async fn on_report(&mut self, rep: WorkerReport) {
         let (task_id, generation) = rep.key();
 
-        let (kind, respawn_after): (Option<ChangeKind>, Option<Duration>) = {
+        let (data, respawn_after): (Option<EventData>, Option<Duration>) = {
             let Some(entry) = self.entries.get_mut(&task_id) else {
                 return;
             };
@@ -393,16 +406,10 @@ impl Orchestrator {
 
             match rep {
                 WorkerReport::Built { .. } => {
-                    let was_restart = entry.attempts > 0;
                     entry.attempts = 0;
                     entry.task.clear_error();
                     entry.state = TaskState::Active;
-                    let kind = if was_restart {
-                        ChangeKind::Restarted
-                    } else {
-                        ChangeKind::Started
-                    };
-                    (Some(kind), None)
+                    (Some(EventData::TaskStarted), None)
                 }
                 WorkerReport::BuildFailed { reason, .. } => {
                     entry.worker = None;
@@ -410,7 +417,13 @@ impl Orchestrator {
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
                     entry.task.record_error(reason.clone());
-                    (Some(ChangeKind::BuildFailed { reason }), Some(delay))
+                    (
+                        Some(EventData::BuildFailed {
+                            reason,
+                            retry_in: Some(delay),
+                        }),
+                        Some(delay),
+                    )
                 }
                 WorkerReport::BuildTimeout { .. } => {
                     entry.worker = None;
@@ -419,8 +432,9 @@ impl Orchestrator {
                     let delay = self.policy.delay(entry.attempts);
                     entry.task.record_error("build timeout".to_string());
                     (
-                        Some(ChangeKind::BuildFailed {
+                        Some(EventData::BuildFailed {
                             reason: "build timeout".to_string(),
+                            retry_in: Some(delay),
                         }),
                         Some(delay),
                     )
@@ -432,7 +446,13 @@ impl Orchestrator {
                     let delay = self.policy.delay(entry.attempts);
                     let reason = format!("build: {reason}");
                     entry.task.record_error(reason.clone());
-                    (Some(ChangeKind::Panicked { reason }), Some(delay))
+                    (
+                        Some(EventData::WorkerPanicked {
+                            reason,
+                            retry_in: Some(delay),
+                        }),
+                        Some(delay),
+                    )
                 }
                 WorkerReport::Polled { response, .. } => {
                     let new_metrics = match &response {
@@ -441,15 +461,41 @@ impl Orchestrator {
                         }
                         Response::NoResponse { .. } => entry.task.metrics().with_error(),
                     };
-                    entry.task.apply_poll(response, new_metrics);
+                    entry.task.apply_poll(response.clone(), new_metrics);
                     if limit_reached(entry) {
                         if let Some(w) = entry.worker.take() {
                             w.abort.abort();
                         }
                         entry.state = TaskState::Completed;
-                        (Some(ChangeKind::Completed), None)
+                        (Some(EventData::TaskCompleted), None)
                     } else {
-                        (Some(ChangeKind::Polled), None)
+                        match response {
+                            Response::Success { .. } => (
+                                Some(EventData::PollSucceeded {
+                                    response,
+                                    metrics: new_metrics,
+                                }),
+                                None,
+                            ),
+                            Response::NoResponse {
+                                attempts,
+                                errors,
+                                elapsed,
+                                ..
+                            } => {
+                                let consecutive = entry.task.health().consecutive_no_response;
+                                (
+                                    Some(EventData::PollNoResponse {
+                                        attempts,
+                                        errors,
+                                        elapsed,
+                                        metrics: new_metrics,
+                                        consecutive_no_response: consecutive,
+                                    }),
+                                    None,
+                                )
+                            }
+                        }
                     }
                 }
                 WorkerReport::PollFailed { reason, .. } => {
@@ -458,7 +504,13 @@ impl Orchestrator {
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
                     entry.task.record_error(reason.clone());
-                    (Some(ChangeKind::Failed { reason }), Some(delay))
+                    (
+                        Some(EventData::PollError {
+                            reason,
+                            retry_in: Some(delay),
+                        }),
+                        Some(delay),
+                    )
                 }
                 WorkerReport::PollPanicked { reason, .. } => {
                     entry.worker = None;
@@ -467,7 +519,13 @@ impl Orchestrator {
                     let delay = self.policy.delay(entry.attempts);
                     let reason = format!("poll: {reason}");
                     entry.task.record_error(reason.clone());
-                    (Some(ChangeKind::Panicked { reason }), Some(delay))
+                    (
+                        Some(EventData::WorkerPanicked {
+                            reason,
+                            retry_in: Some(delay),
+                        }),
+                        Some(delay),
+                    )
                 }
                 WorkerReport::WorkerPanicked { reason, .. } => {
                     entry.worker = None;
@@ -476,21 +534,27 @@ impl Orchestrator {
                     let delay = self.policy.delay(entry.attempts);
                     let reason = format!("worker: {reason}");
                     entry.task.record_error(reason.clone());
-                    (Some(ChangeKind::Panicked { reason }), Some(delay))
+                    (
+                        Some(EventData::WorkerPanicked {
+                            reason,
+                            retry_in: Some(delay),
+                        }),
+                        Some(delay),
+                    )
                 }
                 WorkerReport::Paused { .. } => {
                     entry.state = TaskState::Paused;
-                    (Some(ChangeKind::Paused), None)
+                    (Some(EventData::TaskPaused), None)
                 }
                 WorkerReport::Resumed { .. } => {
                     entry.state = TaskState::Active;
-                    (Some(ChangeKind::Resumed), None)
+                    (Some(EventData::TaskResumed), None)
                 }
             }
         };
 
-        if let Some(kind) = kind {
-            self.emit(task_id, kind).await;
+        if let Some(data) = data {
+            self.emit(task_id, data).await;
         }
         if let Some(delay) = respawn_after {
             self.schedule_respawn(task_id, delay);
@@ -503,6 +567,7 @@ impl Orchestrator {
         };
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
+        entry.generation = generation;
         let mode_spec = entry.task.spec().mode().clone();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let worker = Worker::new(
@@ -528,32 +593,52 @@ impl Orchestrator {
         });
     }
 
-    fn maybe_respawn(&mut self, task_id: TaskId) {
+    async fn maybe_respawn(&mut self, task_id: TaskId) {
         let should = matches!(
             self.entries.get(&task_id),
             Some(e) if e.state == TaskState::Restarting && e.worker.is_none()
         );
         if should {
+            let attempt = self.entries.get(&task_id).map_or(0, |e| e.attempts);
             {
                 let entry = self.entries.get_mut(&task_id).expect("checked above");
                 entry.state = TaskState::Starting;
             }
             self.spawn_worker(task_id);
+            self.emit(task_id, EventData::TaskStarting { attempt }).await;
         }
     }
 
-    async fn emit(&mut self, task_id: TaskId, kind: ChangeKind) {
-        let view = match self.entries.get(&task_id) {
-            Some(entry) => self.view(entry),
-            None => return,
+    async fn emit(&mut self, task_id: TaskId, data: EventData) {
+        let Some((generation, revision)) = self
+            .entries
+            .get(&task_id)
+            .map(|e| (e.generation, e.task.spec().revision()))
+        else {
+            return;
         };
-        self.emit_event(MonitorEvent::TaskChanged {
+        let metadata = self.next_meta(task_id, generation, revision);
+        self.emit_event(MonitorEvent { metadata, data }).await;
+    }
+
+    fn next_meta(
+        &mut self,
+        task_id: TaskId,
+        generation: Generation,
+        revision: SpecRevision,
+    ) -> EventMeta {
+        let seq = self.seq;
+        self.seq += 1;
+        EventMeta {
+            seq,
+            at: Utc::now(),
+            source: self.source.clone(),
             task_id,
-            kind,
-            view,
-            at: Local::now(),
-        })
-        .await;
+            generation,
+            revision,
+            correlation_id: None,
+            causation: None,
+        }
     }
 
     async fn emit_event(&mut self, ev: MonitorEvent) {
