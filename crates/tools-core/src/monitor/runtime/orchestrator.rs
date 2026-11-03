@@ -636,8 +636,6 @@ impl Orchestrator {
             task_id,
             generation,
             revision,
-            correlation_id: None,
-            causation: None,
         }
     }
 

@@ -10,21 +10,12 @@ use crate::{
     polling::{Metrics, PollErrorContext, Response},
 };
 
-/// Id команды: назначается ядром при создании команды.
-/// Прокидывается в события как `correlation_id` (корневая причина цепочки).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct CommandId(pub u64);
-
-/// Непосредственная причина события: команда пользователя или предыдущее событие.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cause {
-    Command(CommandId),
-    /// `seq` предыдущего события.
-    Event(u64),
-}
-
 /// Общая мета события: порядок и корреляция. Одинакова для всех фактов.
+///
+/// `#[non_exhaustive]`: структура может пополниться полями (например, `correlation_id`)
+/// без ломки внешнего кода — внешний код не может конструировать её литералом.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EventMeta {
     /// Монотонный номер события внутри монитора — для порядка и реплея.
     pub seq: u64,
@@ -38,10 +29,6 @@ pub struct EventMeta {
     pub generation: Generation,
     /// Версия конфига задачи на момент факта.
     pub revision: SpecRevision,
-    /// Корневая причина — команда, породившая цепочку (опционально).
-    pub correlation_id: Option<CommandId>,
-    /// Непосредственный родитель (опционально).
-    pub causation: Option<Cause>,
 }
 
 /// Типизированный факт: что именно произошло. Past-tense, неизменяемый.
