@@ -2,14 +2,15 @@ use std::panic::AssertUnwindSafe;
 
 use futures_util::FutureExt;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep_until};
 
 use crate::{
     monitor::{
+        mode::IntervalMode,
         probe::{ProbeOutput, ProbeSpec},
         task::TaskId,
     },
-    polling::{PollConfig, Response, poll},
+    polling::{PollConfig, Response},
 };
 
 /// Эпоха воркера: монотонный номер, уникальный для каждого спавна задачи.
@@ -236,6 +237,8 @@ impl Worker {
             }
         };
 
+        let mode = IntervalMode::new(probe, self.poll.interval(), attempt);
+
         // 2) готов опрашивать
         let _ = self
             .report_tx
@@ -245,7 +248,6 @@ impl Worker {
             })
             .await;
 
-        let interval = self.poll.interval();
         let mut paused = false;
 
         loop {
@@ -268,8 +270,8 @@ impl Worker {
             }
 
             tokio::select! {
-                _ = sleep(interval) => {
-                    let polled = AssertUnwindSafe(poll(&attempt, &probe))
+                _ = sleep_until(mode.next_deadline()) => {
+                    let polled = AssertUnwindSafe(mode.do_work())
                         .catch_unwind()
                         .await;
                     match polled {
