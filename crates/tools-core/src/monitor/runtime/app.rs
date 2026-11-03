@@ -111,6 +111,7 @@ mod tests {
 
     use crate::{
         monitor::{
+            mode::ModeSpec,
             probe::{ProbeSpec, SnmpGetSpec},
             runtime::{Application, AppConfig},
             task::{MonitorSnapshot, TaskConfig, TaskStatus},
@@ -133,7 +134,8 @@ mod tests {
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
         let poll = PollConfig::try_new(Duration::from_secs(1), 0, attempt).unwrap();
-        TaskConfig::try_new(name.to_string(), probe, poll, 3).unwrap()
+        let mode = ModeSpec::Interval { probe, poll };
+        TaskConfig::try_new(name.to_string(), mode, 3).unwrap()
     }
 
     async fn poll_until(

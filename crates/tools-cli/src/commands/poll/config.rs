@@ -5,6 +5,7 @@ use serde::Deserialize;
 use tools_core::{
     error::Error,
     monitor::{
+        mode::ModeSpec,
         probe::{ProbeSpec, RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
         task::TaskConfig,
     },
@@ -93,7 +94,7 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
             dto.attempt_config.retries,
             dto.attempt_config.retry_delay,
         )?;
-        let poll_config = PollConfig::try_new(dto.interval, dto.limit, attempt)?;
+        let poll = PollConfig::try_new(dto.interval, dto.limit, attempt)?;
 
         let probe = match dto.query {
             QueryDto::SnmpGet(q) => {
@@ -109,10 +110,11 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
             )?),
         };
 
+        let mode = ModeSpec::Interval { probe, poll };
+
         Ok(TaskConfig::try_new(
             dto.name,
-            probe,
-            poll_config,
+            mode,
             dto.deep_history.unwrap_or_default(),
         )?)
     }
@@ -153,6 +155,6 @@ tasks:
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name(), "T-1");
-        assert_eq!(specs[0].poll_config().interval(), Duration::from_secs(5));
+        assert_eq!(specs[0].mode().interval(), Duration::from_secs(5));
     }
 }

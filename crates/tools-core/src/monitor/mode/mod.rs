@@ -1,11 +1,11 @@
 mod coordination;
 mod interval;
 
-use tokio::time::Instant;
+use tokio::time::{Duration, Instant};
 
 use crate::{
-    monitor::probe::ProbeOutput,
-    polling::{FatalError, Response},
+    monitor::probe::{self, ProbeBuildError, ProbeOutput, ProbeSpec},
+    polling::{AttemptConfig, FatalError, PollConfig, Response},
 };
 
 pub use coordination::{
@@ -35,6 +35,56 @@ impl Mode {
         match self {
             Mode::Interval(m) => m.do_work().await,
             Mode::Coordination(m) => m.do_work().await,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ModeSpec {
+    Interval { probe: ProbeSpec, poll: PollConfig },
+}
+
+impl ModeSpec {
+    pub fn probe(&self) -> &ProbeSpec {
+        match self {
+            ModeSpec::Interval { probe, .. } => probe,
+        }
+    }
+
+    pub fn interval(&self) -> Duration {
+        match self {
+            ModeSpec::Interval { poll, .. } => poll.interval(),
+        }
+    }
+
+    pub fn limit(&self) -> u64 {
+        match self {
+            ModeSpec::Interval { poll, .. } => poll.limit(),
+        }
+    }
+
+    pub fn attempt(&self) -> AttemptConfig {
+        match self {
+            ModeSpec::Interval { poll, .. } => poll.attempt(),
+        }
+    }
+
+    pub fn build_timeout(&self) -> Duration {
+        match self {
+            ModeSpec::Interval { poll, .. } => probe::build_timeout(&poll.attempt()),
+        }
+    }
+
+    pub async fn build(self) -> Result<Mode, ProbeBuildError> {
+        match self {
+            ModeSpec::Interval { probe, poll } => {
+                let built = probe.build(poll.attempt()).await?;
+                Ok(Mode::Interval(IntervalMode::new(
+                    built,
+                    poll.interval(),
+                    poll.attempt(),
+                )))
+            }
         }
     }
 }

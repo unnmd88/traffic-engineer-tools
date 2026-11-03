@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local};
 use derive_more::{Constructor, Display};
 
-use crate::{monitor::probe::ProbeSpec, polling::PollConfig};
+use crate::monitor::mode::ModeSpec;
 
 use super::error::TaskError;
 
@@ -17,8 +17,7 @@ impl SpecRevision {
 #[derive(Clone, Debug)]
 pub struct TaskConfig {
     name: String,
-    probe: ProbeSpec,
-    poll_config: PollConfig,
+    mode: ModeSpec,
     deep_history: u8,
 }
 
@@ -50,12 +49,8 @@ impl TaskSpec {
         &self.value.name()
     }
 
-    pub fn probe(&self) -> &ProbeSpec {
-        &self.value.probe()
-    }
-
-    pub fn poll_config(&self) -> PollConfig {
-        self.value.poll_config()
+    pub fn mode(&self) -> &ModeSpec {
+        self.value.mode()
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -72,20 +67,14 @@ impl TaskSpec {
 }
 
 impl TaskConfig {
-    pub fn try_new(
-        name: String,
-        probe: ProbeSpec,
-        poll_config: PollConfig,
-        deep_history: u8,
-    ) -> Result<Self, TaskError> {
+    pub fn try_new(name: String, mode: ModeSpec, deep_history: u8) -> Result<Self, TaskError> {
         if name.trim().is_empty() {
             return Err(TaskError::EmptyName);
         }
 
         Ok(Self {
             name,
-            probe,
-            poll_config,
+            mode,
             deep_history,
         })
     }
@@ -94,12 +83,8 @@ impl TaskConfig {
         &self.name
     }
 
-    pub fn probe(&self) -> &ProbeSpec {
-        &self.probe
-    }
-
-    pub fn poll_config(&self) -> PollConfig {
-        self.poll_config
+    pub fn mode(&self) -> &ModeSpec {
+        &self.mode
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -110,34 +95,36 @@ impl TaskConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{monitor::probe::SnmpGetSpec, polling::AttemptConfig};
+    use crate::{
+        monitor::{
+            mode::ModeSpec,
+            probe::{ProbeSpec, SnmpGetSpec},
+        },
+        polling::{AttemptConfig, PollConfig},
+    };
     use tokio::time::Duration;
 
-    fn valid_poll_config() -> PollConfig {
+    fn valid_mode() -> ModeSpec {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
-        PollConfig::try_new(Duration::from_secs(1), 0, attempt).unwrap()
-    }
-
-    fn valid_query() -> ProbeSpec {
-        ProbeSpec::SnmpGet(
+        let poll = PollConfig::try_new(Duration::from_secs(1), 0, attempt).unwrap();
+        let probe = ProbeSpec::SnmpGet(
             SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
                 .unwrap(),
-        )
+        );
+        ModeSpec::Interval { probe, poll }
     }
 
     #[test]
     fn rejects_empty_name() {
-        let err = TaskConfig::try_new("   ".to_string(), valid_query(), valid_poll_config(), 3)
-            .unwrap_err();
+        let err = TaskConfig::try_new("   ".to_string(), valid_mode(), 3).unwrap_err();
         assert!(matches!(err, TaskError::EmptyName));
     }
 
     #[test]
     fn accepts_valid_spec() {
-        let spec =
-            TaskConfig::try_new("T-1".to_string(), valid_query(), valid_poll_config(), 3).unwrap();
+        let spec = TaskConfig::try_new("T-1".to_string(), valid_mode(), 3).unwrap();
         assert_eq!(spec.name(), "T-1");
         assert_eq!(spec.deep_history(), 3);
     }

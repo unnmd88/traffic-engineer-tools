@@ -7,7 +7,6 @@ use tokio::time::{Duration, sleep};
 use crate::{
     monitor::{
         event::{ChangeKind, MonitorEvent},
-        probe,
         runtime::{
             error::OrchestratorError,
             restart_policy::RestartPolicy,
@@ -504,16 +503,12 @@ impl Orchestrator {
         };
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
-        let probe = entry.task.spec().probe().clone();
-        let poll = entry.task.spec().poll_config();
-        let build_timeout = probe::build_timeout(&poll.attempt());
+        let mode_spec = entry.task.spec().mode().clone();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let worker = Worker::new(
             task_id,
             generation,
-            probe,
-            poll,
-            build_timeout,
+            mode_spec,
             self.report_tx.clone(),
             cmd_rx,
         );
@@ -586,12 +581,12 @@ impl Orchestrator {
             id: t.id(),
             name: spec.name().to_string(),
             revision: spec.revision(),
-            target: spec.probe().target(),
+            target: spec.mode().probe().target(),
             status: status(entry),
-            interval: spec.poll_config().interval(),
-            limit: spec.poll_config().limit(),
-            probe: spec.probe().clone(),
-            attempt: spec.poll_config().attempt(),
+            interval: spec.mode().interval(),
+            limit: spec.mode().limit(),
+            probe: spec.mode().probe().clone(),
+            attempt: spec.mode().attempt(),
             deep_history: spec.deep_history(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
@@ -620,7 +615,7 @@ fn status(entry: &TaskEntry) -> TaskStatus {
 }
 
 fn limit_reached(entry: &TaskEntry) -> bool {
-    let limit = entry.task.spec().poll_config().limit();
+    let limit = entry.task.spec().mode().limit();
     limit > 0 && entry.task.metrics().total_attempts >= limit
 }
 

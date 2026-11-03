@@ -2,15 +2,15 @@ use std::panic::AssertUnwindSafe;
 
 use futures_util::FutureExt;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep_until};
+use tokio::time::sleep_until;
 
 use crate::{
     monitor::{
-        mode::{IntervalMode, Mode, Outcome},
-        probe::{ProbeOutput, ProbeSpec},
+        mode::{Mode, ModeSpec, Outcome},
+        probe::ProbeOutput,
         task::TaskId,
     },
-    polling::{PollConfig, Response},
+    polling::Response,
 };
 
 /// Эпоха воркера: монотонный номер, уникальный для каждого спавна задачи.
@@ -144,9 +144,7 @@ impl WorkerReport {
 pub struct Worker {
     task_id: TaskId,
     generation: Generation,
-    probe: ProbeSpec,
-    poll: PollConfig,
-    build_timeout: Duration,
+    mode_spec: ModeSpec,
     report_tx: mpsc::Sender<WorkerReport>,
     cmd_rx: mpsc::Receiver<WorkerCmd>,
 }
@@ -155,18 +153,14 @@ impl Worker {
     pub fn new(
         task_id: TaskId,
         generation: Generation,
-        probe: ProbeSpec,
-        poll: PollConfig,
-        build_timeout: Duration,
+        mode_spec: ModeSpec,
         report_tx: mpsc::Sender<WorkerReport>,
         cmd_rx: mpsc::Receiver<WorkerCmd>,
     ) -> Self {
         Self {
             task_id,
             generation,
-            probe,
-            poll,
-            build_timeout,
+            mode_spec,
             report_tx,
             cmd_rx,
         }
@@ -188,11 +182,11 @@ impl Worker {
     }
 
     async fn run_inner(mut self) {
-        let attempt = self.poll.attempt();
+        let build_timeout = self.mode_spec.build_timeout();
 
         let built = AssertUnwindSafe(tokio::time::timeout(
-            self.build_timeout,
-            self.probe.build(attempt),
+            build_timeout,
+            self.mode_spec.build(),
         ))
         .catch_unwind()
         .await;
@@ -212,8 +206,8 @@ impl Worker {
             }
         };
 
-        let probe = match built {
-            Ok(Ok(probe)) => probe,
+        let mode = match built {
+            Ok(Ok(mode)) => mode,
             Ok(Err(err)) => {
                 let _ = self
                     .report_tx
@@ -236,8 +230,6 @@ impl Worker {
                 return;
             }
         };
-
-        let mode = Mode::Interval(IntervalMode::new(probe, self.poll.interval(), attempt));
 
         // 2) готов опрашивать
         let _ = self
