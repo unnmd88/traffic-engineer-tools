@@ -5,7 +5,7 @@ mod poll;
 mod pollable;
 mod response;
 
-pub use config::{AttemptConfig, PollConfig};
+pub use config::AttemptConfig;
 pub use error::{AttemptError, ConfigError, FatalError, PollErrorContext};
 pub use metrics::Metrics;
 pub use poll::poll;

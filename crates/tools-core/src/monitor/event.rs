@@ -1,13 +1,10 @@
 use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
-use crate::{
-    monitor::{
-        probe::ProbeOutput,
-        runtime::worker::Generation,
-        task::{SpecRevision, TaskId},
-    },
-    polling::{Metrics, PollErrorContext, Response},
+use crate::monitor::{
+    probe::{ProbeError, ProbeExecution},
+    runtime::worker::Generation,
+    task::{ExecutionMetrics, SpecRevision, TaskId},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +23,9 @@ pub struct EventMeta {
 pub enum EventData {
     TaskAdded,
     TaskSpecUpdated,
-    TaskStarting { attempt: u32 },
+    TaskStarting {
+        attempt: u32,
+    },
     TaskStarted,
     TaskPaused,
     TaskResumed,
@@ -34,24 +33,17 @@ pub enum EventData {
     TaskCompleted,
     TaskRemoved,
 
-    PollSucceeded {
-        response: Response<ProbeOutput>,
-        metrics: Metrics,
-    },
-    PollNoResponse {
-        attempts: u8,
-        errors: Vec<PollErrorContext>,
-        elapsed: Duration,
-        metrics: Metrics,
-        consecutive_no_response: u32,
+    ProbeExecuted {
+        execution: ProbeExecution,
+        metrics: ExecutionMetrics,
     },
 
     BuildFailed {
         reason: String,
         retry_in: Option<Duration>,
     },
-    PollError {
-        reason: String,
+    ProbeError {
+        error: ProbeError,
         retry_in: Option<Duration>,
     },
     WorkerPanicked {

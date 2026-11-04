@@ -1,7 +1,7 @@
 use crate::polling::{
     AttemptConfig, AttemptError, FatalError, PollErrorContext, Pollable, Response,
 };
-use chrono::Local;
+use chrono::Utc;
 use tokio::time::{Instant, sleep, timeout};
 
 /// Одна итерация опроса: `1 + retries` попыток. Ретраит только `Transient`,
@@ -22,7 +22,7 @@ pub async fn poll<A: Pollable>(
         match attempt_result {
             Ok(Ok(payload)) => {
                 return Ok(Response::Success {
-                    timestamp: Local::now(),
+                    timestamp: Utc::now(),
                     attempts: attempt,
                     errors,
                     elapsed: started_at.elapsed(),
@@ -54,7 +54,7 @@ pub async fn poll<A: Pollable>(
     }
 
     Ok(Response::NoResponse {
-        timestamp: Local::now(),
+        timestamp: Utc::now(),
         attempts: total_attempts,
         errors,
         elapsed: started_at.elapsed(),

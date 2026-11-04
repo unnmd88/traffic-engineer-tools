@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use tabled::{Table, Tabled, settings::Style};
 
 use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::probe::{ProbeOutput, ProbeSpec};
+use tools_core::monitor::probe::{ProbeExecution, ProbeOutcome, ProbeSpec};
 use tools_core::monitor::task::{TaskId, TaskView};
 use tools_core::polling::Response;
 use tools_core::snmp::SnmpGetSample;
@@ -38,24 +38,23 @@ fn format_card(view: &TaskView) -> String {
     lines.push(labeled("Target", &view.target));
     lines.push(labeled("Revision", &view.revision.to_string()));
 
+    let attempt = view.spec.attempt();
     let timings = format!(
         "Interval: {:?} retries: {} timeout: {:?} retry_delay: {:?}",
-        view.interval,
-        view.attempt.retries(),
-        view.attempt.timeout(),
-        view.attempt.retry_delay()
+        view.spec.interval(),
+        attempt.retries(),
+        attempt.timeout(),
+        attempt.retry_delay()
     );
 
-    //lines.push(labeled("Interval", &format!("{:?}", view.interval)));
     lines.push(timings);
     lines.push(labeled("Limit", &format_limit(view)));
 
-    push_query(&mut lines, &view.probe);
+    push_query(&mut lines, &view.spec);
 
     bordered(&lines)
 }
 
-/// Результаты: динамичная часть (каждый опрос). Статус первым — его ищешь взглядом.
 fn format_results(view: &TaskView) -> String {
     let mut out = String::new();
 
@@ -64,11 +63,12 @@ fn format_results(view: &TaskView) -> String {
         None => out.push_str(&format!("Status: {}\n", view.status)),
     }
     out.push_str(&format!(
-        "Requests: {} (success: {} failed: {})  |  Latency: {}\n",
-        view.metrics.total_attempts,
+        "Executions: {} (success: {} degraded: {} failed: {})  |  Duration: {}\n",
+        view.metrics.executions,
         view.metrics.successful,
-        view.metrics.errors,
-        latency(view),
+        view.metrics.degraded,
+        view.metrics.failed,
+        execution_duration(view),
     ));
     out.push('\n');
     out.push_str(&format_response(view));
@@ -83,15 +83,21 @@ fn format_results(view: &TaskView) -> String {
 
 fn format_response(view: &TaskView) -> String {
     match view.result.as_ref() {
-        Some(Response::Success { payload, .. }) => match payload {
-            ProbeOutput::SnmpGet(samples) => {
+        Some(execution) => match &execution.outcome {
+            ProbeOutcome::SnmpGet(Response::Success {
+                payload: samples, ..
+            }) => {
                 format!("Snmp-get response:\n{}\n", format_oids_table(samples))
             }
-            ProbeOutput::SnmpSet(()) => "Snmp-set response: ok\n".to_string(),
+            ProbeOutcome::SnmpSet(Response::Success { .. }) => {
+                "Snmp-set response: ok\n".to_string()
+            }
+            ProbeOutcome::SnmpGet(Response::NoResponse { attempts, .. })
+            | ProbeOutcome::SnmpSet(Response::NoResponse { attempts, .. }) => {
+                format!("No response: {attempts} attempts\n")
+            }
+            _ => format!("Probe outcome: {:?}\n", execution.outcome.status()),
         },
-        Some(Response::NoResponse { errors, .. }) => {
-            format!("No response: {} attempts\n", errors.len())
-        }
         None => String::new(),
     }
 }
@@ -99,30 +105,43 @@ fn format_response(view: &TaskView) -> String {
 fn format_history(view: &TaskView) -> String {
     let mut out = format!("History: {}\n", view.history.len());
     for h in &view.history {
-        let kind = match h.result.as_ref() {
-            None => "initial".to_string(),
-            Some(Response::Success {
-                attempts, elapsed, ..
-            }) => format!("success(attempts: {attempts}, {}ms)", elapsed.as_millis()),
-            Some(Response::NoResponse { .. }) => "no response".to_string(),
-        };
+        let kind = format_execution_summary(&h.result);
         out.push_str(&format!("  {kind} {}\n", h.timestamp.format(DT_FMT_WITH_MICROSECONDS)));
     }
     out
 }
 
+fn format_execution_summary(execution: &ProbeExecution) -> String {
+    match &execution.outcome {
+        ProbeOutcome::SnmpGet(response) => format_response_summary(response),
+        ProbeOutcome::SnmpSet(response) => format_response_summary(response),
+        _ => format!("{:?}", execution.outcome.status()),
+    }
+}
+
+fn format_response_summary<T>(response: &Response<T>) -> String {
+    match response {
+        Response::Success {
+            attempts, elapsed, ..
+        } => {
+            format!("success(attempts: {attempts}, {}ms)", elapsed.as_millis())
+        }
+        Response::NoResponse { attempts, .. } => format!("no response(attempts: {attempts})"),
+    }
+}
+
 fn push_query(lines: &mut Vec<String>, q: &ProbeSpec) {
     match q {
-        ProbeSpec::SnmpGet(q) => {
+        ProbeSpec::SnmpGet { request, .. } => {
             lines.push("Oids to request:".to_string());
-            for item in &q.oids {
+            for item in &request.oids {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{}", item.oid));
             }
         }
-        ProbeSpec::SnmpSet(q) => {
+        ProbeSpec::SnmpSet { request, .. } => {
             lines.push("Oids to set:".to_string());
-            for item in &q.sets {
+            for item in &request.sets {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{:<32} = {}", item.oid, item.value));
             }
@@ -181,19 +200,19 @@ fn bordered(lines: &[String]) -> String {
 }
 
 fn format_limit(view: &TaskView) -> String {
-    match view.limit {
+    match view.spec.limit() {
         0 => "no limit".to_string(),
-        n => format!("{n} ({} left)", n.saturating_sub(view.metrics.total_attempts)),
+        n => format!("{n} ({} left)", n.saturating_sub(view.metrics.executions)),
     }
 }
 
-fn latency(view: &TaskView) -> String {
-    if view.metrics.successful > 0 {
+fn execution_duration(view: &TaskView) -> String {
+    if let (Some(min), Some(max)) = (view.metrics.min_duration, view.metrics.max_duration) {
         format!(
             "{}ms (min: {}ms max: {}ms)",
-            view.metrics.current_latency_ms,
-            view.metrics.min_latency_ms,
-            view.metrics.max_latency_ms
+            view.metrics.current_duration.as_millis(),
+            min.as_millis(),
+            max.as_millis()
         )
     } else {
         "n/a".to_string()

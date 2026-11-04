@@ -4,20 +4,17 @@ use chrono::Utc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{Duration, sleep};
 
-use crate::{
-    monitor::{
-        event::{EventData, EventMeta, MonitorEvent},
-        runtime::{
-            error::OrchestratorError,
-            restart_policy::RestartPolicy,
-            worker::{Generation, Worker, WorkerCmd, WorkerReport},
-        },
-        task::{
-            HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
-            TaskView,
-        },
+use crate::monitor::{
+    event::{EventData, EventMeta, MonitorEvent},
+    runtime::{
+        error::OrchestratorError,
+        restart_policy::RestartPolicy,
+        worker::{Generation, Worker, WorkerCmd, WorkerReport},
     },
-    polling::Response,
+    task::{
+        HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
+        TaskView,
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -394,6 +391,7 @@ impl Orchestrator {
 
     async fn on_report(&mut self, rep: WorkerReport) {
         let (task_id, generation) = rep.key();
+        let mut completed = false;
 
         let (data, respawn_after): (Option<EventData>, Option<Duration>) = {
             let Some(entry) = self.entries.get_mut(&task_id) else {
@@ -453,70 +451,43 @@ impl Orchestrator {
                         Some(delay),
                     )
                 }
-                WorkerReport::Polled { response, .. } => {
-                    let new_metrics = match &response {
-                        Response::Success { elapsed, .. } => {
-                            entry.task.metrics().with_success(*elapsed)
-                        }
-                        Response::NoResponse { .. } => entry.task.metrics().with_error(),
-                    };
-                    entry.task.apply_poll(response.clone(), new_metrics);
+                WorkerReport::Executed { execution, .. } => {
+                    entry.task.apply_execution(execution.clone());
                     if limit_reached(entry) {
                         if let Some(w) = entry.worker.take() {
                             w.abort.abort();
                         }
                         entry.state = TaskState::Completed;
-                        (Some(EventData::TaskCompleted), None)
-                    } else {
-                        match response {
-                            Response::Success { .. } => (
-                                Some(EventData::PollSucceeded {
-                                    response,
-                                    metrics: new_metrics,
-                                }),
-                                None,
-                            ),
-                            Response::NoResponse {
-                                attempts,
-                                errors,
-                                elapsed,
-                                ..
-                            } => {
-                                let consecutive = entry.task.health().consecutive_no_response;
-                                (
-                                    Some(EventData::PollNoResponse {
-                                        attempts,
-                                        errors,
-                                        elapsed,
-                                        metrics: new_metrics,
-                                        consecutive_no_response: consecutive,
-                                    }),
-                                    None,
-                                )
-                            }
-                        }
+                        completed = true;
                     }
+                    (
+                        Some(EventData::ProbeExecuted {
+                            execution,
+                            metrics: entry.task.metrics(),
+                        }),
+                        None,
+                    )
                 }
-                WorkerReport::PollFailed { reason, .. } => {
+                WorkerReport::ExecutionFailed { error, .. } => {
                     entry.worker = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error(reason.clone());
+                    entry.task.record_error(error.to_string());
                     (
-                        Some(EventData::PollError {
-                            reason,
+                        Some(EventData::ProbeError {
+                            error,
                             retry_in: Some(delay),
                         }),
                         Some(delay),
                     )
                 }
-                WorkerReport::PollPanicked { reason, .. } => {
+                WorkerReport::ExecutionPanicked { reason, .. } => {
                     entry.worker = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    let reason = format!("poll: {reason}");
+                    let reason = format!("execution: {reason}");
                     entry.task.record_error(reason.clone());
                     (
                         Some(EventData::WorkerPanicked {
@@ -555,6 +526,9 @@ impl Orchestrator {
         if let Some(data) = data {
             self.emit(task_id, data).await;
         }
+        if completed {
+            self.emit(task_id, EventData::TaskCompleted).await;
+        }
         if let Some(delay) = respawn_after {
             self.schedule_respawn(task_id, delay);
         }
@@ -567,15 +541,9 @@ impl Orchestrator {
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
         entry.generation = generation;
-        let mode_spec = entry.task.spec().mode().clone();
+        let probe_spec = entry.task.spec().probe().clone();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
-        let worker = Worker::new(
-            task_id,
-            generation,
-            mode_spec,
-            self.report_tx.clone(),
-            cmd_rx,
-        );
+        let worker = Worker::new(task_id, generation, probe_spec, self.report_tx.clone(), cmd_rx);
         let join = tokio::spawn(worker.run());
         entry.worker = Some(WorkerHandle {
             generation,
@@ -604,7 +572,8 @@ impl Orchestrator {
                 entry.state = TaskState::Starting;
             }
             self.spawn_worker(task_id);
-            self.emit(task_id, EventData::TaskStarting { attempt }).await;
+            self.emit(task_id, EventData::TaskStarting { attempt })
+                .await;
         }
     }
 
@@ -655,7 +624,7 @@ impl Orchestrator {
             .iter()
             .map(|h| HistoryEntryView {
                 timestamp: h.timestamp,
-                result: Some(h.result.clone()),
+                result: h.result.clone(),
             })
             .collect();
 
@@ -663,13 +632,10 @@ impl Orchestrator {
             id: t.id(),
             name: spec.name().to_string(),
             revision: spec.revision(),
-            target: spec.mode().probe().target(),
+            target: spec.probe().target(),
             status: status(entry),
-            interval: spec.mode().interval(),
-            limit: spec.mode().limit(),
-            probe: spec.mode().probe().clone(),
-            attempt: spec.mode().attempt(),
             deep_history: spec.deep_history(),
+            spec: spec.probe().clone(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
             history,
@@ -697,8 +663,8 @@ fn status(entry: &TaskEntry) -> TaskStatus {
 }
 
 fn limit_reached(entry: &TaskEntry) -> bool {
-    let limit = entry.task.spec().mode().limit();
-    limit > 0 && entry.task.metrics().total_attempts >= limit
+    let limit = entry.task.spec().probe().limit();
+    limit > 0 && entry.task.metrics().executions >= limit
 }
 
 /// Надёжный сток: единственный потребитель record-канала.
@@ -815,5 +781,181 @@ impl OrchestratorHandle {
             .await
             .map_err(|_| OrchestratorError::ChannelClosed)?;
         rx.await.map_err(|_| OrchestratorError::ChannelClosed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::DateTime;
+
+    use super::*;
+    use crate::{
+        monitor::{
+            probe::{ProbeError, ProbeExecution, ProbeOutcome, ProbeSpec, SnmpGetSpec},
+            task::ExecutionMetrics,
+        },
+        polling::{AttemptConfig, FatalError, Response},
+    };
+
+    fn active_task(limit: u64) -> (Orchestrator, broadcast::Receiver<MonitorEvent>, TaskId) {
+        let (mut orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), "test".to_string());
+        let events = handle.subscribe();
+        let task_id = TaskId(1);
+        let request =
+            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap();
+        let attempt =
+            AttemptConfig::try_new(Duration::from_millis(10), 2, Duration::from_millis(1)).unwrap();
+        let probe = ProbeSpec::snmp_get(request, Duration::from_secs(1), limit, attempt).unwrap();
+        let task = Task::new(task_id, TaskConfig::try_new("test".to_string(), probe, 3).unwrap());
+        let (cmd, _cmd_rx) = mpsc::channel(8);
+        let join = tokio::spawn(std::future::pending::<()>());
+        orchestrator.entries.insert(
+            task_id,
+            TaskEntry {
+                task,
+                state: TaskState::Active,
+                attempts: 0,
+                next_generation: Generation::first().next(),
+                generation: Generation::first(),
+                worker: Some(WorkerHandle {
+                    generation: Generation::first(),
+                    abort: join.abort_handle(),
+                    cmd,
+                }),
+            },
+        );
+        (orchestrator, events, task_id)
+    }
+
+    fn execution(at: i64, success: bool) -> ProbeExecution {
+        let finished_at = DateTime::from_timestamp(at, 0).unwrap();
+        let response = if success {
+            Response::Success {
+                timestamp: finished_at,
+                attempts: 3,
+                errors: vec![],
+                elapsed: Duration::from_millis(25),
+                payload: vec![],
+            }
+        } else {
+            Response::NoResponse {
+                timestamp: finished_at,
+                attempts: 3,
+                errors: vec![],
+                elapsed: Duration::from_millis(30),
+            }
+        };
+        ProbeExecution {
+            finished_at,
+            elapsed: Duration::from_millis(if success { 50 } else { 80 }),
+            outcome: ProbeOutcome::SnmpGet(response),
+        }
+    }
+
+    async fn execute(orchestrator: &mut Orchestrator, task_id: TaskId, execution: ProbeExecution) {
+        orchestrator
+            .on_report(WorkerReport::Executed {
+                task_id,
+                generation: Generation::first(),
+                execution,
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn no_response_is_an_execution_and_does_not_restart_the_worker() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let first = execution(100, false);
+        execute(&mut orchestrator, task_id, first.clone()).await;
+
+        let event = events.try_recv().unwrap();
+        let EventData::ProbeExecuted { execution, metrics } = event.data else {
+            panic!("expected an execution event");
+        };
+        let snapshot = orchestrator.snapshot();
+        let task = &snapshot.tasks[0];
+        assert_eq!(task.status, TaskStatus::Active);
+        assert_eq!(task.metrics.executions, 1);
+        assert_eq!(task.metrics.failed, 1);
+        assert_eq!(task.metrics.current_duration, first.elapsed);
+        assert_eq!(task.metrics, metrics);
+        assert_eq!(task.health.consecutive_failures, 1);
+        assert_eq!(task.health.last_execution_at, Some(first.finished_at));
+        assert_eq!(task.result.as_ref().unwrap().finished_at, execution.finished_at);
+        assert!(orchestrator.entries[&task_id].worker.is_some());
+
+        execute(&mut orchestrator, task_id, self::execution(200, true)).await;
+        let snapshot = orchestrator.snapshot();
+        let task = &snapshot.tasks[0];
+        assert_eq!(task.metrics.executions, 2);
+        assert_eq!(task.metrics.successful, 1);
+        assert_eq!(task.metrics.failed, 1);
+        assert_eq!(task.health.consecutive_failures, 0);
+        assert_eq!(task.history.len(), 1);
+        assert_eq!(task.history[0].timestamp, first.finished_at);
+        assert_eq!(task.history[0].result.finished_at, first.finished_at);
+    }
+
+    #[tokio::test]
+    async fn final_execution_is_published_before_task_completion() {
+        let (mut orchestrator, mut events, task_id) = active_task(1);
+        execute(&mut orchestrator, task_id, execution(100, true)).await;
+
+        let executed = events.try_recv().unwrap();
+        let completed = events.try_recv().unwrap();
+        assert!(matches!(executed.data, EventData::ProbeExecuted { .. }));
+        assert!(matches!(completed.data, EventData::TaskCompleted));
+        assert_eq!(completed.metadata.seq, executed.metadata.seq + 1);
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
+        assert_eq!(snapshot.tasks[0].metrics.executions, 1);
+        assert!(snapshot.tasks[0].result.is_some());
+        assert!(orchestrator.entries[&task_id].worker.is_none());
+    }
+
+    #[tokio::test]
+    async fn execution_from_another_generation_is_ignored() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        orchestrator
+            .on_report(WorkerReport::Executed {
+                task_id,
+                generation: Generation::first().next(),
+                execution: execution(100, true),
+            })
+            .await;
+
+        assert!(events.try_recv().is_err());
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].metrics, ExecutionMetrics::default());
+        assert!(snapshot.tasks[0].result.is_none());
+    }
+
+    #[tokio::test]
+    async fn execution_error_preserves_its_type_and_restarts_the_worker() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        orchestrator
+            .on_report(WorkerReport::ExecutionFailed {
+                task_id,
+                generation: Generation::first(),
+                error: ProbeError::Polling(FatalError {
+                    message: "invalid request".to_string(),
+                }),
+            })
+            .await;
+
+        assert!(matches!(
+            events.try_recv().unwrap().data,
+            EventData::ProbeError {
+                error: ProbeError::Polling(FatalError { message }),
+                retry_in: Some(_),
+            } if message == "invalid request"
+        ));
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
+        assert_eq!(snapshot.tasks[0].metrics.executions, 0);
+        assert!(snapshot.tasks[0].result.is_none());
+        assert!(orchestrator.entries[&task_id].worker.is_none());
     }
 }

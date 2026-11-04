@@ -1,13 +1,10 @@
-use std::{collections::VecDeque, mem};
+use std::collections::VecDeque;
 
-use crate::{
-    monitor::{
-        probe::ProbeOutput,
-        task::{SpecRevision, TaskConfig, TaskSpec},
-    },
-    polling::{Metrics, PollConfig, Response},
+use crate::monitor::{
+    probe::{OutcomeStatus, ProbeExecution},
+    task::{ExecutionMetrics, TaskConfig, TaskSpec},
 };
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
@@ -24,11 +21,10 @@ pub enum TaskStatus {
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
 pub struct TaskId(pub u64);
 
-/// Одна запись истории: предыдущий результат опроса.
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
-    pub timestamp: DateTime<Local>,
-    pub result: Response<ProbeOutput>,
+    pub timestamp: DateTime<Utc>,
+    pub result: ProbeExecution,
 }
 
 /// Кольцо последних N результатов. `deep_history == 0` → всегда пустое.
@@ -74,27 +70,21 @@ impl History {
     }
 }
 
-/// Здоровье: агрегат последних опросов (для диагностики «почему не шёл»).
 #[derive(Clone, Debug, Default)]
 pub struct Health {
-    pub last_poll_at: Option<DateTime<Local>>,
-    pub consecutive_no_response: u32,
+    pub last_execution_at: Option<DateTime<Utc>>,
+    pub consecutive_failures: u64,
     pub last_error: Option<String>,
 }
 
 impl Health {
-    pub fn record(&mut self, r: &Response<ProbeOutput>) {
-        self.last_poll_at = Some(Local::now());
-        match r {
-            Response::Success { .. } => {
-                self.consecutive_no_response = 0;
-                self.last_error = None;
-            }
-            Response::NoResponse { errors, .. } => {
-                self.consecutive_no_response += 1;
-                self.last_error = errors.last().map(|e| e.message.clone());
-            }
+    pub fn record(&mut self, execution: &ProbeExecution) {
+        self.last_execution_at = Some(execution.finished_at);
+        match execution.outcome.status() {
+            OutcomeStatus::Failed => self.consecutive_failures += 1,
+            OutcomeStatus::Succeeded | OutcomeStatus::Degraded => self.consecutive_failures = 0,
         }
+        self.last_error = None;
     }
 
     pub fn record_error(&mut self, reason: String) {
@@ -106,29 +96,28 @@ impl Health {
     }
 }
 
-/// Данные одной задачи: что опрашивать + что получили. Без статуса (он производный).
 #[derive(Clone, Debug)]
 pub struct Task {
     id: TaskId,
     spec: TaskSpec,
-    last_result: Option<Response<ProbeOutput>>,
+    last_result: Option<ProbeExecution>,
     history: History,
-    metrics: Metrics,
+    metrics: ExecutionMetrics,
     health: Health,
-    created_at: DateTime<Local>,
-    updated_at: DateTime<Local>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 impl Task {
     pub fn new(id: TaskId, spec: TaskConfig) -> Self {
-        let dt = Local::now();
+        let dt = Utc::now();
         let deep_history = spec.deep_history();
         let spec = TaskSpec::new(spec);
         Self {
             id,
             spec,
             last_result: None,
-            metrics: Metrics::default(),
+            metrics: ExecutionMetrics::default(),
             health: Health::default(),
             history: History::new(deep_history),
             created_at: dt,
@@ -144,19 +133,19 @@ impl Task {
         &self.spec
     }
 
-    pub fn last_result(&self) -> Option<&Response<ProbeOutput>> {
+    pub fn last_result(&self) -> Option<&ProbeExecution> {
         self.last_result.as_ref()
     }
 
-    pub fn metrics(&self) -> Metrics {
+    pub fn metrics(&self) -> ExecutionMetrics {
         self.metrics
     }
 
-    pub fn created_at(&self) -> &DateTime<Local> {
+    pub fn created_at(&self) -> &DateTime<Utc> {
         &self.created_at
     }
 
-    pub fn updated_at(&self) -> &DateTime<Local> {
+    pub fn updated_at(&self) -> &DateTime<Utc> {
         &self.updated_at
     }
 
@@ -168,18 +157,16 @@ impl Task {
         &self.health
     }
 
-    /// Пришёл результат опроса: старый → история, новый → текущий, обновить метрики и здоровье.
-    pub fn apply_poll(&mut self, result: Response<ProbeOutput>, metrics: Metrics) {
+    pub fn apply_execution(&mut self, result: ProbeExecution) {
         self.health.record(&result);
-        let ts = Local::now();
-        if let Some(prev) = mem::replace(&mut self.last_result, Some(result)) {
+        self.metrics.record(result.outcome.status(), result.elapsed);
+        self.updated_at = result.finished_at;
+        if let Some(prev) = self.last_result.replace(result) {
             self.history.push(HistoryEntry {
-                timestamp: ts,
+                timestamp: prev.finished_at,
                 result: prev,
             });
         }
-        self.metrics = metrics;
-        self.updated_at = ts;
     }
 
     /// Записать причину сбоя (для диагностики «почему Restarting»).
@@ -195,13 +182,13 @@ impl Task {
     /// Заменить спеку (value object) и поднять версию.
     pub fn update_spec(&mut self, spec: TaskConfig) {
         self.spec = self.spec.next(spec);
-        self.updated_at = Local::now();
+        self.updated_at = Utc::now();
     }
 
     /// Новый запуск: сброс накопительных метрик и здоровья (result/history остаются).
     pub fn reset_run(&mut self) {
-        self.metrics = Metrics::default();
+        self.metrics = ExecutionMetrics::default();
         self.health = Health::default();
-        self.updated_at = Local::now();
+        self.updated_at = Utc::now();
     }
 }

@@ -1,6 +1,12 @@
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
+pub enum ProbeError {
+    #[error(transparent)]
+    Polling(#[from] crate::polling::FatalError),
+}
+
+#[derive(Error, Debug, Clone)]
 pub enum ProbeBuildError {
     #[error("can't create snmp-driver, try again later")]
     SnmpClientCreate,

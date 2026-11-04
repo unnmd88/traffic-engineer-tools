@@ -5,11 +5,10 @@ use serde::Deserialize;
 use tools_core::{
     error::Error,
     monitor::{
-        mode::ModeSpec,
         probe::{ProbeSpec, RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
         task::TaskConfig,
     },
-    polling::{AttemptConfig, PollConfig},
+    polling::AttemptConfig,
 };
 
 /// DTO конфига (serde на границе CLI; сырые строки).
@@ -94,27 +93,31 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
             dto.attempt_config.retries,
             dto.attempt_config.retry_delay,
         )?;
-        let poll = PollConfig::try_new(dto.interval, dto.limit, attempt)?;
+        let interval = dto.interval;
+        let limit = dto.limit;
 
         let probe = match dto.query {
             QueryDto::SnmpGet(q) => {
-                ProbeSpec::SnmpGet(SnmpGetSpec::from_raw(q.host, q.port, q.community, q.profile, q.oids)?)
+                let request =
+                    SnmpGetSpec::from_raw(q.host, q.port, q.community, q.profile, q.oids)?;
+                ProbeSpec::snmp_get(request, interval, limit, attempt)?
             }
-            QueryDto::SnmpSet(q) => ProbeSpec::SnmpSet(SnmpSetSpec::from_raw(
-                q.host,
-                q.port,
-                q.community_r,
-                q.community,
-                q.profile,
-                q.oids,
-            )?),
+            QueryDto::SnmpSet(q) => {
+                let request = SnmpSetSpec::from_raw(
+                    q.host,
+                    q.port,
+                    q.community_r,
+                    q.community,
+                    q.profile,
+                    q.oids,
+                )?;
+                ProbeSpec::snmp_set(request, interval, limit, attempt)?
+            }
         };
-
-        let mode = ModeSpec::Interval { probe, poll };
 
         Ok(TaskConfig::try_new(
             dto.name,
-            mode,
+            probe,
             dto.deep_history.unwrap_or_default(),
         )?)
     }
@@ -155,6 +158,6 @@ tasks:
 
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name(), "T-1");
-        assert_eq!(specs[0].mode().interval(), Duration::from_secs(5));
+        assert_eq!(specs[0].probe().interval(), Duration::from_secs(5));
     }
 }

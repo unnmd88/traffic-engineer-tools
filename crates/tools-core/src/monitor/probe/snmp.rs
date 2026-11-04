@@ -2,11 +2,14 @@ use std::net::IpAddr;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use crate::{
-    monitor::probe::error::{ProbeBuildError, SnmpQueryError},
-    polling::{AttemptConfig, AttemptError, Pollable},
+    monitor::probe::{
+        ProbeError, ProbeOutcome,
+        error::{ProbeBuildError, SnmpQueryError},
+    },
+    polling::{AttemptConfig, AttemptError, Pollable, poll},
     snmp::{
         ParseError, SnmpClient, SnmpClientConfig, SnmpError, SnmpGetSample,
         business_value::BusinessValue,
@@ -67,11 +70,35 @@ pub struct SnmpSetSpec {
 pub struct SnmpGetProbe {
     client: SnmpClient,
     items: Vec<SnmpGetItem>,
+    interval: Duration,
+    attempt: AttemptConfig,
 }
 
 impl SnmpGetProbe {
-    pub fn new(client: SnmpClient, items: Vec<SnmpGetItem>) -> Self {
-        Self { client, items }
+    pub fn new(
+        client: SnmpClient,
+        items: Vec<SnmpGetItem>,
+        interval: Duration,
+        attempt: AttemptConfig,
+    ) -> Self {
+        Self {
+            client,
+            items,
+            interval,
+            attempt,
+        }
+    }
+
+    pub fn next_deadline(&self) -> Instant {
+        Instant::now() + self.interval
+    }
+
+    pub async fn do_work(&mut self) -> Result<ProbeOutcome, ProbeError> {
+        let attempt = self.attempt;
+        poll(&attempt, &*self)
+            .await
+            .map(ProbeOutcome::SnmpGet)
+            .map_err(ProbeError::from)
     }
 }
 
@@ -114,11 +141,35 @@ impl Pollable for SnmpGetProbe {
 pub struct SnmpSetProbe {
     client: SnmpClient,
     items: Vec<SnmpSetItem>,
+    interval: Duration,
+    attempt: AttemptConfig,
 }
 
 impl SnmpSetProbe {
-    pub fn new(client: SnmpClient, items: Vec<SnmpSetItem>) -> Self {
-        Self { client, items }
+    pub fn new(
+        client: SnmpClient,
+        items: Vec<SnmpSetItem>,
+        interval: Duration,
+        attempt: AttemptConfig,
+    ) -> Self {
+        Self {
+            client,
+            items,
+            interval,
+            attempt,
+        }
+    }
+
+    pub fn next_deadline(&self) -> Instant {
+        Instant::now() + self.interval
+    }
+
+    pub async fn do_work(&mut self) -> Result<ProbeOutcome, ProbeError> {
+        let attempt = self.attempt;
+        poll(&attempt, &*self)
+            .await
+            .map(ProbeOutcome::SnmpSet)
+            .map_err(ProbeError::from)
     }
 }
 
@@ -185,7 +236,11 @@ impl SnmpGetSpec {
         })
     }
 
-    pub async fn build(self, attempt: AttemptConfig) -> Result<SnmpGetProbe, ProbeBuildError> {
+    pub async fn build(
+        self,
+        attempt: AttemptConfig,
+        interval: Duration,
+    ) -> Result<SnmpGetProbe, ProbeBuildError> {
         let transport_timeout = transport_timeout(&attempt);
         let client = connect(self.host, self.port, self.community, transport_timeout).await?;
 
@@ -195,7 +250,7 @@ impl SnmpGetSpec {
             .await
             .map_err(|e| ProbeBuildError::Other(e.to_string()))?;
 
-        Ok(SnmpGetProbe::new(client, resolved))
+        Ok(SnmpGetProbe::new(client, resolved, interval, attempt))
     }
 }
 
@@ -242,7 +297,11 @@ impl SnmpSetSpec {
         })
     }
 
-    pub async fn build(self, attempt: AttemptConfig) -> Result<SnmpSetProbe, ProbeBuildError> {
+    pub async fn build(
+        self,
+        attempt: AttemptConfig,
+        interval: Duration,
+    ) -> Result<SnmpSetProbe, ProbeBuildError> {
         let transport_timeout = transport_timeout(&attempt);
         let client = connect(self.host, self.port, self.community, transport_timeout).await?;
 
@@ -257,7 +316,7 @@ impl SnmpSetSpec {
             .await
             .map_err(|e| ProbeBuildError::Other(e.to_string()))?;
 
-        Ok(SnmpSetProbe::new(client, resolved))
+        Ok(SnmpSetProbe::new(client, resolved, interval, attempt))
     }
 }
 
@@ -351,14 +410,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_ip() {
-        let err = SnmpGetSpec::from_raw(
-            "not-an-ip".to_string(),
-            161,
-            "public".to_string(),
-            None,
-            vec![],
-        )
-        .unwrap_err();
+        let err =
+            SnmpGetSpec::from_raw("not-an-ip".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap_err();
 
         assert!(matches!(err, SnmpQueryError::InvalidIpAddress { .. }));
     }

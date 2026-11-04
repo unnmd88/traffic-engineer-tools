@@ -2,7 +2,7 @@ use tokio::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Metrics {
-    pub total_attempts: u64,
+    pub polls: u64,
     pub successful: u64,
     pub errors: u64,
     pub current_latency_ms: u64,
@@ -13,7 +13,7 @@ pub struct Metrics {
 impl Metrics {
     pub fn new() -> Self {
         Self {
-            total_attempts: 0,
+            polls: 0,
             successful: 0,
             errors: 0,
             current_latency_ms: 0,
@@ -27,7 +27,7 @@ impl Metrics {
         let new_successful = self.successful + 1;
 
         Self {
-            total_attempts: self.total_attempts + 1,
+            polls: self.polls + 1,
             successful: new_successful,
             errors: self.errors,
             current_latency_ms,
@@ -38,7 +38,7 @@ impl Metrics {
 
     pub fn with_error(self) -> Self {
         Self {
-            total_attempts: self.total_attempts + 1,
+            polls: self.polls + 1,
             successful: self.successful,
             errors: self.errors + 1,
             ..self

@@ -1,10 +1,6 @@
 use chrono::{DateTime, Utc};
 use thiserror::Error;
-use tokio::time::{Duration, Instant};
-
-use crate::polling::FatalError;
-
-use super::Outcome;
+use tokio::time::Duration;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum CoordinationError {
@@ -102,33 +98,6 @@ impl Epoch {
 pub struct PhaseSetResult {
     pub phase: u32,
     pub ok: bool,
-}
-
-#[allow(dead_code)]
-pub struct CoordinationMode {
-    epoch: Epoch,
-    cycle: Cycle,
-    keepalive: Duration,
-    resolution: Duration,
-}
-
-impl CoordinationMode {
-    pub fn new(epoch: Epoch, cycle: Cycle, keepalive: Duration, resolution: Duration) -> Self {
-        Self {
-            epoch,
-            cycle,
-            keepalive,
-            resolution,
-        }
-    }
-
-    pub fn next_deadline(&self) -> Instant {
-        Instant::now() + self.resolution
-    }
-
-    pub async fn do_work(&self) -> Result<Option<Outcome>, FatalError> {
-        todo!("coordination not implemented")
-    }
 }
 
 #[cfg(test)]

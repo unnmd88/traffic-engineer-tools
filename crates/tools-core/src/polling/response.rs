@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::polling::PollErrorContext;
@@ -12,14 +12,14 @@ use crate::polling::PollErrorContext;
 #[derive(Debug, Clone)]
 pub enum Response<T> {
     Success {
-        timestamp: DateTime<Local>,
+        timestamp: DateTime<Utc>,
         attempts: u8,
         errors: Vec<PollErrorContext>,
         elapsed: Duration,
         payload: T,
     },
     NoResponse {
-        timestamp: DateTime<Local>,
+        timestamp: DateTime<Utc>,
         attempts: u8,
         errors: Vec<PollErrorContext>,
         elapsed: Duration,

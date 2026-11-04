@@ -1,7 +1,7 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
 
-use crate::monitor::mode::ModeSpec;
+use crate::monitor::probe::ProbeSpec;
 
 use super::error::TaskError;
 
@@ -17,7 +17,7 @@ impl SpecRevision {
 #[derive(Clone, Debug)]
 pub struct TaskConfig {
     name: String,
-    mode: ModeSpec,
+    probe: ProbeSpec,
     deep_history: u8,
 }
 
@@ -25,7 +25,7 @@ pub struct TaskConfig {
 pub struct TaskSpec {
     value: TaskConfig,
     revision: SpecRevision,
-    updated_at: DateTime<Local>,
+    updated_at: DateTime<Utc>,
 }
 
 impl TaskSpec {
@@ -33,7 +33,7 @@ impl TaskSpec {
         Self {
             value: spec,
             revision: SpecRevision::new(1),
-            updated_at: Local::now(),
+            updated_at: Utc::now(),
         }
     }
 
@@ -41,7 +41,7 @@ impl TaskSpec {
         Self {
             value: spec,
             revision: self.revision.next(),
-            updated_at: Local::now(),
+            updated_at: Utc::now(),
         }
     }
 
@@ -49,8 +49,8 @@ impl TaskSpec {
         &self.value.name()
     }
 
-    pub fn mode(&self) -> &ModeSpec {
-        self.value.mode()
+    pub fn probe(&self) -> &ProbeSpec {
+        self.value.probe()
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -61,20 +61,20 @@ impl TaskSpec {
         self.revision
     }
 
-    pub fn updated_at(&self) -> DateTime<Local> {
+    pub fn updated_at(&self) -> DateTime<Utc> {
         self.updated_at
     }
 }
 
 impl TaskConfig {
-    pub fn try_new(name: String, mode: ModeSpec, deep_history: u8) -> Result<Self, TaskError> {
+    pub fn try_new(name: String, probe: ProbeSpec, deep_history: u8) -> Result<Self, TaskError> {
         if name.trim().is_empty() {
             return Err(TaskError::EmptyName);
         }
 
         Ok(Self {
             name,
-            mode,
+            probe,
             deep_history,
         })
     }
@@ -83,8 +83,8 @@ impl TaskConfig {
         &self.name
     }
 
-    pub fn mode(&self) -> &ModeSpec {
-        &self.mode
+    pub fn probe(&self) -> &ProbeSpec {
+        &self.probe
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -96,35 +96,35 @@ impl TaskConfig {
 mod tests {
     use super::*;
     use crate::{
-        monitor::{
-            mode::ModeSpec,
-            probe::{ProbeSpec, SnmpGetSpec},
-        },
-        polling::{AttemptConfig, PollConfig},
+        monitor::probe::{ProbeSpec, SnmpGetSpec},
+        polling::AttemptConfig,
     };
     use tokio::time::Duration;
 
-    fn valid_mode() -> ModeSpec {
+    fn valid_probe() -> ProbeSpec {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
-        let poll = PollConfig::try_new(Duration::from_secs(1), 0, attempt).unwrap();
-        let probe = ProbeSpec::SnmpGet(
-            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
-                .unwrap(),
-        );
-        ModeSpec::Interval { probe, poll }
+        let request = SnmpGetSpec::from_raw(
+            "127.0.0.1".to_string(),
+            161,
+            "public".to_string(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        ProbeSpec::snmp_get(request, Duration::from_secs(1), 0, attempt).unwrap()
     }
 
     #[test]
     fn rejects_empty_name() {
-        let err = TaskConfig::try_new("   ".to_string(), valid_mode(), 3).unwrap_err();
+        let err = TaskConfig::try_new("   ".to_string(), valid_probe(), 3).unwrap_err();
         assert!(matches!(err, TaskError::EmptyName));
     }
 
     #[test]
     fn accepts_valid_spec() {
-        let spec = TaskConfig::try_new("T-1".to_string(), valid_mode(), 3).unwrap();
+        let spec = TaskConfig::try_new("T-1".to_string(), valid_probe(), 3).unwrap();
         assert_eq!(spec.name(), "T-1");
         assert_eq!(spec.deep_history(), 3);
     }
