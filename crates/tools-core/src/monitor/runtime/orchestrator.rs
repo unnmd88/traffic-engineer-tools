@@ -9,7 +9,7 @@ use tokio::{
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
     runtime::{error::OrchestratorError, restart_policy::RestartPolicy},
-    scenario::{Generation, ScenarioCommand, ScenarioReport},
+    scenario::{Generation, PanicStage, ScenarioCommand, ScenarioReport},
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
         TaskView,
@@ -365,8 +365,6 @@ impl Orchestrator {
             self.spawn_scenario(id);
             self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
         } else if paused {
-            // спека сменилась — старый адаптер недействителен; убиваем воркера,
-            // остаёмся Paused, Resume поднимет уже с новой спекой.
             if let Some(entry) = self.entries.get_mut(&id) {
                 if let Some(scenario) = entry.scenario.take() {
                     scenario.abort.abort();
@@ -414,29 +412,15 @@ impl Orchestrator {
                     entry.state = TaskState::Active;
                     (Some(EventData::TaskStarted), None)
                 }
-                ScenarioReport::BuildFailed { reason, .. } => {
+                ScenarioReport::BuildFailed { error, .. } => {
                     entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error(reason.clone());
+                    entry.task.record_error(error.to_string());
                     (
                         Some(EventData::BuildFailed {
-                            reason,
-                            retry_in: Some(delay),
-                        }),
-                        Some(delay),
-                    )
-                }
-                ScenarioReport::BuildTimeout { .. } => {
-                    entry.scenario = None;
-                    entry.attempts += 1;
-                    entry.state = TaskState::Restarting;
-                    let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error("build timeout".to_string());
-                    (
-                        Some(EventData::BuildFailed {
-                            reason: "build timeout".to_string(),
+                            error,
                             retry_in: Some(delay),
                         }),
                         Some(delay),
@@ -447,10 +431,10 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    let reason = format!("build: {reason}");
-                    entry.task.record_error(reason.clone());
+                    entry.task.record_error(format!("build: {reason}"));
                     (
                         Some(EventData::ScenarioPanicked {
+                            stage: PanicStage::Build,
                             reason,
                             retry_in: Some(delay),
                         }),
@@ -493,10 +477,10 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    let reason = format!("execution: {reason}");
-                    entry.task.record_error(reason.clone());
+                    entry.task.record_error(format!("execution: {reason}"));
                     (
                         Some(EventData::ScenarioPanicked {
+                            stage: PanicStage::Execution,
                             reason,
                             retry_in: Some(delay),
                         }),
@@ -508,10 +492,10 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    let reason = format!("scenario: {reason}");
-                    entry.task.record_error(reason.clone());
+                    entry.task.record_error(format!("scenario: {reason}"));
                     (
                         Some(EventData::ScenarioPanicked {
+                            stage: PanicStage::Runtime,
                             reason,
                             retry_in: Some(delay),
                         }),
@@ -807,8 +791,8 @@ mod tests {
         monitor::{
             probe::{SnmpGetSpec, SnmpSetSpec},
             scenario::{
-                Scenario, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
-                SnmpGetScenarioSpec, SnmpSetScenarioSpec,
+                Scenario, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
+                ScenarioOutcome, SnmpGetScenarioSpec, SnmpSetScenarioSpec,
             },
             task::ExecutionMetrics,
         },
@@ -916,7 +900,7 @@ mod tests {
             .on_report(ScenarioReport::BuildFailed {
                 task_id,
                 generation,
-                reason: "unavailable".to_string(),
+                error: ScenarioBuildError::Other("unavailable".to_string()),
             })
             .await;
     }
@@ -1042,28 +1026,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_failures_preserve_their_type_and_restart_the_scenario() {
+        for error in [
+            ScenarioBuildError::Timeout,
+            ScenarioBuildError::SnmpClientCreate,
+            ScenarioBuildError::Other("build timeout".to_string()),
+        ] {
+            let (mut orchestrator, mut events, task_id) = active_task(0);
+            let generation = orchestrator.entries[&task_id].generation;
+            orchestrator
+                .on_report(ScenarioReport::BuildFailed {
+                    task_id,
+                    generation,
+                    error: error.clone(),
+                })
+                .await;
+
+            let event = events.try_recv().unwrap();
+            assert_eq!(event.metadata.task_id, task_id);
+            assert_eq!(event.metadata.generation, generation);
+            let EventData::BuildFailed {
+                error: reported,
+                retry_in,
+            } = event.data
+            else {
+                panic!("expected a build failure event");
+            };
+            assert_eq!(reported, error);
+            assert_eq!(retry_in, Some(Duration::from_secs(1)));
+            let snapshot = orchestrator.snapshot();
+            assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
+            assert_eq!(snapshot.tasks[0].health.last_error, Some(error.to_string()));
+            assert_eq!(snapshot.tasks[0].metrics.executions, 0);
+            assert!(snapshot.tasks[0].result.is_none());
+            assert_eq!(orchestrator.entries[&task_id].attempts, 1);
+            assert!(orchestrator.entries[&task_id].scenario.is_none());
+            assert!(events.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn scenario_panics_preserve_the_public_event_contract() {
-        for stage in ["build", "execution", "scenario"] {
+        for (stage, label) in [
+            (PanicStage::Build, "build"),
+            (PanicStage::Execution, "execution"),
+            (PanicStage::Runtime, "scenario"),
+        ] {
             let (mut orchestrator, mut events, task_id) = active_task(0);
             let generation = orchestrator.entries[&task_id].generation;
             let reason = "panic".to_string();
             let report = match stage {
-                "build" => ScenarioReport::BuildPanicked {
+                PanicStage::Build => ScenarioReport::BuildPanicked {
                     task_id,
                     generation,
                     reason,
                 },
-                "execution" => ScenarioReport::ExecutionPanicked {
+                PanicStage::Execution => ScenarioReport::ExecutionPanicked {
                     task_id,
                     generation,
                     reason,
                 },
-                "scenario" => ScenarioReport::Panicked {
+                PanicStage::Runtime => ScenarioReport::Panicked {
                     task_id,
                     generation,
                     reason,
                 },
-                _ => unreachable!(),
             };
             orchestrator.on_report(report).await;
             let event = events.try_recv().unwrap();
@@ -1071,15 +1098,15 @@ mod tests {
             assert_eq!(event.metadata.generation, generation);
             assert!(matches!(
                 event.data,
-                EventData::ScenarioPanicked { reason, retry_in: Some(delay) }
-                    if reason == format!("{stage}: panic") && delay == Duration::from_secs(1)
+                EventData::ScenarioPanicked { stage: actual, reason, retry_in: Some(delay) }
+                    if actual == stage && reason == "panic" && delay == Duration::from_secs(1)
             ));
             let snapshot = orchestrator.snapshot();
             assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
             assert_eq!(snapshot.tasks[0].metrics.executions, 0);
             assert_eq!(
                 snapshot.tasks[0].health.last_error.as_deref(),
-                Some(format!("{stage}: panic").as_str())
+                Some(format!("{label}: panic").as_str())
             );
         }
     }
@@ -1227,7 +1254,7 @@ mod tests {
             ScenarioReport::BuildFailed {
                 task_id,
                 generation: previous_generation,
-                reason: "obsolete".to_string(),
+                error: ScenarioBuildError::Other("obsolete".to_string()),
             },
             ScenarioReport::Executed {
                 task_id,
@@ -1339,7 +1366,7 @@ mod tests {
             .on_report(ScenarioReport::BuildFailed {
                 task_id,
                 generation: previous_generation,
-                reason: "unavailable".to_string(),
+                error: ScenarioBuildError::Other("unavailable".to_string()),
             })
             .await;
         events.try_recv().unwrap();
@@ -1416,7 +1443,7 @@ mod tests {
             .on_report(ScenarioReport::BuildFailed {
                 task_id,
                 generation,
-                reason: "unavailable".to_string(),
+                error: ScenarioBuildError::Other("unavailable".to_string()),
             })
             .await;
         events.try_recv().unwrap();

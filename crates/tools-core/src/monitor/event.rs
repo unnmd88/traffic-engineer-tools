@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::monitor::{
-    scenario::{Generation, ScenarioExecution, ScenarioExecutionError},
+    scenario::{
+        Generation, PanicStage, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
+    },
     task::{ExecutionMetrics, SpecRevision, TaskId},
 };
 
@@ -38,7 +40,7 @@ pub enum EventData {
     },
 
     BuildFailed {
-        reason: String,
+        error: ScenarioBuildError,
         retry_in: Option<Duration>,
     },
     ExecutionFailed {
@@ -46,6 +48,7 @@ pub enum EventData {
         retry_in: Option<Duration>,
     },
     ScenarioPanicked {
+        stage: PanicStage,
         reason: String,
         retry_in: Option<Duration>,
     },

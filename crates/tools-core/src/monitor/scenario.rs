@@ -28,12 +28,21 @@ pub enum ScenarioExecutionError {
     Polling(#[from] crate::polling::FatalError),
 }
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ScenarioBuildError {
+    #[error("build timeout")]
+    Timeout,
     #[error("can't create snmp-driver, try again later")]
     SnmpClientCreate,
     #[error("{0}")]
     Other(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanicStage {
+    Build,
+    Execution,
+    Runtime,
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -137,16 +146,17 @@ impl Scenario {
                                 .send(ScenarioReport::BuildFailed {
                                     task_id,
                                     generation,
-                                    reason: error.to_string(),
+                                    error,
                                 })
                                 .await;
                             return;
                         }
                         Ok(Err(_)) => {
                             let _ = report_tx
-                                .send(ScenarioReport::BuildTimeout {
+                                .send(ScenarioReport::BuildFailed {
                                     task_id,
                                     generation,
+                                    error: ScenarioBuildError::Timeout,
                                 })
                                 .await;
                             return;
@@ -291,16 +301,17 @@ impl Scenario {
                                 .send(ScenarioReport::BuildFailed {
                                     task_id,
                                     generation,
-                                    reason: error.to_string(),
+                                    error,
                                 })
                                 .await;
                             return;
                         }
                         Ok(Err(_)) => {
                             let _ = report_tx
-                                .send(ScenarioReport::BuildTimeout {
+                                .send(ScenarioReport::BuildFailed {
                                     task_id,
                                     generation,
+                                    error: ScenarioBuildError::Timeout,
                                 })
                                 .await;
                             return;
@@ -526,11 +537,7 @@ pub enum ScenarioReport {
     BuildFailed {
         task_id: TaskId,
         generation: Generation,
-        reason: String,
-    },
-    BuildTimeout {
-        task_id: TaskId,
-        generation: Generation,
+        error: ScenarioBuildError,
     },
     BuildPanicked {
         task_id: TaskId,
@@ -578,10 +585,6 @@ impl ScenarioReport {
                 task_id,
                 generation,
                 ..
-            }
-            | Self::BuildTimeout {
-                task_id,
-                generation,
             }
             | Self::BuildPanicked {
                 task_id,
@@ -1073,7 +1076,10 @@ mod tests {
             reply(&peer, message, source, response).await;
             assert!(matches!(
                 session.reports.recv().await,
-                Some(ScenarioReport::BuildFailed { .. })
+                Some(ScenarioReport::BuildFailed {
+                    error: ScenarioBuildError::Other(_),
+                    ..
+                })
             ));
             assert!(session.reports.recv().await.is_none());
             session.join.await.unwrap();
