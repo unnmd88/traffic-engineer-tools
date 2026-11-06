@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-
 use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
     monitor::{
         scenario::{Scenario, ScenarioExecution, ScenarioOutcome},
-        task::{TaskId, TaskView},
+        task::TaskView,
     },
     polling::Response,
     snmp::SnmpGetSample,
@@ -14,10 +12,10 @@ use tools_core::{
 pub const LINE_DOUBLE_LN: &str =
     "════════════════════════════════════════════════════════════════════════════════\n";
 
-pub fn format_snapshot(tasks: &BTreeMap<TaskId, TaskView>) -> String {
+pub fn format_snapshot(tasks: &[TaskView]) -> String {
     let mut out = String::new();
 
-    for (i, view) in tasks.values().enumerate() {
+    for (i, view) in tasks.iter().enumerate() {
         if i > 0 {
             out.push('\n'); // граница между задачами
         }

@@ -11,11 +11,15 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
     let tasks = config::load_tasks_from_yaml(&content)?;
     let app = Application::new(AppConfig::default());
     app.start(tasks).await?;
-    let rx = app.subscribe();
+    let subscription = app.subscribe_with_snapshot().await?;
 
-    tokio::spawn(dashboard::run(app, rx));
-
-    tokio::signal::ctrl_c().await?;
-    println!("Ctrl-C is pressed");
+    tokio::select! {
+        result = dashboard::run(&app, subscription) => result?,
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            println!("Ctrl-C is pressed");
+        }
+    }
+    app.shutdown().await?;
     Ok(())
 }

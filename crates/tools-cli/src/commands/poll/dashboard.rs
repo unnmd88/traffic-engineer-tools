@@ -1,40 +1,68 @@
-use std::collections::BTreeMap;
-
 use chrono::Local;
-use tokio::sync::broadcast;
+use tokio::{
+    sync::broadcast,
+    time::{Duration, MissedTickBehavior, interval},
+};
 
 use tools_core::{
     DT_FMT,
     monitor::{
         event::MonitorEvent,
-        runtime::Application,
-        task::{TaskId, TaskView},
+        runtime::{Application, MonitorSubscription, error::OrchestratorError},
+        task::MonitorSnapshot,
     },
 };
 
 use super::render::{LINE_DOUBLE_LN, format_snapshot};
 
-/// Подписка на события + живой вывод дашборда.
-pub async fn run(app: Application, mut rx: broadcast::Receiver<MonitorEvent>) {
+pub async fn run(
+    app: &Application,
+    subscription: MonitorSubscription,
+) -> Result<(), OrchestratorError> {
+    let MonitorSubscription {
+        mut snapshot,
+        mut events,
+    } = subscription;
     let monitor_id = app.id().clone();
     let app_created_at = Local::now();
-    let app_created_at_fmt = Local::now().format(DT_FMT);
+    let app_created_at_fmt = app_created_at.format(DT_FMT);
+    let mut refresh = interval(Duration::from_millis(100));
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    while rx.recv().await.is_ok() {
-        let snapshot = app.get_snapshot().await.expect("Failed to get snapshot");
-        let mut dashboard: BTreeMap<TaskId, TaskView> = BTreeMap::new();
-        for t in snapshot.tasks {
-            dashboard.insert(t.id, t);
-        }
-
+    loop {
         clear_screen();
         let uptime = Local::now() - app_created_at;
         println!(
             "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {}m {}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
             uptime.num_minutes(),
             uptime.num_seconds() % 60,
-            format_snapshot(&dashboard),
+            format_snapshot(&snapshot.tasks),
         );
+
+        if !wait_for_update(&snapshot, &mut events).await {
+            return Ok(());
+        }
+        refresh.tick().await;
+        snapshot = app.get_snapshot().await?;
+    }
+}
+
+async fn wait_for_update(
+    snapshot: &MonitorSnapshot,
+    events: &mut broadcast::Receiver<MonitorEvent>,
+) -> bool {
+    loop {
+        match events.recv().await {
+            Ok(event)
+                if event.metadata.source != snapshot.source
+                    || event.metadata.seq >= snapshot.next_seq =>
+            {
+                return true;
+            }
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(_)) => return true,
+            Err(broadcast::error::RecvError::Closed) => return false,
+        }
     }
 }
 
@@ -55,4 +83,84 @@ fn clear_screen() {
     };
     use std::io::stdout;
     let _ = execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tools_core::{
+        monitor::{
+            probe::SnmpGetSpec,
+            runtime::AppConfig,
+            scenario::{Scenario, SnmpGetScenarioSpec},
+            task::TaskConfig,
+        },
+        polling::AttemptConfig,
+    };
+
+    fn task(name: &str) -> TaskConfig {
+        let request =
+            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap();
+        let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
+        let scenario = Scenario::SnmpGet(
+            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+        );
+        TaskConfig::try_new(name.to_string(), scenario, 0, 0).unwrap()
+    }
+
+    #[tokio::test]
+    async fn subscription_updates_skip_events_already_in_the_snapshot() {
+        let app = Application::new(AppConfig::default());
+        let mut events = app.subscribe();
+        app.add_task(task("first")).await.unwrap();
+        let snapshot = app.get_snapshot().await.unwrap();
+        app.add_task(task("second")).await.unwrap();
+
+        assert!(wait_for_update(&snapshot, &mut events).await);
+        assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+        app.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscription_updates_finish_after_covered_events_and_channel_closure() {
+        let app = Application::new(AppConfig::default());
+        let mut events = app.subscribe();
+        app.add_task(task("first")).await.unwrap();
+        let snapshot = app.get_snapshot().await.unwrap();
+        app.shutdown().await.unwrap();
+
+        assert!(!wait_for_update(&snapshot, &mut events).await);
+    }
+
+    #[tokio::test]
+    async fn subscription_updates_request_refresh_after_lagging() {
+        let app = Application::new(AppConfig::default());
+        let mut source_events = app.subscribe();
+        let (sender, mut events) = broadcast::channel(1);
+        for name in ["first", "second", "third"] {
+            app.add_task(task(name)).await.unwrap();
+            sender.send(source_events.recv().await.unwrap()).unwrap();
+        }
+        let snapshot = app.get_snapshot().await.unwrap();
+        drop(sender);
+
+        assert!(wait_for_update(&snapshot, &mut events).await);
+        assert!(!wait_for_update(&snapshot, &mut events).await);
+        app.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscription_updates_request_refresh_when_the_source_changes() {
+        let app = Application::new(AppConfig::default());
+        app.add_task(task("first")).await.unwrap();
+        let snapshot = app.get_snapshot().await.unwrap();
+        let other = Application::new(AppConfig::default());
+        let mut events = other.subscribe();
+        other.add_task(task("other")).await.unwrap();
+
+        assert!(wait_for_update(&snapshot, &mut events).await);
+        app.shutdown().await.unwrap();
+        other.shutdown().await.unwrap();
+    }
 }

@@ -29,5 +29,7 @@ pub struct HistoryEntryView {
 
 #[derive(Debug, Clone)]
 pub struct MonitorSnapshot {
+    pub source: String,
+    pub next_seq: u64,
     pub tasks: Vec<TaskView>,
 }

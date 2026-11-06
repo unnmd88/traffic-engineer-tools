@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::monitor::{
     event::MonitorEvent,
     runtime::{
+        MonitorSubscription,
         error::OrchestratorError,
         orchestrator::{Orchestrator, OrchestratorHandle},
         restart_policy::RestartPolicy,
@@ -101,6 +102,10 @@ impl Application {
         self.orchestrator.subscribe()
     }
 
+    pub async fn subscribe_with_snapshot(&self) -> Result<MonitorSubscription, OrchestratorError> {
+        self.orchestrator.subscribe_with_snapshot().await
+    }
+
     pub async fn shutdown(&self) -> Result<(), OrchestratorError> {
         self.orchestrator.shutdown().await
     }
@@ -145,6 +150,26 @@ mod tests {
             sleep(Duration::from_millis(10)).await;
         }
         panic!("snapshot condition not met in time");
+    }
+
+    #[tokio::test]
+    async fn subscription_returns_all_registered_tasks_before_the_next_event() {
+        let app = Application::new(AppConfig::default());
+        let first = app.add_task(spec("first")).await.unwrap();
+        let second = app.add_task(spec("second")).await.unwrap();
+        let mut subscription = app.subscribe_with_snapshot().await.unwrap();
+        assert_eq!(subscription.snapshot.source, app.id().to_string());
+        assert_eq!(subscription.snapshot.next_seq, 2);
+        assert_eq!(subscription.snapshot.tasks.len(), 2);
+        assert_eq!(subscription.snapshot.tasks[0].id, first);
+        assert_eq!(subscription.snapshot.tasks[1].id, second);
+        assert!(subscription.events.try_recv().is_err());
+
+        app.remove_task(first).await.unwrap();
+        let event = subscription.events.recv().await.unwrap();
+        assert_eq!(event.metadata.seq, subscription.snapshot.next_seq);
+        assert_eq!(event.metadata.task_id, first);
+        app.shutdown().await.unwrap();
     }
 
     #[tokio::test]

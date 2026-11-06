@@ -8,7 +8,7 @@ use tokio::{
 
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
-    runtime::{error::OrchestratorError, restart_policy::RestartPolicy},
+    runtime::{MonitorSubscription, error::OrchestratorError, restart_policy::RestartPolicy},
     scenario::{Generation, PanicStage, ScenarioCommand, ScenarioReport},
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
@@ -75,6 +75,9 @@ enum Command {
     GetSnapshot {
         reply: oneshot::Sender<MonitorSnapshot>,
     },
+    SubscribeWithSnapshot {
+        reply: oneshot::Sender<MonitorSubscription>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -127,7 +130,13 @@ impl Orchestrator {
             seq: 0,
             source,
         };
-        (this, OrchestratorHandle { cmd_tx, live_tx })
+        (
+            this,
+            OrchestratorHandle {
+                cmd_tx,
+                live_tx: live_tx.downgrade(),
+            },
+        )
     }
 
     pub async fn run(mut self) {
@@ -202,6 +211,12 @@ impl Orchestrator {
             }
             Command::GetSnapshot { reply } => {
                 let _ = reply.send(self.snapshot());
+                true
+            }
+            Command::SubscribeWithSnapshot { reply } => {
+                let events = self.live_tx.subscribe();
+                let snapshot = self.snapshot();
+                let _ = reply.send(MonitorSubscription { snapshot, events });
                 true
             }
             Command::Shutdown { reply } => {
@@ -644,7 +659,11 @@ impl Orchestrator {
     fn snapshot(&self) -> MonitorSnapshot {
         let mut tasks: Vec<TaskView> = self.entries.values().map(|e| self.view(e)).collect();
         tasks.sort_by_key(|v| v.id);
-        MonitorSnapshot { tasks }
+        MonitorSnapshot {
+            source: self.source.clone(),
+            next_seq: self.seq,
+            tasks,
+        }
     }
 }
 
@@ -684,7 +703,7 @@ async fn log_writer(
 #[derive(Clone)]
 pub struct OrchestratorHandle {
     cmd_tx: mpsc::Sender<Command>,
-    live_tx: broadcast::Sender<MonitorEvent>,
+    live_tx: broadcast::WeakSender<MonitorEvent>,
 }
 
 impl OrchestratorHandle {
@@ -769,7 +788,22 @@ impl OrchestratorHandle {
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
-        self.live_tx.subscribe()
+        self.live_tx.upgrade().map_or_else(
+            || {
+                let (_, events) = broadcast::channel(1);
+                events
+            },
+            |sender| sender.subscribe(),
+        )
+    }
+
+    pub async fn subscribe_with_snapshot(&self) -> Result<MonitorSubscription, OrchestratorError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(Command::SubscribeWithSnapshot { reply: tx })
+            .await
+            .map_err(|_| OrchestratorError::ChannelClosed)?;
+        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
     }
 
     pub async fn shutdown(&self) -> Result<(), OrchestratorError> {
@@ -927,6 +961,148 @@ mod tests {
                 execution,
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn subscription_snapshot_contains_existing_tasks_and_excludes_past_events() {
+        let (orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+        let runtime = tokio::spawn(orchestrator.run());
+        let first = handle.add_task(set_config("first")).await.unwrap();
+        let second = handle.add_task(set_config("second")).await.unwrap();
+
+        let MonitorSubscription {
+            snapshot,
+            mut events,
+        } = handle.subscribe_with_snapshot().await.unwrap();
+        assert_eq!(snapshot.source, "subscription-test");
+        assert_eq!(snapshot.next_seq, 2);
+        assert_eq!(snapshot.tasks.len(), 2);
+        assert_eq!(snapshot.tasks[0].id, first);
+        assert_eq!(snapshot.tasks[1].id, second);
+        assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+
+        let third = handle.add_task(set_config("third")).await.unwrap();
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.metadata.source, snapshot.source);
+        assert_eq!(event.metadata.seq, snapshot.next_seq);
+        assert_eq!(event.metadata.task_id, third);
+        assert!(matches!(event.data, EventData::TaskAdded));
+        assert_eq!(snapshot.tasks.len(), 2);
+
+        let next = handle.subscribe_with_snapshot().await.unwrap();
+        assert_eq!(next.snapshot.next_seq, snapshot.next_seq + 1);
+        assert_eq!(next.snapshot.tasks.len(), 3);
+        handle.remove_task(first).await.unwrap();
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.metadata.seq, next.snapshot.next_seq);
+        assert_eq!(event.metadata.task_id, first);
+        assert!(matches!(event.data, EventData::TaskRemoved));
+        let current = handle.get_snapshot().await.unwrap();
+        assert_eq!(current.source, snapshot.source);
+        assert_eq!(current.next_seq, event.metadata.seq + 1);
+        assert_eq!(current.tasks.len(), 2);
+        assert_eq!(current.tasks[0].id, second);
+        assert_eq!(current.tasks[1].id, third);
+
+        handle.shutdown().await.unwrap();
+        runtime.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscription_captures_changes_queued_while_it_is_opening() {
+        let (orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+        let runtime = tokio::spawn(orchestrator.run());
+        let (subscription, task_id) = tokio::join!(
+            handle.subscribe_with_snapshot(),
+            handle.add_task(set_config("concurrent")),
+        );
+        let mut subscription = subscription.unwrap();
+        let task_id = task_id.unwrap();
+
+        if subscription
+            .snapshot
+            .tasks
+            .iter()
+            .any(|task| task.id == task_id)
+        {
+            assert_eq!(subscription.snapshot.next_seq, 1);
+            assert!(matches!(
+                subscription.events.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+        } else {
+            let event = subscription.events.try_recv().unwrap();
+            assert_eq!(event.metadata.seq, subscription.snapshot.next_seq);
+            assert_eq!(event.metadata.task_id, task_id);
+            assert!(matches!(event.data, EventData::TaskAdded));
+        }
+        handle.shutdown().await.unwrap();
+        runtime.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscription_closes_when_the_orchestrator_stops_with_handles_alive() {
+        let (orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+        let runtime = tokio::spawn(orchestrator.run());
+        let clone = handle.clone();
+        let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
+        let mut raw_events = clone.subscribe();
+        assert!(subscription.snapshot.tasks.is_empty());
+        assert_eq!(subscription.snapshot.next_seq, 0);
+
+        handle.shutdown().await.unwrap();
+        runtime.await.unwrap();
+        assert!(matches!(
+            subscription.events.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
+        assert!(matches!(raw_events.recv().await, Err(broadcast::error::RecvError::Closed)));
+        assert!(matches!(
+            clone.subscribe().recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
+        assert!(matches!(
+            clone.subscribe_with_snapshot().await,
+            Err(OrchestratorError::ChannelClosed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn subscription_snapshot_recovers_state_after_lagging() {
+        let (orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+        let runtime = tokio::spawn(orchestrator.run());
+        let task_id = handle.add_task(set_config("initial")).await.unwrap();
+        let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
+        for _ in 0..1025 {
+            handle
+                .update_task(task_id, set_config("updated"))
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            subscription.events.recv().await,
+            Err(broadcast::error::RecvError::Lagged(_))
+        ));
+        let snapshot = handle.get_snapshot().await.unwrap();
+        assert_eq!(snapshot.source, subscription.snapshot.source);
+        assert_eq!(snapshot.next_seq, 1026);
+        assert_eq!(snapshot.tasks[0].name, "updated");
+        assert_eq!(snapshot.tasks[0].revision, SpecRevision::new(1026));
+        while let Ok(event) = subscription.events.try_recv() {
+            assert!(event.metadata.seq < snapshot.next_seq);
+        }
+
+        handle.remove_task(task_id).await.unwrap();
+        let event = subscription.events.recv().await.unwrap();
+        assert_eq!(event.metadata.seq, snapshot.next_seq);
+        assert!(matches!(event.data, EventData::TaskRemoved));
+        assert!(handle.get_snapshot().await.unwrap().tasks.is_empty());
+        handle.shutdown().await.unwrap();
+        runtime.await.unwrap();
     }
 
     #[tokio::test]
