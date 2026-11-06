@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
 
-use crate::monitor::probe::ProbeSpec;
+use crate::monitor::scenario::Scenario;
 
 use super::error::TaskError;
 
@@ -17,7 +17,8 @@ impl SpecRevision {
 #[derive(Clone, Debug)]
 pub struct TaskConfig {
     name: String,
-    probe: ProbeSpec,
+    scenario: Scenario,
+    limit: u64,
     deep_history: u8,
 }
 
@@ -49,8 +50,12 @@ impl TaskSpec {
         &self.value.name()
     }
 
-    pub fn probe(&self) -> &ProbeSpec {
-        self.value.probe()
+    pub const fn scenario(&self) -> &Scenario {
+        self.value.scenario()
+    }
+
+    pub const fn limit(&self) -> u64 {
+        self.value.limit()
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -67,14 +72,20 @@ impl TaskSpec {
 }
 
 impl TaskConfig {
-    pub fn try_new(name: String, probe: ProbeSpec, deep_history: u8) -> Result<Self, TaskError> {
+    pub fn try_new(
+        name: String,
+        scenario: Scenario,
+        limit: u64,
+        deep_history: u8,
+    ) -> Result<Self, TaskError> {
         if name.trim().is_empty() {
             return Err(TaskError::EmptyName);
         }
 
         Ok(Self {
             name,
-            probe,
+            scenario,
+            limit,
             deep_history,
         })
     }
@@ -83,8 +94,12 @@ impl TaskConfig {
         &self.name
     }
 
-    pub fn probe(&self) -> &ProbeSpec {
-        &self.probe
+    pub const fn scenario(&self) -> &Scenario {
+        &self.scenario
+    }
+
+    pub const fn limit(&self) -> u64 {
+        self.limit
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -96,36 +111,34 @@ impl TaskConfig {
 mod tests {
     use super::*;
     use crate::{
-        monitor::probe::{ProbeSpec, SnmpGetSpec},
+        monitor::{probe::SnmpGetSpec, scenario::SnmpGetScenarioSpec},
         polling::AttemptConfig,
     };
     use tokio::time::Duration;
 
-    fn valid_probe() -> ProbeSpec {
+    fn valid_scenario() -> Scenario {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
-        let request = SnmpGetSpec::from_raw(
-            "127.0.0.1".to_string(),
-            161,
-            "public".to_string(),
-            None,
-            vec![],
+        let request =
+            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap();
+        Scenario::SnmpGet(
+            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
         )
-        .unwrap();
-        ProbeSpec::snmp_get(request, Duration::from_secs(1), 0, attempt).unwrap()
     }
 
     #[test]
     fn rejects_empty_name() {
-        let err = TaskConfig::try_new("   ".to_string(), valid_probe(), 3).unwrap_err();
+        let err = TaskConfig::try_new("   ".to_string(), valid_scenario(), 0, 3).unwrap_err();
         assert!(matches!(err, TaskError::EmptyName));
     }
 
     #[test]
     fn accepts_valid_spec() {
-        let spec = TaskConfig::try_new("T-1".to_string(), valid_probe(), 3).unwrap();
+        let spec = TaskConfig::try_new("T-1".to_string(), valid_scenario(), 100, 3).unwrap();
         assert_eq!(spec.name(), "T-1");
+        assert_eq!(spec.limit(), 100);
         assert_eq!(spec.deep_history(), 3);
     }
 }

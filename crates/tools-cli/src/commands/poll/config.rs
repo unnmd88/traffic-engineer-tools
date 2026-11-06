@@ -5,7 +5,8 @@ use serde::Deserialize;
 use tools_core::{
     error::Error,
     monitor::{
-        probe::{ProbeSpec, RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
+        probe::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
+        scenario::{Scenario, SnmpGetScenarioSpec, SnmpSetScenarioSpec},
         task::TaskConfig,
     },
     polling::AttemptConfig,
@@ -96,11 +97,11 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
         let interval = dto.interval;
         let limit = dto.limit;
 
-        let probe = match dto.query {
+        let scenario = match dto.query {
             QueryDto::SnmpGet(q) => {
                 let request =
                     SnmpGetSpec::from_raw(q.host, q.port, q.community, q.profile, q.oids)?;
-                ProbeSpec::snmp_get(request, interval, limit, attempt)?
+                Scenario::SnmpGet(SnmpGetScenarioSpec::try_new(request, interval, attempt)?)
             }
             QueryDto::SnmpSet(q) => {
                 let request = SnmpSetSpec::from_raw(
@@ -111,13 +112,14 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
                     q.profile,
                     q.oids,
                 )?;
-                ProbeSpec::snmp_set(request, interval, limit, attempt)?
+                Scenario::SnmpSet(SnmpSetScenarioSpec::try_new(request, interval, attempt)?)
             }
         };
 
         Ok(TaskConfig::try_new(
             dto.name,
-            probe,
+            scenario,
+            limit,
             dto.deep_history.unwrap_or_default(),
         )?)
     }
@@ -145,19 +147,47 @@ tasks:
       community: public
       oids:
         - oid: 1.3.6.1.4.1.1618.3.7.2.11.2
+  - name: T-2
+    interval: 5s
+    limit: 0
+    attempt_config:
+      timeout: 1s
+      retries: 0
+      retry_delay: 0s
+    query:
+      query_type: snmpset
+      profile: potok_ug405
+      host: 127.0.0.1
+      port: 1162
+      community: private
+      community_r: public
+      oids:
+        - oid: set_stage
+          value: "3"
 "#;
 
-        let de = serde_norway::Deserializer::from_str(yaml);
-        let dto: AppConfigDto = serde_path_to_error::deserialize(de).unwrap();
-        let specs = dto
-            .tasks
-            .into_iter()
-            .map(TaskConfig::try_from)
-            .collect::<Result<Vec<_>, Error>>()
-            .unwrap();
+        let specs = load_tasks_from_yaml(yaml).unwrap();
 
-        assert_eq!(specs.len(), 1);
+        assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].name(), "T-1");
-        assert_eq!(specs[0].probe().interval(), Duration::from_secs(5));
+        assert_eq!(specs[0].limit(), 100);
+        let Scenario::SnmpGet(spec) = specs[0].scenario() else {
+            panic!("expected SNMP GET scenario");
+        };
+        assert_eq!(spec.interval(), Duration::from_secs(5));
+        assert_eq!(specs[1].name(), "T-2");
+        assert_eq!(specs[1].limit(), 0);
+        let Scenario::SnmpSet(spec) = specs[1].scenario() else {
+            panic!("expected SNMP SET scenario");
+        };
+        let request = spec.request();
+        assert_eq!(spec.interval(), Duration::from_secs(5));
+        assert_eq!(request.port, 1162);
+        assert_eq!(request.community.as_str(), "private");
+        assert_eq!(request.community_r.as_ref().unwrap().as_str(), "public");
+        assert!(matches!(
+            &request.sets[0].value,
+            tools_core::snmp::value::SnmpValue::OctetString(bytes) if bytes == &[4]
+        ));
     }
 }

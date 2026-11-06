@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use tabled::{Table, Tabled, settings::Style};
 
 use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::probe::{ProbeExecution, ProbeOutcome, ProbeSpec};
+use tools_core::monitor::probe::{ProbeExecution, ProbeOutcome};
+use tools_core::monitor::scenario::Scenario;
 use tools_core::monitor::task::{TaskId, TaskView};
 use tools_core::polling::Response;
 use tools_core::snmp::SnmpGetSample;
@@ -38,10 +39,13 @@ fn format_card(view: &TaskView) -> String {
     lines.push(labeled("Target", &view.target));
     lines.push(labeled("Revision", &view.revision.to_string()));
 
-    let attempt = view.spec.attempt();
+    let (interval, attempt) = match &view.scenario {
+        Scenario::SnmpGet(spec) => (spec.interval(), spec.attempt()),
+        Scenario::SnmpSet(spec) => (spec.interval(), spec.attempt()),
+    };
     let timings = format!(
         "Interval: {:?} retries: {} timeout: {:?} retry_delay: {:?}",
-        view.spec.interval(),
+        interval,
         attempt.retries(),
         attempt.timeout(),
         attempt.retry_delay()
@@ -50,7 +54,7 @@ fn format_card(view: &TaskView) -> String {
     lines.push(timings);
     lines.push(labeled("Limit", &format_limit(view)));
 
-    push_query(&mut lines, &view.spec);
+    push_query(&mut lines, &view.scenario);
 
     bordered(&lines)
 }
@@ -130,16 +134,18 @@ fn format_response_summary<T>(response: &Response<T>) -> String {
     }
 }
 
-fn push_query(lines: &mut Vec<String>, q: &ProbeSpec) {
-    match q {
-        ProbeSpec::SnmpGet { request, .. } => {
+fn push_query(lines: &mut Vec<String>, scenario: &Scenario) {
+    match scenario {
+        Scenario::SnmpGet(spec) => {
+            let request = spec.request();
             lines.push("Oids to request:".to_string());
             for item in &request.oids {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{}", item.oid));
             }
         }
-        ProbeSpec::SnmpSet { request, .. } => {
+        Scenario::SnmpSet(spec) => {
+            let request = spec.request();
             lines.push("Oids to set:".to_string());
             for item in &request.sets {
                 let name = item.name.as_deref().unwrap_or("-");
@@ -200,7 +206,7 @@ fn bordered(lines: &[String]) -> String {
 }
 
 fn format_limit(view: &TaskView) -> String {
-    match view.spec.limit() {
+    match view.limit {
         0 => "no limit".to_string(),
         n => format!("{n} ({} left)", n.saturating_sub(view.metrics.executions)),
     }

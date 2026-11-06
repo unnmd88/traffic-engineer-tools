@@ -11,8 +11,8 @@ use tokio::{
 use crate::{
     monitor::{
         probe::{
-            ProbeBuildError, ProbeError, ProbeExecution, ProbeOutcome, ProbeSpec, ProbeSpecError,
-            SnmpGetSpec, SnmpSetSpec, build_timeout,
+            ProbeBuildError, ProbeError, ProbeExecution, ProbeOutcome, ProbeSpecError, SnmpGetSpec,
+            SnmpSetSpec, build_timeout,
         },
         runtime::worker::{Generation, WorkerCmd, WorkerReport},
         task::TaskId,
@@ -35,28 +35,14 @@ pub enum Scenario {
     SnmpSet(SnmpSetScenarioSpec),
 }
 
-impl TryFrom<ProbeSpec> for Scenario {
-    type Error = ProbeSpecError;
-
-    fn try_from(spec: ProbeSpec) -> Result<Self, Self::Error> {
-        match spec {
-            ProbeSpec::SnmpGet {
-                request,
-                interval,
-                attempt,
-                ..
-            } => SnmpGetScenarioSpec::try_new(request, interval, attempt).map(Self::SnmpGet),
-            ProbeSpec::SnmpSet {
-                request,
-                interval,
-                attempt,
-                ..
-            } => SnmpSetScenarioSpec::try_new(request, interval, attempt).map(Self::SnmpSet),
+impl Scenario {
+    pub fn target(&self) -> String {
+        match self {
+            Self::SnmpGet(spec) => format!("{}:{}", spec.request.host, spec.request.port),
+            Self::SnmpSet(spec) => format!("{}:{}", spec.request.host, spec.request.port),
         }
     }
-}
 
-impl Scenario {
     #[expect(clippy::too_many_lines)]
     pub async fn run(
         self,
@@ -404,6 +390,18 @@ impl SnmpGetScenarioSpec {
             attempt,
         })
     }
+
+    pub const fn request(&self) -> &SnmpGetSpec {
+        &self.request
+    }
+
+    pub const fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    pub const fn attempt(&self) -> AttemptConfig {
+        self.attempt
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -425,6 +423,18 @@ impl SnmpSetScenarioSpec {
             interval,
             attempt,
         })
+    }
+
+    pub const fn request(&self) -> &SnmpSetSpec {
+        &self.request
+    }
+
+    pub const fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    pub const fn attempt(&self) -> AttemptConfig {
+        self.attempt
     }
 }
 

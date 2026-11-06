@@ -11,7 +11,6 @@ use crate::monitor::{
         restart_policy::RestartPolicy,
         worker::{Generation, WorkerCmd, WorkerReport},
     },
-    scenario::Scenario,
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
         TaskView,
@@ -549,23 +548,10 @@ impl Orchestrator {
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
         entry.generation = generation;
-        let probe_spec = entry.task.spec().probe().clone();
+        let scenario = entry.task.spec().scenario().clone();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let report_tx = self.report_tx.clone();
-        let join = tokio::spawn(async move {
-            match Scenario::try_from(probe_spec) {
-                Ok(scenario) => scenario.run(task_id, generation, report_tx, cmd_rx).await,
-                Err(error) => {
-                    let _ = report_tx
-                        .send(WorkerReport::BuildFailed {
-                            task_id,
-                            generation,
-                            reason: error.to_string(),
-                        })
-                        .await;
-                }
-            }
-        });
+        let join = tokio::spawn(scenario.run(task_id, generation, report_tx, cmd_rx));
         entry.worker = Some(WorkerHandle {
             generation,
             abort: join.abort_handle(),
@@ -660,10 +646,11 @@ impl Orchestrator {
             id: t.id(),
             name: spec.name().to_string(),
             revision: spec.revision(),
-            target: spec.probe().target(),
+            target: spec.scenario().target(),
             status: status(entry),
             deep_history: spec.deep_history(),
-            spec: spec.probe().clone(),
+            scenario: spec.scenario().clone(),
+            limit: spec.limit(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
             history,
@@ -691,7 +678,7 @@ fn status(entry: &TaskEntry) -> TaskStatus {
 }
 
 fn limit_reached(entry: &TaskEntry) -> bool {
-    let limit = entry.task.spec().probe().limit();
+    let limit = entry.task.spec().limit();
     limit > 0 && entry.task.metrics().executions >= limit
 }
 
@@ -819,10 +806,8 @@ mod tests {
     use super::*;
     use crate::{
         monitor::{
-            probe::{
-                ProbeError, ProbeExecution, ProbeOutcome, ProbeSpec, ProbeSpecError, SnmpGetSpec,
-                SnmpSetSpec,
-            },
+            probe::{ProbeError, ProbeExecution, ProbeOutcome, SnmpGetSpec, SnmpSetSpec},
+            scenario::{Scenario, SnmpGetScenarioSpec, SnmpSetScenarioSpec},
             task::ExecutionMetrics,
         },
         polling::{AttemptConfig, FatalError, Response},
@@ -838,8 +823,13 @@ mod tests {
                 .unwrap();
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(10), 2, Duration::from_millis(1)).unwrap();
-        let probe = ProbeSpec::snmp_get(request, Duration::from_secs(1), limit, attempt).unwrap();
-        let task = Task::new(task_id, TaskConfig::try_new("test".to_string(), probe, 3).unwrap());
+        let scenario = Scenario::SnmpGet(
+            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+        );
+        let task = Task::new(
+            task_id,
+            TaskConfig::try_new("test".to_string(), scenario, limit, 3).unwrap(),
+        );
         let (cmd, _cmd_rx) = mpsc::channel(8);
         let join = tokio::spawn(std::future::pending::<()>());
         orchestrator.entries.insert(
@@ -885,10 +875,10 @@ mod tests {
         }
     }
 
-    fn invalid_config(name: &str) -> TaskConfig {
+    fn set_config(name: &str) -> TaskConfig {
         let request = SnmpSetSpec::from_raw(
-            "127.0.0.1".to_string(),
-            161,
+            "127.0.0.2".to_string(),
+            1161,
             None,
             "private".to_string(),
             None,
@@ -896,20 +886,37 @@ mod tests {
         )
         .unwrap();
         let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
-        let probe = ProbeSpec::SnmpSet {
-            request,
-            interval: Duration::ZERO,
-            limit: 0,
-            attempt,
-        };
-        TaskConfig::try_new(name.to_string(), probe, 3).unwrap()
+        let scenario = Scenario::SnmpSet(
+            SnmpSetScenarioSpec::try_new(request, Duration::from_secs(2), attempt).unwrap(),
+        );
+        TaskConfig::try_new(name.to_string(), scenario, 0, 3).unwrap()
     }
 
-    async fn next_report(orchestrator: &mut Orchestrator) -> WorkerReport {
-        tokio::time::timeout(Duration::from_secs(1), orchestrator.report_rx.recv())
-            .await
-            .unwrap()
-            .unwrap()
+    fn control_worker(orchestrator: &mut Orchestrator, task_id: TaskId) {
+        let entry = orchestrator.entries.get_mut(&task_id).unwrap();
+        if let Some(worker) = entry.worker.take() {
+            worker.abort.abort();
+        }
+        let (cmd, _commands) = mpsc::channel(8);
+        let join = tokio::spawn(std::future::pending::<()>());
+        entry.worker = Some(WorkerHandle {
+            generation: entry.generation,
+            abort: join.abort_handle(),
+            cmd,
+        });
+    }
+
+    async fn fail_worker(orchestrator: &mut Orchestrator, task_id: TaskId) {
+        let entry = &orchestrator.entries[&task_id];
+        let generation = entry.generation;
+        entry.worker.as_ref().unwrap().abort.abort();
+        orchestrator
+            .on_report(WorkerReport::BuildFailed {
+                task_id,
+                generation,
+                reason: "unavailable".to_string(),
+            })
+            .await;
     }
 
     async fn wait_for_abort(abort: tokio::task::AbortHandle) {
@@ -978,6 +985,7 @@ mod tests {
         assert_eq!(completed.metadata.seq, executed.metadata.seq + 1);
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
+        assert_eq!(snapshot.tasks[0].limit, 1);
         assert_eq!(snapshot.tasks[0].metrics.executions, 1);
         assert!(snapshot.tasks[0].result.is_some());
         assert!(orchestrator.entries[&task_id].worker.is_none());
@@ -1028,65 +1036,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scenario_conversion_failure_is_reported_and_schedules_restart() {
-        let get =
-            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
-                .unwrap();
-        let set = SnmpSetSpec::from_raw(
-            "127.0.0.1".to_string(),
-            161,
-            None,
-            "private".to_string(),
-            None,
-            vec![],
-        )
-        .unwrap();
-        let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
-        for probe in [
-            ProbeSpec::SnmpGet {
-                request: get,
-                interval: Duration::ZERO,
-                limit: 0,
-                attempt,
-            },
-            ProbeSpec::SnmpSet {
-                request: set,
-                interval: Duration::ZERO,
-                limit: 0,
-                attempt,
-            },
-        ] {
-            let (mut orchestrator, mut events, task_id) = active_task(0);
-            orchestrator.stop(task_id).await.unwrap();
-            let config = TaskConfig::try_new("invalid interval".to_string(), probe, 3).unwrap();
-            orchestrator.update(task_id, config).await.unwrap();
-            orchestrator.start(task_id).await.unwrap();
-            assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
-            assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
-            let starting = events.try_recv().unwrap();
-            assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
-            let report =
-                tokio::time::timeout(Duration::from_secs(1), orchestrator.report_rx.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
-            let reason = ProbeSpecError::IntervalMustBePositive.to_string();
-            assert_eq!(report.key(), (task_id, starting.metadata.generation));
-            assert!(
-                matches!(&report, WorkerReport::BuildFailed { reason: actual, .. } if actual == &reason)
-            );
-
-            orchestrator.on_report(report).await;
-            assert!(matches!(
-                events.try_recv().unwrap().data,
-                EventData::BuildFailed { reason: actual, retry_in: Some(_) } if actual == reason
-            ));
-            let snapshot = orchestrator.snapshot();
-            assert_eq!(snapshot.tasks[0].name, "invalid interval");
-            assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
-            assert_eq!(snapshot.tasks[0].metrics.executions, 0);
-            assert!(orchestrator.entries[&task_id].worker.is_none());
-        }
+    async fn start_uses_saved_scenario_and_resets_run_metrics() {
+        let (mut orchestrator, mut events, task_id) = active_task(2);
+        execute(&mut orchestrator, task_id, execution(100, true)).await;
+        orchestrator.stop(task_id).await.unwrap();
+        orchestrator
+            .update(task_id, set_config("fresh"))
+            .await
+            .unwrap();
+        orchestrator.start(task_id).await.unwrap();
+        control_worker(&mut orchestrator, task_id);
+        assert!(matches!(events.try_recv().unwrap().data, EventData::ProbeExecuted { .. }));
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
+        let starting = events.try_recv().unwrap();
+        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        let snapshot = orchestrator.snapshot();
+        let task = &snapshot.tasks[0];
+        assert_eq!(task.name, "fresh");
+        assert_eq!(task.limit, 0);
+        assert_eq!(task.target, "127.0.0.2:1161");
+        assert_eq!(task.status, TaskStatus::Starting);
+        assert_eq!(task.metrics, ExecutionMetrics::default());
+        assert!(
+            matches!(&task.scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
+        );
+        orchestrator
+            .on_report(WorkerReport::Built {
+                task_id,
+                generation: starting.metadata.generation,
+            })
+            .await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
     }
 
     #[tokio::test]
@@ -1175,9 +1157,10 @@ mod tests {
             .clone();
 
         orchestrator
-            .update(task_id, invalid_config("updated"))
+            .update(task_id, set_config("updated"))
             .await
             .unwrap();
+        control_worker(&mut orchestrator, task_id);
         wait_for_abort(abort).await;
         let updated = events.try_recv().unwrap();
         let starting = events.try_recv().unwrap();
@@ -1223,12 +1206,17 @@ mod tests {
                 .timestamp(),
             100
         );
-        let report = next_report(&mut orchestrator).await;
-        let reason = ProbeSpecError::IntervalMustBePositive.to_string();
-        assert_eq!(report.key(), (task_id, starting.metadata.generation));
         assert!(
-            matches!(report, WorkerReport::BuildFailed { reason: actual, .. } if actual == reason)
+            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
         );
+        orchestrator
+            .on_report(WorkerReport::Built {
+                task_id,
+                generation: starting.metadata.generation,
+            })
+            .await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
+        assert_eq!(orchestrator.snapshot().tasks[0].metrics, metrics);
     }
 
     #[tokio::test]
@@ -1249,7 +1237,7 @@ mod tests {
             .await;
         events.try_recv().unwrap();
         orchestrator
-            .update(task_id, invalid_config("updated while paused"))
+            .update(task_id, set_config("updated while paused"))
             .await
             .unwrap();
         wait_for_abort(abort).await;
@@ -1269,18 +1257,23 @@ mod tests {
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
 
         orchestrator.resume(task_id).await.unwrap();
+        control_worker(&mut orchestrator, task_id);
         let starting = events.try_recv().unwrap();
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
         assert_eq!(starting.metadata.revision, SpecRevision::new(2));
         assert_eq!(starting.metadata.generation, previous_generation.next());
-        let report = next_report(&mut orchestrator).await;
-        assert_eq!(report.key(), (task_id, starting.metadata.generation));
-        assert!(matches!(
-            report,
-            WorkerReport::BuildFailed { reason, .. }
-                if reason == ProbeSpecError::IntervalMustBePositive.to_string()
-        ));
-        assert_eq!(orchestrator.snapshot().tasks[0].name, "updated while paused");
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].name, "updated while paused");
+        assert!(
+            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
+        );
+        orchestrator
+            .on_report(WorkerReport::Built {
+                task_id,
+                generation: starting.metadata.generation,
+            })
+            .await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1311,16 +1304,16 @@ mod tests {
         );
 
         orchestrator
-            .update(task_id, invalid_config("latest"))
+            .update(task_id, set_config("latest"))
             .await
             .unwrap();
+        control_worker(&mut orchestrator, task_id);
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
         let starting = events.try_recv().unwrap();
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
         let generation = starting.metadata.generation;
         assert_eq!(generation, previous_generation.next());
-        let report = next_report(&mut orchestrator).await;
-        orchestrator.on_report(report).await;
+        fail_worker(&mut orchestrator, task_id).await;
         assert!(matches!(events.try_recv().unwrap().data, EventData::BuildFailed { .. }));
         assert_eq!(orchestrator.entries[&task_id].attempts, 1);
 
@@ -1338,25 +1331,31 @@ mod tests {
             matches!(current_restart, Command::Respawn { generation: actual, .. } if actual == generation)
         );
         assert!(orchestrator.on_command(current_restart).await);
+        control_worker(&mut orchestrator, task_id);
         let restarting = events.try_recv().unwrap();
         assert!(matches!(restarting.data, EventData::TaskStarting { attempt: 1 }));
         assert_eq!(restarting.metadata.generation, generation.next());
         assert_eq!(restarting.metadata.revision, SpecRevision::new(2));
-        let report = next_report(&mut orchestrator).await;
-        assert_eq!(report.key(), (task_id, restarting.metadata.generation));
-        assert!(matches!(
-            report,
-            WorkerReport::BuildFailed { reason, .. }
-                if reason == ProbeSpecError::IntervalMustBePositive.to_string()
-        ));
-        assert_eq!(orchestrator.snapshot().tasks[0].name, "latest");
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].name, "latest");
+        assert!(
+            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
+        );
+        orchestrator
+            .on_report(WorkerReport::Built {
+                task_id,
+                generation: restarting.metadata.generation,
+            })
+            .await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
+        assert_eq!(orchestrator.entries[&task_id].attempts, 0);
     }
 
     #[tokio::test]
     async fn pausing_backoff_blocks_respawn_and_resume_resets_retry_attempts() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         orchestrator.entries.get_mut(&task_id).unwrap().task =
-            Task::new(task_id, invalid_config("resumed"));
+            Task::new(task_id, set_config("resumed"));
         let generation = orchestrator.entries[&task_id].generation;
         orchestrator.entries[&task_id]
             .worker
@@ -1380,13 +1379,13 @@ mod tests {
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
 
         orchestrator.resume(task_id).await.unwrap();
+        control_worker(&mut orchestrator, task_id);
         assert!(matches!(
             events.try_recv().unwrap().data,
             EventData::TaskStarting { attempt: 0 }
         ));
         assert_eq!(orchestrator.entries[&task_id].attempts, 0);
-        let report = next_report(&mut orchestrator).await;
-        orchestrator.on_report(report).await;
+        fail_worker(&mut orchestrator, task_id).await;
         assert_eq!(orchestrator.entries[&task_id].attempts, 1);
         assert!(matches!(
             events.try_recv().unwrap().data,

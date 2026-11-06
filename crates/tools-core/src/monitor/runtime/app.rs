@@ -112,27 +112,25 @@ mod tests {
 
     use crate::{
         monitor::{
-            probe::{ProbeSpec, SnmpGetSpec},
-            runtime::{Application, AppConfig},
+            probe::SnmpGetSpec,
+            runtime::{AppConfig, Application},
+            scenario::{Scenario, SnmpGetScenarioSpec},
             task::{MonitorSnapshot, TaskConfig, TaskStatus},
         },
         polling::AttemptConfig,
     };
 
     fn spec(name: &str) -> TaskConfig {
-        let request = SnmpGetSpec::from_raw(
-            "127.0.0.1".to_string(),
-            161,
-            "public".to_string(),
-            None,
-            vec![],
-        )
-        .unwrap();
+        let request =
+            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap();
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
-        let probe = ProbeSpec::snmp_get(request, Duration::from_secs(1), 0, attempt).unwrap();
-        TaskConfig::try_new(name.to_string(), probe, 3).unwrap()
+        let scenario = Scenario::SnmpGet(
+            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+        );
+        TaskConfig::try_new(name.to_string(), scenario, 0, 3).unwrap()
     }
 
     async fn poll_until(
