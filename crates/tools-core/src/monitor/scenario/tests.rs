@@ -16,8 +16,8 @@ use crate::{
 
 struct Session {
     join: JoinHandle<()>,
-    commands: mpsc::Sender<WorkerCmd>,
-    reports: mpsc::Receiver<WorkerReport>,
+    commands: mpsc::Sender<ScenarioCommand>,
+    reports: mpsc::Receiver<ScenarioReport>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -105,7 +105,7 @@ async fn start(operation: Operation, retries: u8) -> (Session, UdpSocket) {
     };
     let mut session = spawn(scenario);
     let report = session.reports.recv().await.unwrap();
-    assert!(matches!(report, WorkerReport::Built { .. }));
+    assert!(matches!(report, ScenarioReport::Built { .. }));
     assert_eq!(report.key(), (TaskId(7), Generation::first().next()));
     (session, peer)
 }
@@ -150,7 +150,7 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
 
         let report = session.reports.recv().await.unwrap();
         assert_eq!(report.key(), (TaskId(7), Generation::first().next()));
-        let WorkerReport::Executed { execution, .. } = report else {
+        let ScenarioReport::Executed { execution, .. } = report else {
             panic!("expected execution report");
         };
         match (operation, execution.outcome) {
@@ -172,7 +172,7 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
         let finished_at = Instant::now();
         receive(&peer).await;
         assert_eq!(finished_at.elapsed(), Duration::from_secs(10));
-        assert!(matches!(session.reports.recv().await, Some(WorkerReport::Executed { .. })));
+        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Executed { .. })));
         stop(session).await;
     }
 }
@@ -182,9 +182,10 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
     for operation in [Operation::Get, Operation::Set] {
         let (mut session, peer) = start(operation, 1).await;
         receive(&peer).await;
-        session.commands.send(WorkerCmd::Pause).await.unwrap();
+        session.commands.send(ScenarioCommand::Pause).await.unwrap();
         receive(&peer).await;
-        let WorkerReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
+        let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap()
+        else {
             panic!("expected execution before pause");
         };
         assert!(execution.elapsed >= Duration::from_secs(1));
@@ -193,22 +194,26 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
             (Operation::Get, ProbeOutcome::SnmpGet(Response::NoResponse { attempts: 2, .. }))
                 | (Operation::Set, ProbeOutcome::SnmpSet(Response::NoResponse { attempts: 2, .. }))
         ));
-        assert!(matches!(session.reports.recv().await, Some(WorkerReport::Paused { .. })));
+        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Paused { .. })));
         advance(Duration::from_secs(100)).await;
-        session.commands.send(WorkerCmd::Pause).await.unwrap();
+        session.commands.send(ScenarioCommand::Pause).await.unwrap();
         yield_now().await;
         assert!(session.reports.try_recv().is_err());
         let mut packet = [0; 2048];
         assert_eq!(peer.try_recv(&mut packet).unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
 
         let resumed_at = Instant::now();
-        session.commands.send(WorkerCmd::Resume).await.unwrap();
-        assert!(matches!(session.reports.recv().await, Some(WorkerReport::Resumed { .. })));
+        session
+            .commands
+            .send(ScenarioCommand::Resume)
+            .await
+            .unwrap();
+        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Resumed { .. })));
         let (message, source) = receive(&peer).await;
         assert_eq!(resumed_at.elapsed(), Duration::from_secs(10));
         let response = message.pdu.standard().unwrap().to_response();
         reply(&peer, message, source, response).await;
-        assert!(matches!(session.reports.recv().await, Some(WorkerReport::Executed { .. })));
+        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Executed { .. })));
         stop(session).await;
     }
 }
@@ -220,7 +225,11 @@ async fn redundant_resume_does_not_postpone_request() {
         let started_at = Instant::now();
         for _ in 0..9 {
             advance(Duration::from_secs(1)).await;
-            session.commands.send(WorkerCmd::Resume).await.unwrap();
+            session
+                .commands
+                .send(ScenarioCommand::Resume)
+                .await
+                .unwrap();
             yield_now().await;
         }
         receive(&peer).await;
@@ -236,10 +245,10 @@ async fn closed_channels_end_active_and_paused_scenarios() {
             for close_reports in [false, true] {
                 let (mut session, _peer) = start(operation, 0).await;
                 if paused {
-                    session.commands.send(WorkerCmd::Pause).await.unwrap();
+                    session.commands.send(ScenarioCommand::Pause).await.unwrap();
                     assert!(matches!(
                         session.reports.recv().await,
-                        Some(WorkerReport::Paused { .. })
+                        Some(ScenarioReport::Paused { .. })
                     ));
                 }
                 if close_reports {
@@ -266,7 +275,7 @@ async fn resolves_scn_before_reporting_built() {
     assert_eq!(response.varbinds[0].oid.to_string(), "1.3.6.1.4.1.13267.3.2.5.1.1.2.0");
     response.varbinds[0].value = Value::OctetString(b"CO1".as_slice().into());
     reply(&peer, message, source, response).await;
-    assert!(matches!(session.reports.recv().await, Some(WorkerReport::Built { .. })));
+    assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
 
     let (message, source) = receive(&peer).await;
     let mut response = message.pdu.standard().unwrap().to_response();
@@ -276,7 +285,7 @@ async fn resolves_scn_before_reporting_built() {
     );
     response.varbinds[0].value = Value::OctetString(vec![4].into());
     reply(&peer, message, source, response).await;
-    let WorkerReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
+    let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
         panic!("expected execution report");
     };
     let ProbeOutcome::SnmpGet(Response::Success { payload, .. }) = execution.outcome else {
@@ -300,7 +309,7 @@ async fn failed_scn_resolution_ends_scenario_without_built() {
         let mut response = message.pdu.standard().unwrap().to_response();
         response.varbinds[0].value = Value::Integer(42);
         reply(&peer, message, source, response).await;
-        assert!(matches!(session.reports.recv().await, Some(WorkerReport::BuildFailed { .. })));
+        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::BuildFailed { .. })));
         assert!(session.reports.recv().await.is_none());
         session.join.await.unwrap();
     }
@@ -319,7 +328,7 @@ async fn fatal_protocol_error_ends_scenario_without_execution_report() {
         reply(&peer, message, source, response).await;
         assert!(matches!(
             session.reports.recv().await,
-            Some(WorkerReport::ExecutionFailed { .. })
+            Some(ScenarioReport::ExecutionFailed { .. })
         ));
         assert!(session.reports.recv().await.is_none());
         session.join.await.unwrap();
@@ -332,11 +341,11 @@ async fn parser_panic_is_reported_as_execution_panic() {
     let mut spec = request(&peer, None, "1.3.6.1.2.1.1.1.0");
     spec.oids[0].parser = Some(|_| panic!("test parser panic"));
     let mut session = spawn(get_scenario(spec, 0));
-    assert!(matches!(session.reports.recv().await, Some(WorkerReport::Built { .. })));
+    assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
     let (message, source) = receive(&peer).await;
     let response = message.pdu.standard().unwrap().to_response();
     reply(&peer, message, source, response).await;
-    let WorkerReport::ExecutionPanicked { reason, .. } = session.reports.recv().await.unwrap()
+    let ScenarioReport::ExecutionPanicked { reason, .. } = session.reports.recv().await.unwrap()
     else {
         panic!("expected execution panic report");
     };
@@ -360,7 +369,7 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         assert_eq!(response.varbinds[0].oid.to_string(), "1.3.6.1.4.1.13267.3.2.5.1.1.2.0");
         response.varbinds[0].value = Value::OctetString(b"CO1".as_slice().into());
         reply(&peer, message, source, response).await;
-        assert!(matches!(session.reports.recv().await, Some(WorkerReport::Built { .. })));
+        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
 
         let built_at = Instant::now();
         let (message, source) = receive(&peer).await;
@@ -372,7 +381,8 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         assert_eq!(pdu.varbinds[0].value, Value::OctetString(vec![4].into()));
         let response = pdu.to_response();
         reply(&peer, message, source, response).await;
-        let WorkerReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
+        let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap()
+        else {
             panic!("expected execution report");
         };
         assert!(matches!(execution.outcome, ProbeOutcome::SnmpSet(Response::Success { .. })));
@@ -397,7 +407,7 @@ async fn scenario_clone_resolves_scn_independently_for_each_run() {
             let mut response = message.pdu.standard().unwrap().to_response();
             response.varbinds[0].value = Value::OctetString(scn.as_bytes().to_vec().into());
             reply(&peer, message, source, response).await;
-            assert!(matches!(session.reports.recv().await, Some(WorkerReport::Built { .. })));
+            assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
 
             let (message, source) = receive(&peer).await;
             let pdu = message.pdu.standard().unwrap();
@@ -410,7 +420,7 @@ async fn scenario_clone_resolves_scn_independently_for_each_run() {
             let mut response = pdu.to_response();
             response.varbinds[0].value = Value::OctetString(vec![4].into());
             reply(&peer, message, source, response).await;
-            assert!(matches!(session.reports.recv().await, Some(WorkerReport::Executed { .. })));
+            assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Executed { .. })));
             stop(session).await;
         }
     }
@@ -423,7 +433,7 @@ async fn set_retries_after_timeout_and_stops_on_success() {
     let (message, source) = receive(&peer).await;
     let response = message.pdu.standard().unwrap().to_response();
     reply(&peer, message, source, response).await;
-    let WorkerReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
+    let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
         panic!("expected execution report");
     };
     let ProbeOutcome::SnmpSet(Response::Success {

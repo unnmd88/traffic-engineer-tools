@@ -37,3 +37,14 @@ pub enum SnmpQueryError {
     #[error("{0}")]
     Other(String),
 }
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum ProbeSpecError {
+    #[error("poll interval must be greater than zero")]
+    IntervalMustBePositive,
+    #[error(
+        "poll interval ({interval_ms} ms) must be >= total attempt budget \
+         ({budget_ms} ms = timeout * (retries + 1) + retry_delay * retries)"
+    )]
+    IntervalShorterThanAttemptBudget { interval_ms: u64, budget_ms: u64 },
+}

@@ -3,7 +3,7 @@ use tokio::time::Duration;
 
 use crate::monitor::{
     probe::{ProbeError, ProbeExecution},
-    runtime::worker::Generation,
+    scenario::Generation,
     task::{ExecutionMetrics, SpecRevision, TaskId},
 };
 

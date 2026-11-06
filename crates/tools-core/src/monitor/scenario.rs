@@ -12,9 +12,8 @@ use crate::{
     monitor::{
         probe::{
             ProbeBuildError, ProbeError, ProbeExecution, ProbeOutcome, ProbeSpecError, SnmpGetSpec,
-            SnmpSetSpec, build_timeout,
+            SnmpSetSpec,
         },
-        runtime::worker::{Generation, WorkerCmd, WorkerReport},
         task::TaskId,
     },
     polling::{AttemptConfig, AttemptError, Pollable, poll},
@@ -48,8 +47,8 @@ impl Scenario {
         self,
         task_id: TaskId,
         generation: Generation,
-        report_tx: mpsc::Sender<WorkerReport>,
-        mut cmd_rx: mpsc::Receiver<WorkerCmd>,
+        report_tx: mpsc::Sender<ScenarioReport>,
+        mut cmd_rx: mpsc::Receiver<ScenarioCommand>,
     ) {
         let panic_tx = report_tx.clone();
         let run = async move {
@@ -75,7 +74,7 @@ impl Scenario {
                         Ok(Ok(Ok(request))) => request,
                         Ok(Ok(Err(error))) => {
                             let _ = report_tx
-                                .send(WorkerReport::BuildFailed {
+                                .send(ScenarioReport::BuildFailed {
                                     task_id,
                                     generation,
                                     reason: error.to_string(),
@@ -85,7 +84,7 @@ impl Scenario {
                         }
                         Ok(Err(_)) => {
                             let _ = report_tx
-                                .send(WorkerReport::BuildTimeout {
+                                .send(ScenarioReport::BuildTimeout {
                                     task_id,
                                     generation,
                                 })
@@ -94,7 +93,7 @@ impl Scenario {
                         }
                         Err(panic) => {
                             let _ = report_tx
-                                .send(WorkerReport::BuildPanicked {
+                                .send(ScenarioReport::BuildPanicked {
                                     task_id,
                                     generation,
                                     reason: panic_message(panic.as_ref()),
@@ -106,7 +105,7 @@ impl Scenario {
 
                     let mut next_deadline = Instant::now() + interval;
                     if report_tx
-                        .send(WorkerReport::Built {
+                        .send(ScenarioReport::Built {
                             task_id,
                             generation,
                         })
@@ -124,11 +123,11 @@ impl Scenario {
                                 cmd = cmd_rx.recv() => cmd,
                             };
                             match cmd {
-                                Some(WorkerCmd::Resume) => {
+                                Some(ScenarioCommand::Resume) => {
                                     paused = false;
                                     next_deadline = Instant::now() + interval;
                                     if report_tx
-                                        .send(WorkerReport::Resumed {
+                                        .send(ScenarioReport::Resumed {
                                             task_id,
                                             generation,
                                         })
@@ -138,7 +137,7 @@ impl Scenario {
                                         return;
                                     }
                                 }
-                                Some(WorkerCmd::Pause) => {}
+                                Some(ScenarioCommand::Pause) => {}
                                 None => return,
                             }
                             continue;
@@ -148,16 +147,16 @@ impl Scenario {
                             biased;
                             () = report_tx.closed() => return,
                             cmd = cmd_rx.recv() => match cmd {
-                                Some(WorkerCmd::Pause) => {
+                                Some(ScenarioCommand::Pause) => {
                                     paused = true;
-                                    if report_tx.send(WorkerReport::Paused {
+                                    if report_tx.send(ScenarioReport::Paused {
                                         task_id,
                                         generation,
                                     }).await.is_err() {
                                         return;
                                     }
                                 }
-                                Some(WorkerCmd::Resume) => {}
+                                Some(ScenarioCommand::Resume) => {}
                                 None => return,
                             },
                             () = sleep_until(next_deadline) => {
@@ -173,7 +172,7 @@ impl Scenario {
                                             outcome: ProbeOutcome::SnmpGet(response),
                                         };
                                         next_deadline = Instant::now() + interval;
-                                        if report_tx.send(WorkerReport::Executed {
+                                        if report_tx.send(ScenarioReport::Executed {
                                             task_id,
                                             generation,
                                             execution,
@@ -182,7 +181,7 @@ impl Scenario {
                                         }
                                     }
                                     Ok(Err(error)) => {
-                                        let _ = report_tx.send(WorkerReport::ExecutionFailed {
+                                        let _ = report_tx.send(ScenarioReport::ExecutionFailed {
                                             task_id,
                                             generation,
                                             error: ProbeError::from(error),
@@ -190,7 +189,7 @@ impl Scenario {
                                         return;
                                     }
                                     Err(panic) => {
-                                        let _ = report_tx.send(WorkerReport::ExecutionPanicked {
+                                        let _ = report_tx.send(ScenarioReport::ExecutionPanicked {
                                             task_id,
                                             generation,
                                             reason: panic_message(panic.as_ref()),
@@ -229,7 +228,7 @@ impl Scenario {
                         Ok(Ok(Ok(request))) => request,
                         Ok(Ok(Err(error))) => {
                             let _ = report_tx
-                                .send(WorkerReport::BuildFailed {
+                                .send(ScenarioReport::BuildFailed {
                                     task_id,
                                     generation,
                                     reason: error.to_string(),
@@ -239,7 +238,7 @@ impl Scenario {
                         }
                         Ok(Err(_)) => {
                             let _ = report_tx
-                                .send(WorkerReport::BuildTimeout {
+                                .send(ScenarioReport::BuildTimeout {
                                     task_id,
                                     generation,
                                 })
@@ -248,7 +247,7 @@ impl Scenario {
                         }
                         Err(panic) => {
                             let _ = report_tx
-                                .send(WorkerReport::BuildPanicked {
+                                .send(ScenarioReport::BuildPanicked {
                                     task_id,
                                     generation,
                                     reason: panic_message(panic.as_ref()),
@@ -260,7 +259,7 @@ impl Scenario {
 
                     let mut next_deadline = Instant::now() + interval;
                     if report_tx
-                        .send(WorkerReport::Built {
+                        .send(ScenarioReport::Built {
                             task_id,
                             generation,
                         })
@@ -278,11 +277,11 @@ impl Scenario {
                                 cmd = cmd_rx.recv() => cmd,
                             };
                             match cmd {
-                                Some(WorkerCmd::Resume) => {
+                                Some(ScenarioCommand::Resume) => {
                                     paused = false;
                                     next_deadline = Instant::now() + interval;
                                     if report_tx
-                                        .send(WorkerReport::Resumed {
+                                        .send(ScenarioReport::Resumed {
                                             task_id,
                                             generation,
                                         })
@@ -292,7 +291,7 @@ impl Scenario {
                                         return;
                                     }
                                 }
-                                Some(WorkerCmd::Pause) => {}
+                                Some(ScenarioCommand::Pause) => {}
                                 None => return,
                             }
                             continue;
@@ -302,16 +301,16 @@ impl Scenario {
                             biased;
                             () = report_tx.closed() => return,
                             cmd = cmd_rx.recv() => match cmd {
-                                Some(WorkerCmd::Pause) => {
+                                Some(ScenarioCommand::Pause) => {
                                     paused = true;
-                                    if report_tx.send(WorkerReport::Paused {
+                                    if report_tx.send(ScenarioReport::Paused {
                                         task_id,
                                         generation,
                                     }).await.is_err() {
                                         return;
                                     }
                                 }
-                                Some(WorkerCmd::Resume) => {}
+                                Some(ScenarioCommand::Resume) => {}
                                 None => return,
                             },
                             () = sleep_until(next_deadline) => {
@@ -327,7 +326,7 @@ impl Scenario {
                                             outcome: ProbeOutcome::SnmpSet(response),
                                         };
                                         next_deadline = Instant::now() + interval;
-                                        if report_tx.send(WorkerReport::Executed {
+                                        if report_tx.send(ScenarioReport::Executed {
                                             task_id,
                                             generation,
                                             execution,
@@ -336,7 +335,7 @@ impl Scenario {
                                         }
                                     }
                                     Ok(Err(error)) => {
-                                        let _ = report_tx.send(WorkerReport::ExecutionFailed {
+                                        let _ = report_tx.send(ScenarioReport::ExecutionFailed {
                                             task_id,
                                             generation,
                                             error: ProbeError::from(error),
@@ -344,7 +343,7 @@ impl Scenario {
                                         return;
                                     }
                                     Err(panic) => {
-                                        let _ = report_tx.send(WorkerReport::ExecutionPanicked {
+                                        let _ = report_tx.send(ScenarioReport::ExecutionPanicked {
                                             task_id,
                                             generation,
                                             reason: panic_message(panic.as_ref()),
@@ -360,7 +359,7 @@ impl Scenario {
         };
         if let Err(panic) = AssertUnwindSafe(run).catch_unwind().await {
             let _ = panic_tx
-                .send(WorkerReport::WorkerPanicked {
+                .send(ScenarioReport::Panicked {
                     task_id,
                     generation,
                     reason: panic_message(panic.as_ref()),
@@ -435,6 +434,129 @@ impl SnmpSetScenarioSpec {
 
     pub const fn attempt(&self) -> AttemptConfig {
         self.attempt
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[must_use]
+pub struct Generation(u64);
+
+impl Generation {
+    pub const fn first() -> Self {
+        Self(0)
+    }
+
+    pub const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+#[derive(Debug)]
+pub enum ScenarioCommand {
+    Pause,
+    Resume,
+}
+
+#[derive(Debug)]
+pub enum ScenarioReport {
+    Built {
+        task_id: TaskId,
+        generation: Generation,
+    },
+    BuildFailed {
+        task_id: TaskId,
+        generation: Generation,
+        reason: String,
+    },
+    BuildTimeout {
+        task_id: TaskId,
+        generation: Generation,
+    },
+    BuildPanicked {
+        task_id: TaskId,
+        generation: Generation,
+        reason: String,
+    },
+    Executed {
+        task_id: TaskId,
+        generation: Generation,
+        execution: ProbeExecution,
+    },
+    ExecutionFailed {
+        task_id: TaskId,
+        generation: Generation,
+        error: ProbeError,
+    },
+    ExecutionPanicked {
+        task_id: TaskId,
+        generation: Generation,
+        reason: String,
+    },
+    Panicked {
+        task_id: TaskId,
+        generation: Generation,
+        reason: String,
+    },
+    Paused {
+        task_id: TaskId,
+        generation: Generation,
+    },
+    Resumed {
+        task_id: TaskId,
+        generation: Generation,
+    },
+}
+
+impl ScenarioReport {
+    pub const fn key(&self) -> (TaskId, Generation) {
+        match self {
+            Self::Built {
+                task_id,
+                generation,
+            }
+            | Self::BuildFailed {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::BuildTimeout {
+                task_id,
+                generation,
+            }
+            | Self::BuildPanicked {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::Executed {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::ExecutionFailed {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::ExecutionPanicked {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::Panicked {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::Paused {
+                task_id,
+                generation,
+            }
+            | Self::Resumed {
+                task_id,
+                generation,
+            } => (*task_id, *generation),
+        }
     }
 }
 
@@ -523,13 +645,21 @@ async fn connect(
         target: host,
         port,
         community,
-        timeout: attempt.timeout().saturating_add(Duration::from_secs(1)),
+        timeout: transport_timeout(&attempt),
         retries: 0,
         retry_delay: Duration::ZERO,
     };
     SnmpClient::new(config)
         .await
         .map_err(|_| ProbeBuildError::SnmpClientCreate)
+}
+
+fn transport_timeout(attempt: &AttemptConfig) -> Duration {
+    attempt.timeout().saturating_add(Duration::from_secs(1))
+}
+
+fn build_timeout(attempt: &AttemptConfig) -> Duration {
+    transport_timeout(attempt).saturating_mul(2)
 }
 
 fn classify_error(error: &SnmpError) -> AttemptError {

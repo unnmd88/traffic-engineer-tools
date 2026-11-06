@@ -1,35 +1,17 @@
 use std::net::IpAddr;
 
-use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::time::{Duration, Instant};
 
 use crate::{
-    monitor::probe::{
-        ProbeError, ProbeOutcome,
-        error::{ProbeBuildError, SnmpQueryError},
-    },
-    polling::{AttemptConfig, AttemptError, Pollable, poll},
+    monitor::probe::SnmpQueryError,
     snmp::{
-        ParseError, SnmpClient, SnmpClientConfig, SnmpError, SnmpGetSample,
-        business_value::BusinessValue,
+        ParseError,
         community::Community,
         oid::SnmpOid,
         profiles::SnmpProfile,
-        resolve::{Resolver, SnmpGetItem, SnmpSetItem, encode_set_value},
-        value::SnmpValue,
+        resolve::{SnmpGetItem, SnmpSetItem, encode_set_value},
     },
 };
-
-const TRANSPORT_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
-
-fn transport_timeout(attempt: &AttemptConfig) -> Duration {
-    attempt.timeout().saturating_add(TRANSPORT_TIMEOUT_MARGIN)
-}
-
-pub fn build_timeout(attempt: &AttemptConfig) -> Duration {
-    transport_timeout(attempt).saturating_mul(2)
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,141 +49,6 @@ pub struct SnmpSetSpec {
     pub sets: Vec<SnmpSetItem>,
 }
 
-pub struct SnmpGetProbe {
-    client: SnmpClient,
-    items: Vec<SnmpGetItem>,
-    interval: Duration,
-    attempt: AttemptConfig,
-}
-
-impl SnmpGetProbe {
-    pub fn new(
-        client: SnmpClient,
-        items: Vec<SnmpGetItem>,
-        interval: Duration,
-        attempt: AttemptConfig,
-    ) -> Self {
-        Self {
-            client,
-            items,
-            interval,
-            attempt,
-        }
-    }
-
-    pub fn next_deadline(&self) -> Instant {
-        Instant::now() + self.interval
-    }
-
-    pub async fn do_work(&mut self) -> Result<ProbeOutcome, ProbeError> {
-        let attempt = self.attempt;
-        poll(&attempt, &*self)
-            .await
-            .map(ProbeOutcome::SnmpGet)
-            .map_err(ProbeError::from)
-    }
-}
-
-#[async_trait]
-impl Pollable for SnmpGetProbe {
-    type Output = Vec<SnmpGetSample>;
-
-    async fn poll(&self) -> Result<Self::Output, AttemptError> {
-        let oids: Vec<SnmpOid> = self.items.iter().map(|i| i.oid.clone()).collect();
-
-        let samples = self
-            .client
-            .get_many(&oids)
-            .await
-            .map_err(classify_snmp_error)?
-            .into_iter()
-            .zip(&self.items)
-            .map(|(vb, item)| {
-                let parsed_value = item.parser.map(|parser| match parser(&vb.value) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        tracing::error!(target: "snmp_reader", value = ?&vb.value, "{e}");
-                        BusinessValue::Text("parse error".to_string())
-                    }
-                });
-
-                SnmpGetSample {
-                    oid_name: item.name.clone(),
-                    oid: vb.oid,
-                    raw_value: vb.value,
-                    value: parsed_value,
-                }
-            })
-            .collect();
-
-        Ok(samples)
-    }
-}
-
-pub struct SnmpSetProbe {
-    client: SnmpClient,
-    items: Vec<SnmpSetItem>,
-    interval: Duration,
-    attempt: AttemptConfig,
-}
-
-impl SnmpSetProbe {
-    pub fn new(
-        client: SnmpClient,
-        items: Vec<SnmpSetItem>,
-        interval: Duration,
-        attempt: AttemptConfig,
-    ) -> Self {
-        Self {
-            client,
-            items,
-            interval,
-            attempt,
-        }
-    }
-
-    pub fn next_deadline(&self) -> Instant {
-        Instant::now() + self.interval
-    }
-
-    pub async fn do_work(&mut self) -> Result<ProbeOutcome, ProbeError> {
-        let attempt = self.attempt;
-        poll(&attempt, &*self)
-            .await
-            .map(ProbeOutcome::SnmpSet)
-            .map_err(ProbeError::from)
-    }
-}
-
-#[async_trait]
-impl Pollable for SnmpSetProbe {
-    type Output = ();
-
-    async fn poll(&self) -> Result<Self::Output, AttemptError> {
-        let sets: Vec<(SnmpOid, SnmpValue)> = self
-            .items
-            .iter()
-            .map(|i| (i.oid.clone(), i.value.clone()))
-            .collect();
-
-        self.client
-            .set_many(&sets)
-            .await
-            .map_err(classify_snmp_error)?;
-
-        Ok(())
-    }
-}
-
-fn classify_snmp_error(e: SnmpError) -> AttemptError {
-    match e {
-        SnmpError::Network { .. } | SnmpError::Timeout { .. } => {
-            AttemptError::Transient(e.to_string())
-        }
-        _ => AttemptError::Fatal(e.to_string()),
-    }
-}
-
 impl SnmpGetSpec {
     pub fn from_raw(
         host: String,
@@ -234,23 +81,6 @@ impl SnmpGetSpec {
             community,
             oids,
         })
-    }
-
-    pub async fn build(
-        self,
-        attempt: AttemptConfig,
-        interval: Duration,
-    ) -> Result<SnmpGetProbe, ProbeBuildError> {
-        let transport_timeout = transport_timeout(&attempt);
-        let client = connect(self.host, self.port, self.community, transport_timeout).await?;
-
-        let resolver = Resolver::new(client.clone(), self.profile);
-        let resolved = resolver
-            .resolve_get(self.oids)
-            .await
-            .map_err(|e| ProbeBuildError::Other(e.to_string()))?;
-
-        Ok(SnmpGetProbe::new(client, resolved, interval, attempt))
     }
 }
 
@@ -296,48 +126,6 @@ impl SnmpSetSpec {
             sets,
         })
     }
-
-    pub async fn build(
-        self,
-        attempt: AttemptConfig,
-        interval: Duration,
-    ) -> Result<SnmpSetProbe, ProbeBuildError> {
-        let transport_timeout = transport_timeout(&attempt);
-        let client = connect(self.host, self.port, self.community, transport_timeout).await?;
-
-        let scn_client = match self.community_r {
-            Some(c) => connect(self.host, self.port, c, transport_timeout).await?,
-            None => client.clone(),
-        };
-
-        let resolver = Resolver::new(scn_client, self.profile);
-        let resolved = resolver
-            .resolve_set(self.sets)
-            .await
-            .map_err(|e| ProbeBuildError::Other(e.to_string()))?;
-
-        Ok(SnmpSetProbe::new(client, resolved, interval, attempt))
-    }
-}
-
-async fn connect(
-    host: IpAddr,
-    port: u16,
-    community: Community,
-    transport_timeout: Duration,
-) -> Result<SnmpClient, ProbeBuildError> {
-    let config = SnmpClientConfig {
-        target: host,
-        port,
-        community,
-        timeout: transport_timeout,
-        retries: 0,
-        retry_delay: Duration::ZERO,
-    };
-
-    SnmpClient::new(config)
-        .await
-        .map_err(|_| ProbeBuildError::SnmpClientCreate)
 }
 
 fn parse_ip(ip: &str) -> Result<IpAddr, SnmpQueryError> {

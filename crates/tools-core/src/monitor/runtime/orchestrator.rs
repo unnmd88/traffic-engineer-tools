@@ -6,11 +6,8 @@ use tokio::time::{Duration, sleep};
 
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
-    runtime::{
-        error::OrchestratorError,
-        restart_policy::RestartPolicy,
-        worker::{Generation, WorkerCmd, WorkerReport},
-    },
+    runtime::{error::OrchestratorError, restart_policy::RestartPolicy},
+    scenario::{Generation, ScenarioCommand, ScenarioReport},
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
         TaskView,
@@ -34,13 +31,13 @@ struct TaskEntry {
     attempts: u32,
     next_generation: Generation,
     generation: Generation,
-    worker: Option<WorkerHandle>,
+    scenario: Option<ScenarioHandle>,
 }
 
-struct WorkerHandle {
+struct ScenarioHandle {
     generation: Generation,
     abort: tokio::task::AbortHandle,
-    cmd: mpsc::Sender<WorkerCmd>,
+    cmd: mpsc::Sender<ScenarioCommand>,
 }
 
 enum Command {
@@ -90,8 +87,8 @@ pub struct Orchestrator {
     entries: HashMap<TaskId, TaskEntry>,
     cmd_rx: mpsc::Receiver<Command>,
     cmd_tx: mpsc::Sender<Command>,
-    report_rx: mpsc::Receiver<WorkerReport>,
-    report_tx: mpsc::Sender<WorkerReport>,
+    report_rx: mpsc::Receiver<ScenarioReport>,
+    report_tx: mpsc::Sender<ScenarioReport>,
     live_tx: broadcast::Sender<MonitorEvent>,
     record_tx: Option<mpsc::Sender<MonitorEvent>>,
     policy: RestartPolicy,
@@ -160,7 +157,7 @@ impl Orchestrator {
                         attempts: 0,
                         next_generation: Generation::first(),
                         generation: Generation::first(),
-                        worker: None,
+                        scenario: None,
                     },
                 );
                 self.emit(id, EventData::TaskAdded).await;
@@ -207,8 +204,8 @@ impl Orchestrator {
             }
             Command::Shutdown { reply } => {
                 for entry in self.entries.values_mut() {
-                    if let Some(w) = entry.worker.take() {
-                        w.abort.abort();
+                    if let Some(scenario) = entry.scenario.take() {
+                        scenario.abort.abort();
                     }
                 }
                 self.entries.clear();
@@ -242,7 +239,7 @@ impl Orchestrator {
             entry.attempts = 0;
             entry.state = TaskState::Starting;
         }
-        self.spawn_worker(id);
+        self.spawn_scenario(id);
         self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
         Ok(())
     }
@@ -256,7 +253,7 @@ impl Orchestrator {
                 .ok_or(OrchestratorError::TaskNotFound(id))?;
             match entry.state {
                 TaskState::Starting | TaskState::Active => {
-                    (entry.worker.is_some(), entry.worker.is_none())
+                    (entry.scenario.is_some(), entry.scenario.is_none())
                 }
                 TaskState::Restarting => (false, true),
                 _ => (false, false), // Idle/Stopped/Completed/Paused — no-op
@@ -267,10 +264,10 @@ impl Orchestrator {
             if let Some(cmd) = self
                 .entries
                 .get(&id)
-                .and_then(|e| e.worker.as_ref())
-                .map(|w| w.cmd.clone())
+                .and_then(|e| e.scenario.as_ref())
+                .map(|scenario| scenario.cmd.clone())
             {
-                let _ = cmd.send(WorkerCmd::Pause).await;
+                let _ = cmd.send(ScenarioCommand::Pause).await;
             }
         }
         if set_state {
@@ -290,7 +287,7 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(OrchestratorError::TaskNotFound(id))?;
             match entry.state {
-                TaskState::Paused => (entry.worker.is_some(), entry.worker.is_none()),
+                TaskState::Paused => (entry.scenario.is_some(), entry.scenario.is_none()),
                 _ => (false, false),
             }
         };
@@ -299,10 +296,10 @@ impl Orchestrator {
             if let Some(cmd) = self
                 .entries
                 .get(&id)
-                .and_then(|e| e.worker.as_ref())
-                .map(|w| w.cmd.clone())
+                .and_then(|e| e.scenario.as_ref())
+                .map(|scenario| scenario.cmd.clone())
             {
-                let _ = cmd.send(WorkerCmd::Resume).await;
+                let _ = cmd.send(ScenarioCommand::Resume).await;
             }
         }
         if spawn {
@@ -311,7 +308,7 @@ impl Orchestrator {
                 entry.attempts = 0;
                 entry.state = TaskState::Starting;
             }
-            self.spawn_worker(id);
+            self.spawn_scenario(id);
             self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
         }
         Ok(())
@@ -326,8 +323,8 @@ impl Orchestrator {
             match entry.state {
                 TaskState::Idle | TaskState::Stopped => false, // нечего останавливать
                 _ => {
-                    if let Some(w) = entry.worker.take() {
-                        w.abort.abort();
+                    if let Some(scenario) = entry.scenario.take() {
+                        scenario.abort.abort();
                     }
                     entry.attempts = 0;
                     entry.state = TaskState::Stopped;
@@ -358,19 +355,19 @@ impl Orchestrator {
         if respawn {
             {
                 let entry = self.entries.get_mut(&id).expect("checked above");
-                if let Some(w) = entry.worker.take() {
-                    w.abort.abort();
+                if let Some(scenario) = entry.scenario.take() {
+                    scenario.abort.abort();
                 }
                 entry.state = TaskState::Starting;
             }
-            self.spawn_worker(id);
+            self.spawn_scenario(id);
             self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
         } else if paused {
             // спека сменилась — старый адаптер недействителен; убиваем воркера,
             // остаёмся Paused, Resume поднимет уже с новой спекой.
             if let Some(entry) = self.entries.get_mut(&id) {
-                if let Some(w) = entry.worker.take() {
-                    w.abort.abort();
+                if let Some(scenario) = entry.scenario.take() {
+                    scenario.abort.abort();
                 }
             }
         }
@@ -382,8 +379,8 @@ impl Orchestrator {
             .entries
             .remove(&id)
             .ok_or(OrchestratorError::TaskNotFound(id))?;
-        if let Some(w) = &entry.worker {
-            w.abort.abort();
+        if let Some(scenario) = &entry.scenario {
+            scenario.abort.abort();
         }
         let generation = entry.generation;
         let revision = entry.task.spec().revision();
@@ -396,7 +393,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn on_report(&mut self, rep: WorkerReport) {
+    async fn on_report(&mut self, rep: ScenarioReport) {
         let (task_id, generation) = rep.key();
         let mut completed = false;
 
@@ -404,19 +401,19 @@ impl Orchestrator {
             let Some(entry) = self.entries.get_mut(&task_id) else {
                 return;
             };
-            if entry.worker.as_ref().map(|w| w.generation) != Some(generation) {
+            if entry.scenario.as_ref().map(|scenario| scenario.generation) != Some(generation) {
                 return;
             }
 
             match rep {
-                WorkerReport::Built { .. } => {
+                ScenarioReport::Built { .. } => {
                     entry.attempts = 0;
                     entry.task.clear_error();
                     entry.state = TaskState::Active;
                     (Some(EventData::TaskStarted), None)
                 }
-                WorkerReport::BuildFailed { reason, .. } => {
-                    entry.worker = None;
+                ScenarioReport::BuildFailed { reason, .. } => {
+                    entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
@@ -429,8 +426,8 @@ impl Orchestrator {
                         Some(delay),
                     )
                 }
-                WorkerReport::BuildTimeout { .. } => {
-                    entry.worker = None;
+                ScenarioReport::BuildTimeout { .. } => {
+                    entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
@@ -443,8 +440,8 @@ impl Orchestrator {
                         Some(delay),
                     )
                 }
-                WorkerReport::BuildPanicked { reason, .. } => {
-                    entry.worker = None;
+                ScenarioReport::BuildPanicked { reason, .. } => {
+                    entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
@@ -458,11 +455,11 @@ impl Orchestrator {
                         Some(delay),
                     )
                 }
-                WorkerReport::Executed { execution, .. } => {
+                ScenarioReport::Executed { execution, .. } => {
                     entry.task.apply_execution(execution.clone());
                     if limit_reached(entry) {
-                        if let Some(w) = entry.worker.take() {
-                            w.abort.abort();
+                        if let Some(scenario) = entry.scenario.take() {
+                            scenario.abort.abort();
                         }
                         entry.state = TaskState::Completed;
                         completed = true;
@@ -475,8 +472,8 @@ impl Orchestrator {
                         None,
                     )
                 }
-                WorkerReport::ExecutionFailed { error, .. } => {
-                    entry.worker = None;
+                ScenarioReport::ExecutionFailed { error, .. } => {
+                    entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
@@ -489,8 +486,8 @@ impl Orchestrator {
                         Some(delay),
                     )
                 }
-                WorkerReport::ExecutionPanicked { reason, .. } => {
-                    entry.worker = None;
+                ScenarioReport::ExecutionPanicked { reason, .. } => {
+                    entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
@@ -504,8 +501,8 @@ impl Orchestrator {
                         Some(delay),
                     )
                 }
-                WorkerReport::WorkerPanicked { reason, .. } => {
-                    entry.worker = None;
+                ScenarioReport::Panicked { reason, .. } => {
+                    entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
@@ -519,11 +516,11 @@ impl Orchestrator {
                         Some(delay),
                     )
                 }
-                WorkerReport::Paused { .. } => {
+                ScenarioReport::Paused { .. } => {
                     entry.state = TaskState::Paused;
                     (Some(EventData::TaskPaused), None)
                 }
-                WorkerReport::Resumed { .. } => {
+                ScenarioReport::Resumed { .. } => {
                     entry.state = TaskState::Active;
                     (Some(EventData::TaskResumed), None)
                 }
@@ -541,7 +538,7 @@ impl Orchestrator {
         }
     }
 
-    fn spawn_worker(&mut self, task_id: TaskId) {
+    fn spawn_scenario(&mut self, task_id: TaskId) {
         let Some(entry) = self.entries.get_mut(&task_id) else {
             return;
         };
@@ -552,7 +549,7 @@ impl Orchestrator {
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let report_tx = self.report_tx.clone();
         let join = tokio::spawn(scenario.run(task_id, generation, report_tx, cmd_rx));
-        entry.worker = Some(WorkerHandle {
+        entry.scenario = Some(ScenarioHandle {
             generation,
             abort: join.abort_handle(),
             cmd: cmd_tx,
@@ -576,7 +573,7 @@ impl Orchestrator {
         let should = matches!(
             self.entries.get(&task_id),
             Some(e) if e.state == TaskState::Restarting
-                && e.worker.is_none()
+                && e.scenario.is_none()
                 && e.generation == generation
         );
         if should {
@@ -585,7 +582,7 @@ impl Orchestrator {
                 let entry = self.entries.get_mut(&task_id).expect("checked above");
                 entry.state = TaskState::Starting;
             }
-            self.spawn_worker(task_id);
+            self.spawn_scenario(task_id);
             self.emit(task_id, EventData::TaskStarting { attempt })
                 .await;
         }
@@ -840,7 +837,7 @@ mod tests {
                 attempts: 0,
                 next_generation: Generation::first().next(),
                 generation: Generation::first(),
-                worker: Some(WorkerHandle {
+                scenario: Some(ScenarioHandle {
                     generation: Generation::first(),
                     abort: join.abort_handle(),
                     cmd,
@@ -892,26 +889,26 @@ mod tests {
         TaskConfig::try_new(name.to_string(), scenario, 0, 3).unwrap()
     }
 
-    fn control_worker(orchestrator: &mut Orchestrator, task_id: TaskId) {
+    fn control_scenario(orchestrator: &mut Orchestrator, task_id: TaskId) {
         let entry = orchestrator.entries.get_mut(&task_id).unwrap();
-        if let Some(worker) = entry.worker.take() {
-            worker.abort.abort();
+        if let Some(scenario) = entry.scenario.take() {
+            scenario.abort.abort();
         }
         let (cmd, _commands) = mpsc::channel(8);
         let join = tokio::spawn(std::future::pending::<()>());
-        entry.worker = Some(WorkerHandle {
+        entry.scenario = Some(ScenarioHandle {
             generation: entry.generation,
             abort: join.abort_handle(),
             cmd,
         });
     }
 
-    async fn fail_worker(orchestrator: &mut Orchestrator, task_id: TaskId) {
+    async fn fail_scenario(orchestrator: &mut Orchestrator, task_id: TaskId) {
         let entry = &orchestrator.entries[&task_id];
         let generation = entry.generation;
-        entry.worker.as_ref().unwrap().abort.abort();
+        entry.scenario.as_ref().unwrap().abort.abort();
         orchestrator
-            .on_report(WorkerReport::BuildFailed {
+            .on_report(ScenarioReport::BuildFailed {
                 task_id,
                 generation,
                 reason: "unavailable".to_string(),
@@ -931,7 +928,7 @@ mod tests {
 
     async fn execute(orchestrator: &mut Orchestrator, task_id: TaskId, execution: ProbeExecution) {
         orchestrator
-            .on_report(WorkerReport::Executed {
+            .on_report(ScenarioReport::Executed {
                 task_id,
                 generation: Generation::first(),
                 execution,
@@ -940,7 +937,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_response_is_an_execution_and_does_not_restart_the_worker() {
+    async fn no_response_is_an_execution_and_does_not_restart_the_scenario() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let first = execution(100, false);
         execute(&mut orchestrator, task_id, first.clone()).await;
@@ -959,7 +956,7 @@ mod tests {
         assert_eq!(task.health.consecutive_failures, 1);
         assert_eq!(task.health.last_execution_at, Some(first.finished_at));
         assert_eq!(task.result.as_ref().unwrap().finished_at, execution.finished_at);
-        assert!(orchestrator.entries[&task_id].worker.is_some());
+        assert!(orchestrator.entries[&task_id].scenario.is_some());
 
         execute(&mut orchestrator, task_id, self::execution(200, true)).await;
         let snapshot = orchestrator.snapshot();
@@ -988,14 +985,14 @@ mod tests {
         assert_eq!(snapshot.tasks[0].limit, 1);
         assert_eq!(snapshot.tasks[0].metrics.executions, 1);
         assert!(snapshot.tasks[0].result.is_some());
-        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert!(orchestrator.entries[&task_id].scenario.is_none());
     }
 
     #[tokio::test]
     async fn execution_from_another_generation_is_ignored() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         orchestrator
-            .on_report(WorkerReport::Executed {
+            .on_report(ScenarioReport::Executed {
                 task_id,
                 generation: Generation::first().next(),
                 execution: execution(100, true),
@@ -1009,10 +1006,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execution_error_preserves_its_type_and_restarts_the_worker() {
+    async fn execution_error_preserves_its_type_and_restarts_the_scenario() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         orchestrator
-            .on_report(WorkerReport::ExecutionFailed {
+            .on_report(ScenarioReport::ExecutionFailed {
                 task_id,
                 generation: Generation::first(),
                 error: ProbeError::Polling(FatalError {
@@ -1032,7 +1029,50 @@ mod tests {
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
         assert_eq!(snapshot.tasks[0].metrics.executions, 0);
         assert!(snapshot.tasks[0].result.is_none());
-        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert!(orchestrator.entries[&task_id].scenario.is_none());
+    }
+
+    #[tokio::test]
+    async fn scenario_panics_preserve_the_public_event_contract() {
+        for stage in ["build", "execution", "worker"] {
+            let (mut orchestrator, mut events, task_id) = active_task(0);
+            let generation = orchestrator.entries[&task_id].generation;
+            let reason = "panic".to_string();
+            let report = match stage {
+                "build" => ScenarioReport::BuildPanicked {
+                    task_id,
+                    generation,
+                    reason,
+                },
+                "execution" => ScenarioReport::ExecutionPanicked {
+                    task_id,
+                    generation,
+                    reason,
+                },
+                "worker" => ScenarioReport::Panicked {
+                    task_id,
+                    generation,
+                    reason,
+                },
+                _ => unreachable!(),
+            };
+            orchestrator.on_report(report).await;
+            let event = events.try_recv().unwrap();
+            assert_eq!(event.metadata.task_id, task_id);
+            assert_eq!(event.metadata.generation, generation);
+            assert!(matches!(
+                event.data,
+                EventData::WorkerPanicked { reason, retry_in: Some(delay) }
+                    if reason == format!("{stage}: panic") && delay == Duration::from_secs(1)
+            ));
+            let snapshot = orchestrator.snapshot();
+            assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
+            assert_eq!(snapshot.tasks[0].metrics.executions, 0);
+            assert_eq!(
+                snapshot.tasks[0].health.last_error.as_deref(),
+                Some(format!("{stage}: panic").as_str())
+            );
+        }
     }
 
     #[tokio::test]
@@ -1045,7 +1085,7 @@ mod tests {
             .await
             .unwrap();
         orchestrator.start(task_id).await.unwrap();
-        control_worker(&mut orchestrator, task_id);
+        control_scenario(&mut orchestrator, task_id);
         assert!(matches!(events.try_recv().unwrap().data, EventData::ProbeExecuted { .. }));
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
@@ -1062,7 +1102,7 @@ mod tests {
             matches!(&task.scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
         );
         orchestrator
-            .on_report(WorkerReport::Built {
+            .on_report(ScenarioReport::Built {
                 task_id,
                 generation: starting.metadata.generation,
             })
@@ -1076,22 +1116,22 @@ mod tests {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let generation = orchestrator.entries[&task_id].generation;
         let (cmd, mut commands) = mpsc::channel(8);
-        let worker = orchestrator
+        let scenario = orchestrator
             .entries
             .get_mut(&task_id)
             .unwrap()
-            .worker
+            .scenario
             .as_mut()
             .unwrap();
-        worker.cmd = cmd;
-        let abort = worker.abort.clone();
+        scenario.cmd = cmd;
+        let abort = scenario.abort.clone();
 
         orchestrator.pause(task_id).await.unwrap();
-        assert!(matches!(commands.recv().await, Some(WorkerCmd::Pause)));
+        assert!(matches!(commands.recv().await, Some(ScenarioCommand::Pause)));
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
         assert!(events.try_recv().is_err());
         orchestrator
-            .on_report(WorkerReport::Paused {
+            .on_report(ScenarioReport::Paused {
                 task_id,
                 generation,
             })
@@ -1103,11 +1143,11 @@ mod tests {
         assert!(commands.try_recv().is_err());
         assert!(events.try_recv().is_err());
         orchestrator.resume(task_id).await.unwrap();
-        assert!(matches!(commands.recv().await, Some(WorkerCmd::Resume)));
+        assert!(matches!(commands.recv().await, Some(ScenarioCommand::Resume)));
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
         assert!(events.try_recv().is_err());
         orchestrator
-            .on_report(WorkerReport::Resumed {
+            .on_report(ScenarioReport::Resumed {
                 task_id,
                 generation,
             })
@@ -1123,14 +1163,14 @@ mod tests {
         assert!(commands.recv().await.is_none());
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
         orchestrator
-            .on_report(WorkerReport::Executed {
+            .on_report(ScenarioReport::Executed {
                 task_id,
                 generation,
                 execution: execution(100, true),
             })
             .await;
         orchestrator
-            .on_report(WorkerReport::Resumed {
+            .on_report(ScenarioReport::Resumed {
                 task_id,
                 generation,
             })
@@ -1143,14 +1183,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_spec_update_replaces_worker_and_preserves_execution_metrics() {
+    async fn active_spec_update_replaces_scenario_and_preserves_execution_metrics() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         execute(&mut orchestrator, task_id, execution(100, true)).await;
         events.try_recv().unwrap();
         let metrics = orchestrator.snapshot().tasks[0].metrics;
         let previous_generation = orchestrator.entries[&task_id].generation;
         let abort = orchestrator.entries[&task_id]
-            .worker
+            .scenario
             .as_ref()
             .unwrap()
             .abort
@@ -1160,7 +1200,7 @@ mod tests {
             .update(task_id, set_config("updated"))
             .await
             .unwrap();
-        control_worker(&mut orchestrator, task_id);
+        control_scenario(&mut orchestrator, task_id);
         wait_for_abort(abort).await;
         let updated = events.try_recv().unwrap();
         let starting = events.try_recv().unwrap();
@@ -1171,21 +1211,21 @@ mod tests {
         assert_eq!(starting.metadata.generation, previous_generation.next());
 
         for report in [
-            WorkerReport::Built {
+            ScenarioReport::Built {
                 task_id,
                 generation: previous_generation,
             },
-            WorkerReport::BuildFailed {
+            ScenarioReport::BuildFailed {
                 task_id,
                 generation: previous_generation,
                 reason: "obsolete".to_string(),
             },
-            WorkerReport::Executed {
+            ScenarioReport::Executed {
                 task_id,
                 generation: previous_generation,
                 execution: execution(200, false),
             },
-            WorkerReport::Paused {
+            ScenarioReport::Paused {
                 task_id,
                 generation: previous_generation,
             },
@@ -1210,7 +1250,7 @@ mod tests {
             matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
         );
         orchestrator
-            .on_report(WorkerReport::Built {
+            .on_report(ScenarioReport::Built {
                 task_id,
                 generation: starting.metadata.generation,
             })
@@ -1220,17 +1260,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paused_spec_update_defers_new_worker_until_resume() {
+    async fn paused_spec_update_defers_new_scenario_until_resume() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let previous_generation = orchestrator.entries[&task_id].generation;
         let abort = orchestrator.entries[&task_id]
-            .worker
+            .scenario
             .as_ref()
             .unwrap()
             .abort
             .clone();
         orchestrator
-            .on_report(WorkerReport::Paused {
+            .on_report(ScenarioReport::Paused {
                 task_id,
                 generation: previous_generation,
             })
@@ -1244,11 +1284,11 @@ mod tests {
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
         assert!(events.try_recv().is_err());
         assert!(orchestrator.report_rx.try_recv().is_err());
-        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert!(orchestrator.entries[&task_id].scenario.is_none());
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
         assert_eq!(orchestrator.entries[&task_id].generation, previous_generation);
         orchestrator
-            .on_report(WorkerReport::Built {
+            .on_report(ScenarioReport::Built {
                 task_id,
                 generation: previous_generation,
             })
@@ -1257,7 +1297,7 @@ mod tests {
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
 
         orchestrator.resume(task_id).await.unwrap();
-        control_worker(&mut orchestrator, task_id);
+        control_scenario(&mut orchestrator, task_id);
         let starting = events.try_recv().unwrap();
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
         assert_eq!(starting.metadata.revision, SpecRevision::new(2));
@@ -1268,7 +1308,7 @@ mod tests {
             matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
         );
         orchestrator
-            .on_report(WorkerReport::Built {
+            .on_report(ScenarioReport::Built {
                 task_id,
                 generation: starting.metadata.generation,
             })
@@ -1281,13 +1321,13 @@ mod tests {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let previous_generation = orchestrator.entries[&task_id].generation;
         orchestrator.entries[&task_id]
-            .worker
+            .scenario
             .as_ref()
             .unwrap()
             .abort
             .abort();
         orchestrator
-            .on_report(WorkerReport::BuildFailed {
+            .on_report(ScenarioReport::BuildFailed {
                 task_id,
                 generation: previous_generation,
                 reason: "unavailable".to_string(),
@@ -1307,20 +1347,20 @@ mod tests {
             .update(task_id, set_config("latest"))
             .await
             .unwrap();
-        control_worker(&mut orchestrator, task_id);
+        control_scenario(&mut orchestrator, task_id);
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
         let starting = events.try_recv().unwrap();
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
         let generation = starting.metadata.generation;
         assert_eq!(generation, previous_generation.next());
-        fail_worker(&mut orchestrator, task_id).await;
+        fail_scenario(&mut orchestrator, task_id).await;
         assert!(matches!(events.try_recv().unwrap().data, EventData::BuildFailed { .. }));
         assert_eq!(orchestrator.entries[&task_id].attempts, 1);
 
         assert!(orchestrator.on_command(stale_restart).await);
         assert_eq!(orchestrator.entries[&task_id].generation, generation);
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Restarting);
-        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert!(orchestrator.entries[&task_id].scenario.is_none());
         assert!(events.try_recv().is_err());
         let current_restart =
             tokio::time::timeout(Duration::from_secs(2), orchestrator.cmd_rx.recv())
@@ -1331,7 +1371,7 @@ mod tests {
             matches!(current_restart, Command::Respawn { generation: actual, .. } if actual == generation)
         );
         assert!(orchestrator.on_command(current_restart).await);
-        control_worker(&mut orchestrator, task_id);
+        control_scenario(&mut orchestrator, task_id);
         let restarting = events.try_recv().unwrap();
         assert!(matches!(restarting.data, EventData::TaskStarting { attempt: 1 }));
         assert_eq!(restarting.metadata.generation, generation.next());
@@ -1342,7 +1382,7 @@ mod tests {
             matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
         );
         orchestrator
-            .on_report(WorkerReport::Built {
+            .on_report(ScenarioReport::Built {
                 task_id,
                 generation: restarting.metadata.generation,
             })
@@ -1358,13 +1398,13 @@ mod tests {
             Task::new(task_id, set_config("resumed"));
         let generation = orchestrator.entries[&task_id].generation;
         orchestrator.entries[&task_id]
-            .worker
+            .scenario
             .as_ref()
             .unwrap()
             .abort
             .abort();
         orchestrator
-            .on_report(WorkerReport::BuildFailed {
+            .on_report(ScenarioReport::BuildFailed {
                 task_id,
                 generation,
                 reason: "unavailable".to_string(),
@@ -1375,17 +1415,17 @@ mod tests {
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskPaused));
         orchestrator.maybe_respawn(task_id, generation).await;
         assert!(events.try_recv().is_err());
-        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert!(orchestrator.entries[&task_id].scenario.is_none());
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
 
         orchestrator.resume(task_id).await.unwrap();
-        control_worker(&mut orchestrator, task_id);
+        control_scenario(&mut orchestrator, task_id);
         assert!(matches!(
             events.try_recv().unwrap().data,
             EventData::TaskStarting { attempt: 0 }
         ));
         assert_eq!(orchestrator.entries[&task_id].attempts, 0);
-        fail_worker(&mut orchestrator, task_id).await;
+        fail_scenario(&mut orchestrator, task_id).await;
         assert_eq!(orchestrator.entries[&task_id].attempts, 1);
         assert!(matches!(
             events.try_recv().unwrap().data,
