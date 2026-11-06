@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
-use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio::time::{Duration, sleep};
+use tokio::{
+    sync::{broadcast, mpsc, oneshot},
+    time::{Duration, sleep},
+};
 
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
@@ -448,7 +450,7 @@ impl Orchestrator {
                     let reason = format!("build: {reason}");
                     entry.task.record_error(reason.clone());
                     (
-                        Some(EventData::WorkerPanicked {
+                        Some(EventData::ScenarioPanicked {
                             reason,
                             retry_in: Some(delay),
                         }),
@@ -465,7 +467,7 @@ impl Orchestrator {
                         completed = true;
                     }
                     (
-                        Some(EventData::ProbeExecuted {
+                        Some(EventData::ExecutionFinished {
                             execution,
                             metrics: entry.task.metrics(),
                         }),
@@ -479,7 +481,7 @@ impl Orchestrator {
                     let delay = self.policy.delay(entry.attempts);
                     entry.task.record_error(error.to_string());
                     (
-                        Some(EventData::ProbeError {
+                        Some(EventData::ExecutionFailed {
                             error,
                             retry_in: Some(delay),
                         }),
@@ -494,7 +496,7 @@ impl Orchestrator {
                     let reason = format!("execution: {reason}");
                     entry.task.record_error(reason.clone());
                     (
-                        Some(EventData::WorkerPanicked {
+                        Some(EventData::ScenarioPanicked {
                             reason,
                             retry_in: Some(delay),
                         }),
@@ -506,10 +508,10 @@ impl Orchestrator {
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
                     let delay = self.policy.delay(entry.attempts);
-                    let reason = format!("worker: {reason}");
+                    let reason = format!("scenario: {reason}");
                     entry.task.record_error(reason.clone());
                     (
-                        Some(EventData::WorkerPanicked {
+                        Some(EventData::ScenarioPanicked {
                             reason,
                             retry_in: Some(delay),
                         }),
@@ -803,8 +805,11 @@ mod tests {
     use super::*;
     use crate::{
         monitor::{
-            probe::{ProbeError, ProbeExecution, ProbeOutcome, SnmpGetSpec, SnmpSetSpec},
-            scenario::{Scenario, SnmpGetScenarioSpec, SnmpSetScenarioSpec},
+            probe::{SnmpGetSpec, SnmpSetSpec},
+            scenario::{
+                Scenario, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
+                SnmpGetScenarioSpec, SnmpSetScenarioSpec,
+            },
             task::ExecutionMetrics,
         },
         polling::{AttemptConfig, FatalError, Response},
@@ -847,7 +852,7 @@ mod tests {
         (orchestrator, events, task_id)
     }
 
-    fn execution(at: i64, success: bool) -> ProbeExecution {
+    fn execution(at: i64, success: bool) -> ScenarioExecution {
         let finished_at = DateTime::from_timestamp(at, 0).unwrap();
         let response = if success {
             Response::Success {
@@ -865,10 +870,10 @@ mod tests {
                 elapsed: Duration::from_millis(30),
             }
         };
-        ProbeExecution {
+        ScenarioExecution {
             finished_at,
             elapsed: Duration::from_millis(if success { 50 } else { 80 }),
-            outcome: ProbeOutcome::SnmpGet(response),
+            outcome: ScenarioOutcome::SnmpGet(response),
         }
     }
 
@@ -926,7 +931,11 @@ mod tests {
         .unwrap();
     }
 
-    async fn execute(orchestrator: &mut Orchestrator, task_id: TaskId, execution: ProbeExecution) {
+    async fn execute(
+        orchestrator: &mut Orchestrator,
+        task_id: TaskId,
+        execution: ScenarioExecution,
+    ) {
         orchestrator
             .on_report(ScenarioReport::Executed {
                 task_id,
@@ -943,7 +952,7 @@ mod tests {
         execute(&mut orchestrator, task_id, first.clone()).await;
 
         let event = events.try_recv().unwrap();
-        let EventData::ProbeExecuted { execution, metrics } = event.data else {
+        let EventData::ExecutionFinished { execution, metrics } = event.data else {
             panic!("expected an execution event");
         };
         let snapshot = orchestrator.snapshot();
@@ -977,7 +986,7 @@ mod tests {
 
         let executed = events.try_recv().unwrap();
         let completed = events.try_recv().unwrap();
-        assert!(matches!(executed.data, EventData::ProbeExecuted { .. }));
+        assert!(matches!(executed.data, EventData::ExecutionFinished { .. }));
         assert!(matches!(completed.data, EventData::TaskCompleted));
         assert_eq!(completed.metadata.seq, executed.metadata.seq + 1);
         let snapshot = orchestrator.snapshot();
@@ -1012,7 +1021,7 @@ mod tests {
             .on_report(ScenarioReport::ExecutionFailed {
                 task_id,
                 generation: Generation::first(),
-                error: ProbeError::Polling(FatalError {
+                error: ScenarioExecutionError::Polling(FatalError {
                     message: "invalid request".to_string(),
                 }),
             })
@@ -1020,8 +1029,8 @@ mod tests {
 
         assert!(matches!(
             events.try_recv().unwrap().data,
-            EventData::ProbeError {
-                error: ProbeError::Polling(FatalError { message }),
+            EventData::ExecutionFailed {
+                error: ScenarioExecutionError::Polling(FatalError { message }),
                 retry_in: Some(_),
             } if message == "invalid request"
         ));
@@ -1034,7 +1043,7 @@ mod tests {
 
     #[tokio::test]
     async fn scenario_panics_preserve_the_public_event_contract() {
-        for stage in ["build", "execution", "worker"] {
+        for stage in ["build", "execution", "scenario"] {
             let (mut orchestrator, mut events, task_id) = active_task(0);
             let generation = orchestrator.entries[&task_id].generation;
             let reason = "panic".to_string();
@@ -1049,7 +1058,7 @@ mod tests {
                     generation,
                     reason,
                 },
-                "worker" => ScenarioReport::Panicked {
+                "scenario" => ScenarioReport::Panicked {
                     task_id,
                     generation,
                     reason,
@@ -1062,7 +1071,7 @@ mod tests {
             assert_eq!(event.metadata.generation, generation);
             assert!(matches!(
                 event.data,
-                EventData::WorkerPanicked { reason, retry_in: Some(delay) }
+                EventData::ScenarioPanicked { reason, retry_in: Some(delay) }
                     if reason == format!("{stage}: panic") && delay == Duration::from_secs(1)
             ));
             let snapshot = orchestrator.snapshot();
@@ -1086,7 +1095,7 @@ mod tests {
             .unwrap();
         orchestrator.start(task_id).await.unwrap();
         control_scenario(&mut orchestrator, task_id);
-        assert!(matches!(events.try_recv().unwrap().data, EventData::ProbeExecuted { .. }));
+        assert!(matches!(events.try_recv().unwrap().data, EventData::ExecutionFinished { .. }));
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
         let starting = events.try_recv().unwrap();

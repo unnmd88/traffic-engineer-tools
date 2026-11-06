@@ -1,8 +1,9 @@
 use std::{net::IpAddr, panic::AssertUnwindSafe};
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::FutureExt;
+use thiserror::Error;
 use tokio::{
     sync::mpsc,
     time::{Duration, Instant, sleep_until, timeout},
@@ -10,19 +11,78 @@ use tokio::{
 
 use crate::{
     monitor::{
-        probe::{
-            ProbeBuildError, ProbeError, ProbeExecution, ProbeOutcome, ProbeSpecError, SnmpGetSpec,
-            SnmpSetSpec,
-        },
+        probe::{SnmpGetSpec, SnmpSetSpec},
         task::TaskId,
     },
-    polling::{AttemptConfig, AttemptError, Pollable, poll},
+    polling::{AttemptConfig, AttemptError, Pollable, Response, poll},
     snmp::{
         SnmpClient, SnmpClientConfig, SnmpError, SnmpGetItem, SnmpGetSample, SnmpSetItem,
         business_value::BusinessValue, community::Community, oid::SnmpOid, resolve::Resolver,
         value::SnmpValue,
     },
 };
+
+#[derive(Error, Debug, Clone)]
+pub enum ScenarioExecutionError {
+    #[error(transparent)]
+    Polling(#[from] crate::polling::FatalError),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum ScenarioBuildError {
+    #[error("can't create snmp-driver, try again later")]
+    SnmpClientCreate,
+    #[error("{0}")]
+    Other(String),
+}
+
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum ScenarioSpecError {
+    #[error("poll interval must be greater than zero")]
+    IntervalMustBePositive,
+    #[error(
+        "poll interval ({interval_ms} ms) must be >= total attempt budget \
+         ({budget_ms} ms = timeout * (retries + 1) + retry_delay * retries)"
+    )]
+    IntervalShorterThanAttemptBudget { interval_ms: u64, budget_ms: u64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutcomeStatus {
+    Succeeded,
+    Degraded,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum ScenarioOutcome {
+    SnmpGet(Response<Vec<SnmpGetSample>>),
+    SnmpSet(Response<()>),
+}
+
+impl ScenarioOutcome {
+    pub const fn status(&self) -> OutcomeStatus {
+        match self {
+            Self::SnmpGet(response) => response_status(response),
+            Self::SnmpSet(response) => response_status(response),
+        }
+    }
+}
+
+const fn response_status<T>(response: &Response<T>) -> OutcomeStatus {
+    match response {
+        Response::Success { .. } => OutcomeStatus::Succeeded,
+        Response::NoResponse { .. } => OutcomeStatus::Failed,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ScenarioExecution {
+    pub finished_at: DateTime<Utc>,
+    pub elapsed: Duration,
+    pub outcome: ScenarioOutcome,
+}
 
 #[derive(Clone, Debug)]
 #[expect(
@@ -64,8 +124,8 @@ impl Scenario {
                         let items = Resolver::new(client.clone(), request.profile)
                             .resolve_get(request.oids)
                             .await
-                            .map_err(|error| ProbeBuildError::Other(error.to_string()))?;
-                        Ok::<_, ProbeBuildError>(SnmpGetRequest { client, items })
+                            .map_err(|error| ScenarioBuildError::Other(error.to_string()))?;
+                        Ok::<_, ScenarioBuildError>(SnmpGetRequest { client, items })
                     };
                     let built = AssertUnwindSafe(timeout(build_timeout(&attempt), prepare))
                         .catch_unwind()
@@ -166,10 +226,10 @@ impl Scenario {
                                     .await;
                                 match executed {
                                     Ok(Ok(response)) => {
-                                        let execution = ProbeExecution {
+                                        let execution = ScenarioExecution {
                                             finished_at: Utc::now(),
                                             elapsed: started_at.elapsed(),
-                                            outcome: ProbeOutcome::SnmpGet(response),
+                                            outcome: ScenarioOutcome::SnmpGet(response),
                                         };
                                         next_deadline = Instant::now() + interval;
                                         if report_tx.send(ScenarioReport::Executed {
@@ -184,7 +244,7 @@ impl Scenario {
                                         let _ = report_tx.send(ScenarioReport::ExecutionFailed {
                                             task_id,
                                             generation,
-                                            error: ProbeError::from(error),
+                                            error: ScenarioExecutionError::from(error),
                                         }).await;
                                         return;
                                     }
@@ -218,8 +278,8 @@ impl Scenario {
                         let items = Resolver::new(scn_client, request.profile)
                             .resolve_set(request.sets)
                             .await
-                            .map_err(|error| ProbeBuildError::Other(error.to_string()))?;
-                        Ok::<_, ProbeBuildError>(SnmpSetRequest { client, items })
+                            .map_err(|error| ScenarioBuildError::Other(error.to_string()))?;
+                        Ok::<_, ScenarioBuildError>(SnmpSetRequest { client, items })
                     };
                     let built = AssertUnwindSafe(timeout(build_timeout(&attempt), prepare))
                         .catch_unwind()
@@ -320,10 +380,10 @@ impl Scenario {
                                     .await;
                                 match executed {
                                     Ok(Ok(response)) => {
-                                        let execution = ProbeExecution {
+                                        let execution = ScenarioExecution {
                                             finished_at: Utc::now(),
                                             elapsed: started_at.elapsed(),
-                                            outcome: ProbeOutcome::SnmpSet(response),
+                                            outcome: ScenarioOutcome::SnmpSet(response),
                                         };
                                         next_deadline = Instant::now() + interval;
                                         if report_tx.send(ScenarioReport::Executed {
@@ -338,7 +398,7 @@ impl Scenario {
                                         let _ = report_tx.send(ScenarioReport::ExecutionFailed {
                                             task_id,
                                             generation,
-                                            error: ProbeError::from(error),
+                                            error: ScenarioExecutionError::from(error),
                                         }).await;
                                         return;
                                     }
@@ -381,7 +441,7 @@ impl SnmpGetScenarioSpec {
         request: SnmpGetSpec,
         interval: Duration,
         attempt: AttemptConfig,
-    ) -> Result<Self, ProbeSpecError> {
+    ) -> Result<Self, ScenarioSpecError> {
         validate_interval(interval, attempt)?;
         Ok(Self {
             request,
@@ -415,7 +475,7 @@ impl SnmpSetScenarioSpec {
         request: SnmpSetSpec,
         interval: Duration,
         attempt: AttemptConfig,
-    ) -> Result<Self, ProbeSpecError> {
+    ) -> Result<Self, ScenarioSpecError> {
         validate_interval(interval, attempt)?;
         Ok(Self {
             request,
@@ -480,12 +540,12 @@ pub enum ScenarioReport {
     Executed {
         task_id: TaskId,
         generation: Generation,
-        execution: ProbeExecution,
+        execution: ScenarioExecution,
     },
     ExecutionFailed {
         task_id: TaskId,
         generation: Generation,
-        error: ProbeError,
+        error: ScenarioExecutionError,
     },
     ExecutionPanicked {
         task_id: TaskId,
@@ -621,13 +681,13 @@ impl Pollable for SnmpSetRequest {
     }
 }
 
-fn validate_interval(interval: Duration, attempt: AttemptConfig) -> Result<(), ProbeSpecError> {
+fn validate_interval(interval: Duration, attempt: AttemptConfig) -> Result<(), ScenarioSpecError> {
     if interval.is_zero() {
-        return Err(ProbeSpecError::IntervalMustBePositive);
+        return Err(ScenarioSpecError::IntervalMustBePositive);
     }
     let budget = attempt.budget();
     if interval < budget {
-        return Err(ProbeSpecError::IntervalShorterThanAttemptBudget {
+        return Err(ScenarioSpecError::IntervalShorterThanAttemptBudget {
             interval_ms: u64::try_from(interval.as_millis()).unwrap_or(u64::MAX),
             budget_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
         });
@@ -640,7 +700,7 @@ async fn connect(
     port: u16,
     community: Community,
     attempt: AttemptConfig,
-) -> Result<SnmpClient, ProbeBuildError> {
+) -> Result<SnmpClient, ScenarioBuildError> {
     let config = SnmpClientConfig {
         target: host,
         port,
@@ -651,7 +711,7 @@ async fn connect(
     };
     SnmpClient::new(config)
         .await
-        .map_err(|_| ProbeBuildError::SnmpClientCreate)
+        .map_err(|_| ScenarioBuildError::SnmpClientCreate)
 }
 
 fn transport_timeout(attempt: &AttemptConfig) -> Duration {
@@ -692,8 +752,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        monitor::probe::{ProbeOutcome, RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
-        polling::{AttemptConfig, Response},
+        monitor::probe::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
+        polling::AttemptConfig,
         snmp::{business_value::BusinessValue, value::SnmpValue},
     };
 
@@ -846,7 +906,7 @@ mod tests {
             match (operation, execution.outcome) {
                 (
                     Operation::Get,
-                    ProbeOutcome::SnmpGet(Response::Success {
+                    ScenarioOutcome::SnmpGet(Response::Success {
                         payload,
                         attempts: 1,
                         ..
@@ -855,7 +915,10 @@ mod tests {
                     assert_eq!(payload[0].oid.to_string(), "1.3.6.1.2.1.1.1.0");
                     assert!(matches!(payload[0].raw_value, SnmpValue::Integer(42)));
                 }
-                (Operation::Set, ProbeOutcome::SnmpSet(Response::Success { attempts: 1, .. })) => {}
+                (
+                    Operation::Set,
+                    ScenarioOutcome::SnmpSet(Response::Success { attempts: 1, .. }),
+                ) => {}
                 (_, outcome) => panic!("unexpected outcome: {outcome:?}"),
             }
 
@@ -881,11 +944,13 @@ mod tests {
             assert!(execution.elapsed >= Duration::from_secs(1));
             assert!(matches!(
                 (operation, execution.outcome),
-                (Operation::Get, ProbeOutcome::SnmpGet(Response::NoResponse { attempts: 2, .. }))
-                    | (
-                        Operation::Set,
-                        ProbeOutcome::SnmpSet(Response::NoResponse { attempts: 2, .. })
-                    )
+                (
+                    Operation::Get,
+                    ScenarioOutcome::SnmpGet(Response::NoResponse { attempts: 2, .. })
+                ) | (
+                    Operation::Set,
+                    ScenarioOutcome::SnmpSet(Response::NoResponse { attempts: 2, .. })
+                )
             ));
             assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Paused { .. })));
             advance(Duration::from_secs(100)).await;
@@ -985,7 +1050,7 @@ mod tests {
         else {
             panic!("expected execution report");
         };
-        let ProbeOutcome::SnmpGet(Response::Success { payload, .. }) = execution.outcome else {
+        let ScenarioOutcome::SnmpGet(Response::Success { payload, .. }) = execution.outcome else {
             panic!("expected successful GET");
         };
         assert_eq!(payload[0].oid_name.as_deref(), Some("utcReplyGn"));
@@ -1089,7 +1154,10 @@ mod tests {
             else {
                 panic!("expected execution report");
             };
-            assert!(matches!(execution.outcome, ProbeOutcome::SnmpSet(Response::Success { .. })));
+            assert!(matches!(
+                execution.outcome,
+                ScenarioOutcome::SnmpSet(Response::Success { .. })
+            ));
             stop(session).await;
         }
     }
@@ -1144,7 +1212,7 @@ mod tests {
         else {
             panic!("expected execution report");
         };
-        let ProbeOutcome::SnmpSet(Response::Success {
+        let ScenarioOutcome::SnmpSet(Response::Success {
             attempts, errors, ..
         }) = execution.outcome
         else {
@@ -1180,15 +1248,12 @@ mod tests {
             ];
             for result in results {
                 match interval.as_secs() {
-                    0 => assert!(matches!(
-                        result,
-                        Err(crate::monitor::probe::ProbeSpecError::IntervalMustBePositive)
-                    )),
+                    0 => assert!(matches!(result, Err(ScenarioSpecError::IntervalMustBePositive))),
                     2 => assert!(matches!(
                         result,
-                        Err(crate::monitor::probe::ProbeSpecError::IntervalShorterThanAttemptBudget {
+                        Err(ScenarioSpecError::IntervalShorterThanAttemptBudget {
                             interval_ms: 2000,
-                            budget_ms: 3000
+                            budget_ms: 3000,
                         })
                     )),
                     3 => assert!(result.is_ok()),

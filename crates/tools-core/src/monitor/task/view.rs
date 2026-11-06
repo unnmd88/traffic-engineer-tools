@@ -1,8 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::monitor::{
-    probe::ProbeExecution,
-    scenario::Scenario,
+    scenario::{Scenario, ScenarioExecution},
     task::{ExecutionMetrics, SpecRevision, TaskId, TaskStatus, task::Health},
 };
 
@@ -17,7 +16,7 @@ pub struct TaskView {
     pub scenario: Scenario,
     pub limit: u64,
     pub metrics: ExecutionMetrics,
-    pub result: Option<ProbeExecution>,
+    pub result: Option<ScenarioExecution>,
     pub history: Vec<HistoryEntryView>,
     pub health: Health,
 }
@@ -25,7 +24,7 @@ pub struct TaskView {
 #[derive(Debug, Clone)]
 pub struct HistoryEntryView {
     pub timestamp: DateTime<Utc>,
-    pub result: ProbeExecution,
+    pub result: ScenarioExecution,
 }
 
 #[derive(Debug, Clone)]

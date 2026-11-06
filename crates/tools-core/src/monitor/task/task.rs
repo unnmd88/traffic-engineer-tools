@@ -1,11 +1,12 @@
 use std::collections::VecDeque;
 
-use crate::monitor::{
-    probe::{OutcomeStatus, ProbeExecution},
-    task::{ExecutionMetrics, TaskConfig, TaskSpec},
-};
 use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
+
+use crate::monitor::{
+    scenario::{OutcomeStatus, ScenarioExecution},
+    task::{ExecutionMetrics, TaskConfig, TaskSpec},
+};
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -24,7 +25,7 @@ pub struct TaskId(pub u64);
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
     pub timestamp: DateTime<Utc>,
-    pub result: ProbeExecution,
+    pub result: ScenarioExecution,
 }
 
 /// Кольцо последних N результатов. `deep_history == 0` → всегда пустое.
@@ -78,7 +79,7 @@ pub struct Health {
 }
 
 impl Health {
-    pub fn record(&mut self, execution: &ProbeExecution) {
+    pub fn record(&mut self, execution: &ScenarioExecution) {
         self.last_execution_at = Some(execution.finished_at);
         match execution.outcome.status() {
             OutcomeStatus::Failed => self.consecutive_failures += 1,
@@ -100,7 +101,7 @@ impl Health {
 pub struct Task {
     id: TaskId,
     spec: TaskSpec,
-    last_result: Option<ProbeExecution>,
+    last_result: Option<ScenarioExecution>,
     history: History,
     metrics: ExecutionMetrics,
     health: Health,
@@ -133,7 +134,7 @@ impl Task {
         &self.spec
     }
 
-    pub fn last_result(&self) -> Option<&ProbeExecution> {
+    pub fn last_result(&self) -> Option<&ScenarioExecution> {
         self.last_result.as_ref()
     }
 
@@ -157,7 +158,7 @@ impl Task {
         &self.health
     }
 
-    pub fn apply_execution(&mut self, result: ProbeExecution) {
+    pub fn apply_execution(&mut self, result: ScenarioExecution) {
         self.health.record(&result);
         self.metrics.record(result.outcome.status(), result.elapsed);
         self.updated_at = result.finished_at;

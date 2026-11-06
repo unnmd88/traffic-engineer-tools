@@ -1,20 +1,6 @@
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
-pub enum ProbeError {
-    #[error(transparent)]
-    Polling(#[from] crate::polling::FatalError),
-}
-
-#[derive(Error, Debug, Clone)]
-pub enum ProbeBuildError {
-    #[error("can't create snmp-driver, try again later")]
-    SnmpClientCreate,
-    #[error("{0}")]
-    Other(String),
-}
-
-#[derive(Error, Debug, Clone)]
 pub enum SnmpQueryError {
     #[error("invalid ip-address: {ip}")]
     InvalidIpAddress { ip: String },
@@ -36,15 +22,4 @@ pub enum SnmpQueryError {
     InvalidSnmpOid { pos: usize, oid: String },
     #[error("{0}")]
     Other(String),
-}
-
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
-pub enum ProbeSpecError {
-    #[error("poll interval must be greater than zero")]
-    IntervalMustBePositive,
-    #[error(
-        "poll interval ({interval_ms} ms) must be >= total attempt budget \
-         ({budget_ms} ms = timeout * (retries + 1) + retry_delay * retries)"
-    )]
-    IntervalShorterThanAttemptBudget { interval_ms: u64, budget_ms: u64 },
 }

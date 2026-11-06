@@ -14,13 +14,13 @@ pub enum Error {
     #[error(transparent)]
     Task(#[from] crate::monitor::task::TaskError),
     #[error(transparent)]
-    ProbeBuild(#[from] crate::monitor::probe::ProbeBuildError),
+    ScenarioBuild(#[from] crate::monitor::scenario::ScenarioBuildError),
     #[error(transparent)]
-    Probe(#[from] crate::monitor::probe::ProbeError),
+    ScenarioExecution(#[from] crate::monitor::scenario::ScenarioExecutionError),
     #[error(transparent)]
     MonitorOrchestrator(#[from] crate::monitor::runtime::error::OrchestratorError),
     #[error(transparent)]
     PollingConfig(#[from] crate::polling::ConfigError),
     #[error(transparent)]
-    ProbeSpec(#[from] crate::monitor::probe::ProbeSpecError),
+    ScenarioSpec(#[from] crate::monitor::scenario::ScenarioSpecError),
 }

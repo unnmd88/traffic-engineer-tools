@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 
 use tabled::{Table, Tabled, settings::Style};
-
-use tools_core::DT_FMT_WITH_MICROSECONDS;
-use tools_core::monitor::probe::{ProbeExecution, ProbeOutcome};
-use tools_core::monitor::scenario::Scenario;
-use tools_core::monitor::task::{TaskId, TaskView};
-use tools_core::polling::Response;
-use tools_core::snmp::SnmpGetSample;
+use tools_core::{
+    DT_FMT_WITH_MICROSECONDS,
+    monitor::{
+        scenario::{Scenario, ScenarioExecution, ScenarioOutcome},
+        task::{TaskId, TaskView},
+    },
+    polling::Response,
+    snmp::SnmpGetSample,
+};
 
 pub const LINE_DOUBLE_LN: &str =
     "════════════════════════════════════════════════════════════════════════════════\n";
@@ -88,19 +90,19 @@ fn format_results(view: &TaskView) -> String {
 fn format_response(view: &TaskView) -> String {
     match view.result.as_ref() {
         Some(execution) => match &execution.outcome {
-            ProbeOutcome::SnmpGet(Response::Success {
+            ScenarioOutcome::SnmpGet(Response::Success {
                 payload: samples, ..
             }) => {
                 format!("Snmp-get response:\n{}\n", format_oids_table(samples))
             }
-            ProbeOutcome::SnmpSet(Response::Success { .. }) => {
+            ScenarioOutcome::SnmpSet(Response::Success { .. }) => {
                 "Snmp-set response: ok\n".to_string()
             }
-            ProbeOutcome::SnmpGet(Response::NoResponse { attempts, .. })
-            | ProbeOutcome::SnmpSet(Response::NoResponse { attempts, .. }) => {
+            ScenarioOutcome::SnmpGet(Response::NoResponse { attempts, .. })
+            | ScenarioOutcome::SnmpSet(Response::NoResponse { attempts, .. }) => {
                 format!("No response: {attempts} attempts\n")
             }
-            _ => format!("Probe outcome: {:?}\n", execution.outcome.status()),
+            _ => format!("Scenario outcome: {:?}\n", execution.outcome.status()),
         },
         None => String::new(),
     }
@@ -115,10 +117,10 @@ fn format_history(view: &TaskView) -> String {
     out
 }
 
-fn format_execution_summary(execution: &ProbeExecution) -> String {
+fn format_execution_summary(execution: &ScenarioExecution) -> String {
     match &execution.outcome {
-        ProbeOutcome::SnmpGet(response) => format_response_summary(response),
-        ProbeOutcome::SnmpSet(response) => format_response_summary(response),
+        ScenarioOutcome::SnmpGet(response) => format_response_summary(response),
+        ScenarioOutcome::SnmpSet(response) => format_response_summary(response),
         _ => format!("{:?}", execution.outcome.status()),
     }
 }

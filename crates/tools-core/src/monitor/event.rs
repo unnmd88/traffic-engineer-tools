@@ -2,8 +2,7 @@ use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::monitor::{
-    probe::{ProbeError, ProbeExecution},
-    scenario::Generation,
+    scenario::{Generation, ScenarioExecution, ScenarioExecutionError},
     task::{ExecutionMetrics, SpecRevision, TaskId},
 };
 
@@ -33,8 +32,8 @@ pub enum EventData {
     TaskCompleted,
     TaskRemoved,
 
-    ProbeExecuted {
-        execution: ProbeExecution,
+    ExecutionFinished {
+        execution: ScenarioExecution,
         metrics: ExecutionMetrics,
     },
 
@@ -42,11 +41,11 @@ pub enum EventData {
         reason: String,
         retry_in: Option<Duration>,
     },
-    ProbeError {
-        error: ProbeError,
+    ExecutionFailed {
+        error: ScenarioExecutionError,
         retry_in: Option<Duration>,
     },
-    WorkerPanicked {
+    ScenarioPanicked {
         reason: String,
         retry_in: Option<Duration>,
     },

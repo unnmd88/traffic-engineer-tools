@@ -1,6 +1,6 @@
 use tokio::time::Duration;
 
-use crate::monitor::probe::OutcomeStatus;
+use crate::monitor::scenario::OutcomeStatus;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionMetrics {
