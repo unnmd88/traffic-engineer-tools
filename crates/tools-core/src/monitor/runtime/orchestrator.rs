@@ -930,6 +930,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn events_share_source_and_sequence_across_tasks() {
+        let source = "contract-test-monitor".to_string();
+        let (mut orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), source.clone());
+        let mut events = handle.subscribe();
+        let mut task_ids = Vec::new();
+        for name in ["first", "second"] {
+            let (reply, response) = oneshot::channel();
+            assert!(
+                orchestrator
+                    .on_command(Command::AddTask {
+                        spec: set_config(name),
+                        reply,
+                    })
+                    .await
+            );
+            task_ids.push(response.await.unwrap().unwrap());
+        }
+        orchestrator
+            .update(task_ids[0], set_config("updated"))
+            .await
+            .unwrap();
+        orchestrator.remove(task_ids[1]).await.unwrap();
+
+        for (seq, (task_id, revision)) in [
+            (task_ids[0], SpecRevision::new(1)),
+            (task_ids[1], SpecRevision::new(1)),
+            (task_ids[0], SpecRevision::new(2)),
+            (task_ids[1], SpecRevision::new(1)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let event = events.try_recv().unwrap();
+            assert_eq!(event.metadata.source, source);
+            assert_eq!(event.metadata.seq, u64::try_from(seq).unwrap());
+            assert_eq!(event.metadata.task_id, task_id);
+            assert_eq!(event.metadata.revision, revision);
+            assert_eq!(event.metadata.generation, Generation::first());
+            match seq {
+                0 | 1 => assert!(matches!(event.data, EventData::TaskAdded)),
+                2 => assert!(matches!(event.data, EventData::TaskSpecUpdated)),
+                3 => assert!(matches!(event.data, EventData::TaskRemoved)),
+                _ => unreachable!(),
+            }
+        }
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn no_response_is_an_execution_and_does_not_restart_the_scenario() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let first = execution(100, false);
@@ -1242,6 +1292,11 @@ mod tests {
         let starting = events.try_recv().unwrap();
         assert!(matches!(updated.data, EventData::TaskSpecUpdated));
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        assert_eq!(updated.metadata.task_id, task_id);
+        assert_eq!(updated.metadata.revision, SpecRevision::new(2));
+        assert_eq!(updated.metadata.generation, previous_generation);
+        assert_eq!(starting.metadata.source, updated.metadata.source);
+        assert_eq!(starting.metadata.task_id, updated.metadata.task_id);
         assert_eq!(starting.metadata.seq, updated.metadata.seq + 1);
         assert_eq!(starting.metadata.revision, SpecRevision::new(2));
         assert_eq!(starting.metadata.generation, previous_generation.next());

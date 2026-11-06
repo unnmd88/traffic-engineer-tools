@@ -23,12 +23,14 @@ use crate::{
 };
 
 #[derive(Error, Debug, Clone)]
+#[non_exhaustive]
 pub enum ScenarioExecutionError {
     #[error(transparent)]
     Polling(#[from] crate::polling::FatalError),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScenarioBuildError {
     #[error("build timeout")]
     Timeout,
@@ -39,6 +41,7 @@ pub enum ScenarioBuildError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PanicStage {
     Build,
     Execution,
@@ -87,6 +90,7 @@ const fn response_status<T>(response: &Response<T>) -> OutcomeStatus {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ScenarioExecution {
     pub finished_at: DateTime<Utc>,
     pub elapsed: Duration,

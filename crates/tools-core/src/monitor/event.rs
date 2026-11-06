@@ -24,6 +24,7 @@ pub struct EventMeta {
 pub enum EventData {
     TaskAdded,
     TaskSpecUpdated,
+    #[non_exhaustive]
     TaskStarting {
         attempt: u32,
     },
@@ -34,19 +35,23 @@ pub enum EventData {
     TaskCompleted,
     TaskRemoved,
 
+    #[non_exhaustive]
     ExecutionFinished {
         execution: ScenarioExecution,
         metrics: ExecutionMetrics,
     },
 
+    #[non_exhaustive]
     BuildFailed {
         error: ScenarioBuildError,
         retry_in: Option<Duration>,
     },
+    #[non_exhaustive]
     ExecutionFailed {
         error: ScenarioExecutionError,
         retry_in: Option<Duration>,
     },
+    #[non_exhaustive]
     ScenarioPanicked {
         stage: PanicStage,
         reason: String,
