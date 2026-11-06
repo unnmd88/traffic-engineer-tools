@@ -9,8 +9,9 @@ use crate::monitor::{
     runtime::{
         error::OrchestratorError,
         restart_policy::RestartPolicy,
-        worker::{Generation, Worker, WorkerCmd, WorkerReport},
+        worker::{Generation, WorkerCmd, WorkerReport},
     },
+    scenario::Scenario,
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
         TaskView,
@@ -543,8 +544,21 @@ impl Orchestrator {
         entry.generation = generation;
         let probe_spec = entry.task.spec().probe().clone();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
-        let worker = Worker::new(task_id, generation, probe_spec, self.report_tx.clone(), cmd_rx);
-        let join = tokio::spawn(worker.run());
+        let report_tx = self.report_tx.clone();
+        let join = tokio::spawn(async move {
+            match Scenario::try_from(probe_spec) {
+                Ok(scenario) => scenario.run(task_id, generation, report_tx, cmd_rx).await,
+                Err(error) => {
+                    let _ = report_tx
+                        .send(WorkerReport::BuildFailed {
+                            task_id,
+                            generation,
+                            reason: error.to_string(),
+                        })
+                        .await;
+                }
+            }
+        });
         entry.worker = Some(WorkerHandle {
             generation,
             abort: join.abort_handle(),
@@ -791,7 +805,10 @@ mod tests {
     use super::*;
     use crate::{
         monitor::{
-            probe::{ProbeError, ProbeExecution, ProbeOutcome, ProbeSpec, SnmpGetSpec},
+            probe::{
+                ProbeError, ProbeExecution, ProbeOutcome, ProbeSpec, ProbeSpecError, SnmpGetSpec,
+                SnmpSetSpec,
+            },
             task::ExecutionMetrics,
         },
         polling::{AttemptConfig, FatalError, Response},
@@ -957,5 +974,67 @@ mod tests {
         assert_eq!(snapshot.tasks[0].metrics.executions, 0);
         assert!(snapshot.tasks[0].result.is_none());
         assert!(orchestrator.entries[&task_id].worker.is_none());
+    }
+
+    #[tokio::test]
+    async fn scenario_conversion_failure_is_reported_and_schedules_restart() {
+        let get =
+            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap();
+        let set = SnmpSetSpec::from_raw(
+            "127.0.0.1".to_string(),
+            161,
+            None,
+            "private".to_string(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
+        for probe in [
+            ProbeSpec::SnmpGet {
+                request: get,
+                interval: Duration::ZERO,
+                limit: 0,
+                attempt,
+            },
+            ProbeSpec::SnmpSet {
+                request: set,
+                interval: Duration::ZERO,
+                limit: 0,
+                attempt,
+            },
+        ] {
+            let (mut orchestrator, mut events, task_id) = active_task(0);
+            orchestrator.stop(task_id).await.unwrap();
+            let config = TaskConfig::try_new("invalid interval".to_string(), probe, 3).unwrap();
+            orchestrator.update(task_id, config).await.unwrap();
+            orchestrator.start(task_id).await.unwrap();
+            assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
+            assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
+            let starting = events.try_recv().unwrap();
+            assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+            let report =
+                tokio::time::timeout(Duration::from_secs(1), orchestrator.report_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let reason = ProbeSpecError::IntervalMustBePositive.to_string();
+            assert_eq!(report.key(), (task_id, starting.metadata.generation));
+            assert!(
+                matches!(&report, WorkerReport::BuildFailed { reason: actual, .. } if actual == &reason)
+            );
+
+            orchestrator.on_report(report).await;
+            assert!(matches!(
+                events.try_recv().unwrap().data,
+                EventData::BuildFailed { reason: actual, retry_in: Some(_) } if actual == reason
+            ));
+            let snapshot = orchestrator.snapshot();
+            assert_eq!(snapshot.tasks[0].name, "invalid interval");
+            assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
+            assert_eq!(snapshot.tasks[0].metrics.executions, 0);
+            assert!(orchestrator.entries[&task_id].worker.is_none());
+        }
     }
 }

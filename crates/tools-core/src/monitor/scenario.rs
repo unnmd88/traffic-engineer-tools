@@ -11,8 +11,8 @@ use tokio::{
 use crate::{
     monitor::{
         probe::{
-            ProbeBuildError, ProbeError, ProbeExecution, ProbeOutcome, ProbeSpecError, SnmpGetSpec,
-            SnmpSetSpec, build_timeout,
+            ProbeBuildError, ProbeError, ProbeExecution, ProbeOutcome, ProbeSpec, ProbeSpecError,
+            SnmpGetSpec, SnmpSetSpec, build_timeout,
         },
         runtime::worker::{Generation, WorkerCmd, WorkerReport},
         task::TaskId,
@@ -33,6 +33,27 @@ use crate::{
 pub enum Scenario {
     SnmpGet(SnmpGetScenarioSpec),
     SnmpSet(SnmpSetScenarioSpec),
+}
+
+impl TryFrom<ProbeSpec> for Scenario {
+    type Error = ProbeSpecError;
+
+    fn try_from(spec: ProbeSpec) -> Result<Self, Self::Error> {
+        match spec {
+            ProbeSpec::SnmpGet {
+                request,
+                interval,
+                attempt,
+                ..
+            } => SnmpGetScenarioSpec::try_new(request, interval, attempt).map(Self::SnmpGet),
+            ProbeSpec::SnmpSet {
+                request,
+                interval,
+                attempt,
+                ..
+            } => SnmpSetScenarioSpec::try_new(request, interval, attempt).map(Self::SnmpSet),
+        }
+    }
 }
 
 impl Scenario {
