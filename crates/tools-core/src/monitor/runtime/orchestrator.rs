@@ -82,6 +82,7 @@ enum Command {
     },
     Respawn {
         task_id: TaskId,
+        generation: Generation,
     },
 }
 
@@ -215,8 +216,11 @@ impl Orchestrator {
                 let _ = reply.send(());
                 false
             }
-            Command::Respawn { task_id } => {
-                self.maybe_respawn(task_id).await;
+            Command::Respawn {
+                task_id,
+                generation,
+            } => {
+                self.maybe_respawn(task_id, generation).await;
                 true
             }
         }
@@ -305,6 +309,7 @@ impl Orchestrator {
         if spawn {
             {
                 let entry = self.entries.get_mut(&id).expect("checked above");
+                entry.attempts = 0;
                 entry.state = TaskState::Starting;
             }
             self.spawn_worker(id);
@@ -344,6 +349,7 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(OrchestratorError::TaskNotFound(id))?;
             entry.task.update_spec(spec);
+            entry.attempts = 0;
             matches!(entry.state, TaskState::Starting | TaskState::Active | TaskState::Restarting)
         };
         let paused = matches!(self.entries.get(&id), Some(e) if e.state == TaskState::Paused);
@@ -359,6 +365,7 @@ impl Orchestrator {
                 entry.state = TaskState::Starting;
             }
             self.spawn_worker(id);
+            self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
         } else if paused {
             // спека сменилась — старый адаптер недействителен; убиваем воркера,
             // остаёмся Paused, Resume поднимет уже с новой спекой.
@@ -531,7 +538,7 @@ impl Orchestrator {
             self.emit(task_id, EventData::TaskCompleted).await;
         }
         if let Some(delay) = respawn_after {
-            self.schedule_respawn(task_id, delay);
+            self.schedule_respawn(task_id, generation, delay);
         }
     }
 
@@ -566,18 +573,25 @@ impl Orchestrator {
         });
     }
 
-    fn schedule_respawn(&self, task_id: TaskId, delay: Duration) {
+    fn schedule_respawn(&self, task_id: TaskId, generation: Generation, delay: Duration) {
         let cmd_tx = self.cmd_tx.clone();
         tokio::spawn(async move {
             sleep(delay).await;
-            let _ = cmd_tx.send(Command::Respawn { task_id }).await;
+            let _ = cmd_tx
+                .send(Command::Respawn {
+                    task_id,
+                    generation,
+                })
+                .await;
         });
     }
 
-    async fn maybe_respawn(&mut self, task_id: TaskId) {
+    async fn maybe_respawn(&mut self, task_id: TaskId, generation: Generation) {
         let should = matches!(
             self.entries.get(&task_id),
-            Some(e) if e.state == TaskState::Restarting && e.worker.is_none()
+            Some(e) if e.state == TaskState::Restarting
+                && e.worker.is_none()
+                && e.generation == generation
         );
         if should {
             let attempt = self.entries.get(&task_id).map_or(0, |e| e.attempts);
@@ -871,6 +885,43 @@ mod tests {
         }
     }
 
+    fn invalid_config(name: &str) -> TaskConfig {
+        let request = SnmpSetSpec::from_raw(
+            "127.0.0.1".to_string(),
+            161,
+            None,
+            "private".to_string(),
+            None,
+            vec![],
+        )
+        .unwrap();
+        let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
+        let probe = ProbeSpec::SnmpSet {
+            request,
+            interval: Duration::ZERO,
+            limit: 0,
+            attempt,
+        };
+        TaskConfig::try_new(name.to_string(), probe, 3).unwrap()
+    }
+
+    async fn next_report(orchestrator: &mut Orchestrator) -> WorkerReport {
+        tokio::time::timeout(Duration::from_secs(1), orchestrator.report_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn wait_for_abort(abort: tokio::task::AbortHandle) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !abort.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     async fn execute(orchestrator: &mut Orchestrator, task_id: TaskId, execution: ProbeExecution) {
         orchestrator
             .on_report(WorkerReport::Executed {
@@ -1036,5 +1087,310 @@ mod tests {
             assert_eq!(snapshot.tasks[0].metrics.executions, 0);
             assert!(orchestrator.entries[&task_id].worker.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn pause_and_resume_wait_for_acknowledgements_and_stop_rejects_late_reports() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let generation = orchestrator.entries[&task_id].generation;
+        let (cmd, mut commands) = mpsc::channel(8);
+        let worker = orchestrator
+            .entries
+            .get_mut(&task_id)
+            .unwrap()
+            .worker
+            .as_mut()
+            .unwrap();
+        worker.cmd = cmd;
+        let abort = worker.abort.clone();
+
+        orchestrator.pause(task_id).await.unwrap();
+        assert!(matches!(commands.recv().await, Some(WorkerCmd::Pause)));
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
+        assert!(events.try_recv().is_err());
+        orchestrator
+            .on_report(WorkerReport::Paused {
+                task_id,
+                generation,
+            })
+            .await;
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskPaused));
+
+        orchestrator.pause(task_id).await.unwrap();
+        assert!(commands.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        orchestrator.resume(task_id).await.unwrap();
+        assert!(matches!(commands.recv().await, Some(WorkerCmd::Resume)));
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
+        assert!(events.try_recv().is_err());
+        orchestrator
+            .on_report(WorkerReport::Resumed {
+                task_id,
+                generation,
+            })
+            .await;
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskResumed));
+
+        orchestrator.resume(task_id).await.unwrap();
+        assert!(commands.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        orchestrator.stop(task_id).await.unwrap();
+        wait_for_abort(abort).await;
+        assert!(commands.recv().await.is_none());
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
+        orchestrator
+            .on_report(WorkerReport::Executed {
+                task_id,
+                generation,
+                execution: execution(100, true),
+            })
+            .await;
+        orchestrator
+            .on_report(WorkerReport::Resumed {
+                task_id,
+                generation,
+            })
+            .await;
+        orchestrator.maybe_respawn(task_id, generation).await;
+        orchestrator.stop(task_id).await.unwrap();
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Stopped);
+        assert_eq!(orchestrator.snapshot().tasks[0].metrics, ExecutionMetrics::default());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn active_spec_update_replaces_worker_and_preserves_execution_metrics() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        execute(&mut orchestrator, task_id, execution(100, true)).await;
+        events.try_recv().unwrap();
+        let metrics = orchestrator.snapshot().tasks[0].metrics;
+        let previous_generation = orchestrator.entries[&task_id].generation;
+        let abort = orchestrator.entries[&task_id]
+            .worker
+            .as_ref()
+            .unwrap()
+            .abort
+            .clone();
+
+        orchestrator
+            .update(task_id, invalid_config("updated"))
+            .await
+            .unwrap();
+        wait_for_abort(abort).await;
+        let updated = events.try_recv().unwrap();
+        let starting = events.try_recv().unwrap();
+        assert!(matches!(updated.data, EventData::TaskSpecUpdated));
+        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        assert_eq!(starting.metadata.seq, updated.metadata.seq + 1);
+        assert_eq!(starting.metadata.revision, SpecRevision::new(2));
+        assert_eq!(starting.metadata.generation, previous_generation.next());
+
+        for report in [
+            WorkerReport::Built {
+                task_id,
+                generation: previous_generation,
+            },
+            WorkerReport::BuildFailed {
+                task_id,
+                generation: previous_generation,
+                reason: "obsolete".to_string(),
+            },
+            WorkerReport::Executed {
+                task_id,
+                generation: previous_generation,
+                execution: execution(200, false),
+            },
+            WorkerReport::Paused {
+                task_id,
+                generation: previous_generation,
+            },
+        ] {
+            orchestrator.on_report(report).await;
+        }
+        assert!(events.try_recv().is_err());
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Starting);
+        assert_eq!(snapshot.tasks[0].name, "updated");
+        assert_eq!(snapshot.tasks[0].metrics, metrics);
+        assert_eq!(
+            snapshot.tasks[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .finished_at
+                .timestamp(),
+            100
+        );
+        let report = next_report(&mut orchestrator).await;
+        let reason = ProbeSpecError::IntervalMustBePositive.to_string();
+        assert_eq!(report.key(), (task_id, starting.metadata.generation));
+        assert!(
+            matches!(report, WorkerReport::BuildFailed { reason: actual, .. } if actual == reason)
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_spec_update_defers_new_worker_until_resume() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let previous_generation = orchestrator.entries[&task_id].generation;
+        let abort = orchestrator.entries[&task_id]
+            .worker
+            .as_ref()
+            .unwrap()
+            .abort
+            .clone();
+        orchestrator
+            .on_report(WorkerReport::Paused {
+                task_id,
+                generation: previous_generation,
+            })
+            .await;
+        events.try_recv().unwrap();
+        orchestrator
+            .update(task_id, invalid_config("updated while paused"))
+            .await
+            .unwrap();
+        wait_for_abort(abort).await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
+        assert!(events.try_recv().is_err());
+        assert!(orchestrator.report_rx.try_recv().is_err());
+        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
+        assert_eq!(orchestrator.entries[&task_id].generation, previous_generation);
+        orchestrator
+            .on_report(WorkerReport::Built {
+                task_id,
+                generation: previous_generation,
+            })
+            .await;
+        assert!(events.try_recv().is_err());
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
+
+        orchestrator.resume(task_id).await.unwrap();
+        let starting = events.try_recv().unwrap();
+        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        assert_eq!(starting.metadata.revision, SpecRevision::new(2));
+        assert_eq!(starting.metadata.generation, previous_generation.next());
+        let report = next_report(&mut orchestrator).await;
+        assert_eq!(report.key(), (task_id, starting.metadata.generation));
+        assert!(matches!(
+            report,
+            WorkerReport::BuildFailed { reason, .. }
+                if reason == ProbeSpecError::IntervalMustBePositive.to_string()
+        ));
+        assert_eq!(orchestrator.snapshot().tasks[0].name, "updated while paused");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_restart_timer_cannot_restart_a_newer_generation() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let previous_generation = orchestrator.entries[&task_id].generation;
+        orchestrator.entries[&task_id]
+            .worker
+            .as_ref()
+            .unwrap()
+            .abort
+            .abort();
+        orchestrator
+            .on_report(WorkerReport::BuildFailed {
+                task_id,
+                generation: previous_generation,
+                reason: "unavailable".to_string(),
+            })
+            .await;
+        events.try_recv().unwrap();
+        let stale_restart =
+            tokio::time::timeout(Duration::from_secs(2), orchestrator.cmd_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            matches!(stale_restart, Command::Respawn { generation, .. } if generation == previous_generation)
+        );
+
+        orchestrator
+            .update(task_id, invalid_config("latest"))
+            .await
+            .unwrap();
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
+        let starting = events.try_recv().unwrap();
+        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        let generation = starting.metadata.generation;
+        assert_eq!(generation, previous_generation.next());
+        let report = next_report(&mut orchestrator).await;
+        orchestrator.on_report(report).await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::BuildFailed { .. }));
+        assert_eq!(orchestrator.entries[&task_id].attempts, 1);
+
+        assert!(orchestrator.on_command(stale_restart).await);
+        assert_eq!(orchestrator.entries[&task_id].generation, generation);
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Restarting);
+        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert!(events.try_recv().is_err());
+        let current_restart =
+            tokio::time::timeout(Duration::from_secs(2), orchestrator.cmd_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            matches!(current_restart, Command::Respawn { generation: actual, .. } if actual == generation)
+        );
+        assert!(orchestrator.on_command(current_restart).await);
+        let restarting = events.try_recv().unwrap();
+        assert!(matches!(restarting.data, EventData::TaskStarting { attempt: 1 }));
+        assert_eq!(restarting.metadata.generation, generation.next());
+        assert_eq!(restarting.metadata.revision, SpecRevision::new(2));
+        let report = next_report(&mut orchestrator).await;
+        assert_eq!(report.key(), (task_id, restarting.metadata.generation));
+        assert!(matches!(
+            report,
+            WorkerReport::BuildFailed { reason, .. }
+                if reason == ProbeSpecError::IntervalMustBePositive.to_string()
+        ));
+        assert_eq!(orchestrator.snapshot().tasks[0].name, "latest");
+    }
+
+    #[tokio::test]
+    async fn pausing_backoff_blocks_respawn_and_resume_resets_retry_attempts() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        orchestrator.entries.get_mut(&task_id).unwrap().task =
+            Task::new(task_id, invalid_config("resumed"));
+        let generation = orchestrator.entries[&task_id].generation;
+        orchestrator.entries[&task_id]
+            .worker
+            .as_ref()
+            .unwrap()
+            .abort
+            .abort();
+        orchestrator
+            .on_report(WorkerReport::BuildFailed {
+                task_id,
+                generation,
+                reason: "unavailable".to_string(),
+            })
+            .await;
+        events.try_recv().unwrap();
+        orchestrator.pause(task_id).await.unwrap();
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskPaused));
+        orchestrator.maybe_respawn(task_id, generation).await;
+        assert!(events.try_recv().is_err());
+        assert!(orchestrator.entries[&task_id].worker.is_none());
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
+
+        orchestrator.resume(task_id).await.unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap().data,
+            EventData::TaskStarting { attempt: 0 }
+        ));
+        assert_eq!(orchestrator.entries[&task_id].attempts, 0);
+        let report = next_report(&mut orchestrator).await;
+        orchestrator.on_report(report).await;
+        assert_eq!(orchestrator.entries[&task_id].attempts, 1);
+        assert!(matches!(
+            events.try_recv().unwrap().data,
+            EventData::BuildFailed { retry_in: Some(delay), .. } if delay == Duration::from_secs(1)
+        ));
     }
 }
