@@ -44,8 +44,8 @@ flowchart LR
 
 [scenario.rs](../crates/tools-core/src/monitor/scenario.rs) содержит enum `Scenario`,
 весь поток исполнения GET/SET, их спеки, протокол взаимодействия с оркестратором
-и небольшие сетевые адаптеры. Тесты находятся в
-[scenario/tests.rs](../crates/tools-core/src/monitor/scenario/tests.rs).
+и небольшие сетевые адаптеры. Тесты находятся в конце этого же файла,
+во встроенном модуле `#[cfg(test)] mod tests`.
 
 Варианты `Scenario::SnmpGet(SnmpGetScenarioSpec)` и
 `Scenario::SnmpSet(SnmpSetScenarioSpec)` содержат конфигурацию. Клиенты, разрешённые
@@ -227,12 +227,13 @@ GET читает OID и формирует `SnmpGetSample` с сырым зна�
 ```sh
 make check
 make clippy
-cargo test --target x86_64-unknown-linux-gnu -p tools-core -p tctl --no-run
+cargo test --target x86_64-unknown-linux-gnu -p tools-core -p tctl
 ```
 
 Компиляция и Clippy проходят; в проекте остаются предупреждения линтера.
-Тесты core и CLI собраны. На последнем этапе тесты, включая UDP, не запускались
-по текущей договорённости.
+Последний полный прогон завершился успешно: 98 тестов core, 1 тест CLI и
+19 doctests, включая UDP-проверки. После переноса тестов в `scenario.rs`
+дополнительно прошли все 12 тестов сценариев.
 
 В `.cargo/config.toml` задан Windows-target по умолчанию. Для локальной проверки
 на Linux используется явный `--target x86_64-unknown-linux-gnu`, как в командах выше.
