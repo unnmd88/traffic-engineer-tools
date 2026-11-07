@@ -10,7 +10,8 @@ use tokio::{
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
     runtime::{
-        ApplicationId, MonitorSubscription, error::OrchestratorError, restart_policy::RestartPolicy,
+        ApplicationId, MonitorSubscription, error::MonitorCommandError,
+        restart_policy::RestartPolicy,
     },
     scenario::{Generation, PanicStage, ScenarioCommand, ScenarioReport, run_scenario},
     task::{
@@ -48,32 +49,32 @@ struct ScenarioHandle {
 enum Command {
     AddTask {
         spec: TaskConfig,
-        reply: oneshot::Sender<Result<TaskId, OrchestratorError>>,
+        reply: oneshot::Sender<Result<TaskId, MonitorCommandError>>,
     },
     RemoveTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), OrchestratorError>>,
+        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
     },
     StartTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), OrchestratorError>>,
+        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
     },
     PauseTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), OrchestratorError>>,
+        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
     },
     ResumeTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), OrchestratorError>>,
+        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
     },
     StopTask {
         task_id: TaskId,
-        reply: oneshot::Sender<Result<(), OrchestratorError>>,
+        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
     },
     UpdateTask {
         task_id: TaskId,
         spec: TaskConfig,
-        reply: oneshot::Sender<Result<(), OrchestratorError>>,
+        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
     },
     GetSnapshot {
         reply: oneshot::Sender<MonitorSnapshot>,
@@ -286,12 +287,12 @@ impl Orchestrator {
         }
     }
 
-    async fn start(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
+    async fn start(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
         let should_start = match self.entries.get(&id) {
             Some(e) => {
                 matches!(e.state, TaskState::Idle | TaskState::Stopped | TaskState::Completed)
             }
-            None => return Err(OrchestratorError::TaskNotFound(id)),
+            None => return Err(MonitorCommandError::TaskNotFound(id)),
         };
         if !should_start {
             return Ok(());
@@ -308,13 +309,13 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn pause(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
+    async fn pause(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
         // forward — шлём команду живому воркеру; set_state — воркера нет, пауза сразу
         let (forward, set_state) = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(OrchestratorError::TaskNotFound(id))?;
+                .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
                 TaskState::Starting | TaskState::Active => {
                     (entry.scenario.is_some(), entry.scenario.is_none())
@@ -343,13 +344,13 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn resume(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
+    async fn resume(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
         // forward — живому воркеру; spawn — воркера нет, поднимаем заново
         let (forward, spawn) = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(OrchestratorError::TaskNotFound(id))?;
+                .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
                 TaskState::Paused => (entry.scenario.is_some(), entry.scenario.is_none()),
                 _ => (false, false),
@@ -378,12 +379,12 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn stop(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
+    async fn stop(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
         let stopped = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(OrchestratorError::TaskNotFound(id))?;
+                .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
                 TaskState::Idle | TaskState::Stopped => false, // нечего останавливать
                 _ => {
@@ -402,12 +403,12 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn update(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), OrchestratorError> {
+    async fn update(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), MonitorCommandError> {
         let respawn = {
             let entry = self
                 .entries
                 .get_mut(&id)
-                .ok_or(OrchestratorError::TaskNotFound(id))?;
+                .ok_or(MonitorCommandError::TaskNotFound(id))?;
             entry.task.update_config(spec);
             entry.attempts = 0;
             matches!(entry.state, TaskState::Starting | TaskState::Active | TaskState::Restarting)
@@ -436,11 +437,11 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn remove(&mut self, id: TaskId) -> Result<(), OrchestratorError> {
+    async fn remove(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
         let entry = self
             .entries
             .remove(&id)
-            .ok_or(OrchestratorError::TaskNotFound(id))?;
+            .ok_or(MonitorCommandError::TaskNotFound(id))?;
         if let Some(scenario) = &entry.scenario {
             scenario.abort.abort();
         }
@@ -752,65 +753,65 @@ pub(super) struct OrchestratorHandle {
 }
 
 impl OrchestratorHandle {
-    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, OrchestratorError> {
+    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::AddTask { spec, reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
-    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::RemoveTask { task_id, reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
-    pub async fn start_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn start_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::StartTask { task_id, reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
-    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::PauseTask { task_id, reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
-    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::ResumeTask { task_id, reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
-    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::StopTask { task_id, reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
     pub async fn update_task(
         &self,
         task_id: TaskId,
         spec: TaskConfig,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::UpdateTask {
@@ -819,17 +820,17 @@ impl OrchestratorHandle {
                 reply: tx,
             })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)?
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
-    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, OrchestratorError> {
+    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::GetSnapshot { reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
@@ -842,22 +843,24 @@ impl OrchestratorHandle {
         )
     }
 
-    pub async fn subscribe_with_snapshot(&self) -> Result<MonitorSubscription, OrchestratorError> {
+    pub async fn subscribe_with_snapshot(
+        &self,
+    ) -> Result<MonitorSubscription, MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::SubscribeWithSnapshot { reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)
     }
 
-    pub async fn shutdown(&self) -> Result<(), OrchestratorError> {
+    pub async fn shutdown(&self) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::Shutdown { reply: tx })
             .await
-            .map_err(|_| OrchestratorError::ChannelClosed)?;
-        rx.await.map_err(|_| OrchestratorError::ChannelClosed)
+            .map_err(|_| MonitorCommandError::ChannelClosed)?;
+        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)
     }
 }
 
@@ -1155,7 +1158,7 @@ mod tests {
         ));
         assert!(matches!(
             clone.subscribe_with_snapshot().await,
-            Err(OrchestratorError::ChannelClosed)
+            Err(MonitorCommandError::ChannelClosed)
         ));
     }
 

@@ -11,7 +11,7 @@ use crate::monitor::{
     event::MonitorEvent,
     runtime::{
         MonitorSubscription,
-        error::{ApplicationError, OrchestratorError},
+        error::{ApplicationError, MonitorCommandError},
         orchestrator::{Orchestrator, OrchestratorHandle},
         restart_policy::RestartPolicy,
     },
@@ -121,27 +121,27 @@ impl ApplicationHandle {
         &self.uid
     }
 
-    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, OrchestratorError> {
+    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, MonitorCommandError> {
         self.orchestrator.add_task(spec).await
     }
 
-    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.remove_task(task_id).await
     }
 
-    pub async fn start_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn start_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.start_task(task_id).await
     }
 
-    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.pause_task(task_id).await
     }
 
-    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.resume_task(task_id).await
     }
 
-    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), OrchestratorError> {
+    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.stop_task(task_id).await
     }
 
@@ -149,11 +149,11 @@ impl ApplicationHandle {
         &self,
         task_id: TaskId,
         spec: TaskConfig,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<(), MonitorCommandError> {
         self.orchestrator.update_task(task_id, spec).await
     }
 
-    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, OrchestratorError> {
+    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, MonitorCommandError> {
         self.orchestrator.get_snapshot().await
     }
 
@@ -161,7 +161,9 @@ impl ApplicationHandle {
         self.orchestrator.subscribe()
     }
 
-    pub async fn subscribe_with_snapshot(&self) -> Result<MonitorSubscription, OrchestratorError> {
+    pub async fn subscribe_with_snapshot(
+        &self,
+    ) -> Result<MonitorSubscription, MonitorCommandError> {
         self.orchestrator.subscribe_with_snapshot().await
     }
 }
@@ -176,7 +178,7 @@ mod tests {
     use crate::{
         monitor::{
             event::EventData,
-            runtime::{AppConfig, Application, error::OrchestratorError},
+            runtime::{AppConfig, Application, error::MonitorCommandError},
             scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec},
             task::{TaskConfig, TaskStatus},
         },
@@ -274,7 +276,7 @@ mod tests {
             subscription.events.recv().await,
             Err(broadcast::error::RecvError::Closed)
         ));
-        assert!(matches!(other.get_snapshot().await, Err(OrchestratorError::ChannelClosed)));
+        assert!(matches!(other.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
     }
 
     #[tokio::test]
@@ -296,7 +298,7 @@ mod tests {
         timeout(Duration::from_secs(1), async {
             assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
             assert!(history.recv().await.is_none());
-            assert!(matches!(app.get_snapshot().await, Err(OrchestratorError::ChannelClosed)));
+            assert!(matches!(app.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
         })
         .await
         .unwrap();
@@ -369,7 +371,7 @@ mod tests {
         timeout(Duration::from_secs(1), async {
             assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
             while history.recv().await.is_some() {}
-            assert!(matches!(app.get_snapshot().await, Err(OrchestratorError::ChannelClosed)));
+            assert!(matches!(app.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
         })
         .await
         .unwrap();

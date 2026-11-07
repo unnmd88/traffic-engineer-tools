@@ -7,7 +7,7 @@ use tokio::{
 use tools_core::{
     DT_FMT,
     monitor::{
-        ApplicationHandle, MonitorEvent, MonitorSnapshot, MonitorSubscription, OrchestratorError,
+        ApplicationHandle, MonitorCommandError, MonitorEvent, MonitorSnapshot, MonitorSubscription,
     },
 };
 
@@ -16,7 +16,7 @@ use super::render::{LINE_DOUBLE_LN, format_snapshot};
 pub async fn run(
     app: &ApplicationHandle,
     subscription: MonitorSubscription,
-) -> Result<(), OrchestratorError> {
+) -> Result<(), MonitorCommandError> {
     let MonitorSubscription {
         mut snapshot,
         mut events,

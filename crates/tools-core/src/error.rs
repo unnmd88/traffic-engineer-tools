@@ -18,7 +18,7 @@ pub enum Error {
     #[error(transparent)]
     ScenarioExecution(#[from] crate::monitor::ScenarioExecutionError),
     #[error(transparent)]
-    MonitorOrchestrator(#[from] crate::monitor::OrchestratorError),
+    MonitorCommand(#[from] crate::monitor::MonitorCommandError),
     #[error(transparent)]
     MonitorApplication(#[from] crate::monitor::ApplicationError),
     #[error(transparent)]

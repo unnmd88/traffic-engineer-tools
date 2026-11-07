@@ -9,7 +9,7 @@ pub use coordination::{CoordinationError, Cycle, Epoch, Phase, PhaseSetResult, P
 pub use event::{EventData, EventMeta, MonitorEvent};
 pub use runtime::{
     AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId,
-    MonitorSubscription, OrchestratorError, RestartPolicy, RunningApplication,
+    MonitorCommandError, MonitorSubscription, RestartPolicy, RunningApplication,
 };
 pub use scenario::{
     Generation, OutcomeStatus, PanicStage, PollSchedule, ScenarioBuildError, ScenarioExecution,

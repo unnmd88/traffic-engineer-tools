@@ -7,15 +7,15 @@ use crate::monitor::task::TaskId;
 #[derive(Error, Debug, Clone)]
 pub enum ApplicationError {
     #[error(transparent)]
-    Orchestrator(#[from] OrchestratorError),
+    Command(#[from] MonitorCommandError),
     #[error("application runtime failed: {0}")]
     Runtime(#[source] Arc<tokio::task::JoinError>),
 }
 
 #[derive(Error, Debug, Clone)]
-pub enum OrchestratorError {
+pub enum MonitorCommandError {
     #[error("task not found: {0}")]
     TaskNotFound(TaskId),
-    #[error("orchestrator channel closed")]
+    #[error("monitor command channel closed")]
     ChannelClosed,
 }

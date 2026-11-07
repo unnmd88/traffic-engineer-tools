@@ -402,8 +402,12 @@ SET принимает `SnmpSetItem`: OID, имя и уже типизирова
 | `TaskError`, `ScenarioSpecError`, `SnmpQueryError`, `polling::ConfigError` | Проверка и сборка конфигурации |
 | `ScenarioBuildError` | Подготовка исполнения, включая клиента и резолюцию OID |
 | `ScenarioExecutionError` | Фатальная ошибка полного запроса |
-| `OrchestratorError` | Ошибка команды: неизвестная задача или закрытый канал |
+| `MonitorCommandError` | Ошибка команды: неизвестная задача или закрытый канал |
 | `ApplicationError` | Завершение приложения и ошибка фонового оркестратора |
+
+`ApplicationError::Command` оборачивает ошибку команды завершения,
+а `ApplicationError::Runtime` сообщает об ошибке фонового выполнения.
+Корневой `tools_core::Error::MonitorCommand` агрегирует `MonitorCommandError`.
 
 Неуспешный сетевой результат `NoResponse` не требует пересоздания сценария.
 Ошибка подготовки, фатальная ошибка исполнения или перехваченная паника

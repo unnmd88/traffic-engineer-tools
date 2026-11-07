@@ -3,8 +3,8 @@ use std::time::Duration;
 use tools_core::{
     monitor::{
         AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId, EventData,
-        EventMeta, ExecutionMetrics, Generation, Health, HistoryEntryView, MonitorEvent,
-        MonitorSnapshot, MonitorSubscription, OrchestratorError, PollSchedule, RestartPolicy,
+        EventMeta, ExecutionMetrics, Generation, Health, HistoryEntryView, MonitorCommandError,
+        MonitorEvent, MonitorSnapshot, MonitorSubscription, PollSchedule, RestartPolicy,
         RunningApplication, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec, SnmpSetScenarioSpec,
         SnmpSetSpec, SpecRevision, TaskConfig, TaskId, TaskStatus, TaskView,
     },
@@ -92,10 +92,10 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     assert_eq!(updated.updated_at, updated.config_updated_at);
 
     handle.remove_task(id).await.unwrap();
-    let error: OrchestratorError = handle.remove_task(id).await.unwrap_err();
-    assert!(matches!(error, OrchestratorError::TaskNotFound(missing) if missing == id));
+    let error: MonitorCommandError = handle.remove_task(id).await.unwrap_err();
+    assert!(matches!(error, MonitorCommandError::TaskNotFound(missing) if missing == id));
     let error: ApplicationError = error.into();
-    assert!(matches!(error, ApplicationError::Orchestrator(_)));
+    assert!(matches!(error, ApplicationError::Command(_)));
     running.shutdown().await.unwrap();
-    assert!(matches!(handle.get_snapshot().await, Err(OrchestratorError::ChannelClosed)));
+    assert!(matches!(handle.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
 }
