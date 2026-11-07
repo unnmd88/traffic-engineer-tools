@@ -866,7 +866,6 @@ mod tests {
     use super::*;
     use crate::{
         monitor::{
-            probe::{SnmpGetSpec, SnmpSetSpec},
             scenario::{
                 PollSchedule, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
                 ScenarioOutcome, ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec,
@@ -874,6 +873,7 @@ mod tests {
             task::ExecutionMetrics,
         },
         polling::{AttemptConfig, FatalError, Response},
+        snmp::{SnmpGetSpec, SnmpSetSpec},
     };
 
     fn active_task(limit: u64) -> (Orchestrator, broadcast::Receiver<MonitorEvent>, TaskId) {

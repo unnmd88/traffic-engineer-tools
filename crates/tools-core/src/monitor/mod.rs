@@ -1,13 +1,12 @@
 mod coordination;
 mod event;
-mod probe;
 mod runtime;
 mod scenario;
 mod task;
 
+pub use crate::snmp::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpQueryError, SnmpSetSpec};
 pub use coordination::{CoordinationError, Cycle, Epoch, Phase, PhaseSetResult, PhaseState};
 pub use event::{EventData, EventMeta, MonitorEvent};
-pub use probe::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpQueryError, SnmpSetSpec};
 pub use runtime::{
     AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId,
     MonitorSubscription, OrchestratorError, RestartPolicy, RunningApplication,

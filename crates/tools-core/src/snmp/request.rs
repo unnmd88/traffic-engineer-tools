@@ -2,15 +2,12 @@ use std::net::{IpAddr, SocketAddr};
 
 use serde::Deserialize;
 
-use crate::{
-    monitor::probe::SnmpQueryError,
-    snmp::{
-        ParseError,
-        community::Community,
-        oid::SnmpOid,
-        profiles::SnmpProfile,
-        resolve::{SnmpGetItem, SnmpSetItem, encode_set_value},
-    },
+use super::{
+    ParseError, SnmpQueryError,
+    community::Community,
+    oid::SnmpOid,
+    profiles::SnmpProfile,
+    resolve::{SnmpGetItem, SnmpSetItem, encode_set_value},
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -112,7 +109,7 @@ impl SnmpGetSpec {
         self.oids.as_slice()
     }
 
-    pub(in crate::monitor) fn into_parts(
+    pub(crate) fn into_parts(
         self,
     ) -> (IpAddr, u16, Community, Option<SnmpProfile>, Vec<SnmpGetItem>) {
         (self.host, self.port, self.community, self.profile, self.oids)
@@ -201,7 +198,7 @@ impl SnmpSetSpec {
         self.sets.as_slice()
     }
 
-    pub(in crate::monitor) fn into_parts(
+    pub(crate) fn into_parts(
         self,
     ) -> (IpAddr, u16, Option<Community>, Community, Option<SnmpProfile>, Vec<SnmpSetItem>) {
         (self.host, self.port, self.community_r, self.community, self.profile, self.sets)

@@ -10,12 +10,12 @@ use tokio::{
 
 use super::*;
 use crate::{
-    monitor::{
-        probe::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
-        task::TaskId,
-    },
+    monitor::task::TaskId,
     polling::{AttemptConfig, Response},
-    snmp::{business_value::BusinessValue, value::SnmpValue},
+    snmp::{
+        RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec, business_value::BusinessValue,
+        value::SnmpValue,
+    },
 };
 
 struct Session {

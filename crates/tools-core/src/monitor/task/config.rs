@@ -50,11 +50,9 @@ impl TaskConfig {
 mod tests {
     use super::*;
     use crate::{
-        monitor::{
-            probe::SnmpGetSpec,
-            scenario::{PollSchedule, SnmpGetScenarioSpec},
-        },
+        monitor::scenario::{PollSchedule, SnmpGetScenarioSpec},
         polling::AttemptConfig,
+        snmp::SnmpGetSpec,
     };
     use tokio::time::Duration;
 

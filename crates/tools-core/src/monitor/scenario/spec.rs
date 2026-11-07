@@ -1,6 +1,6 @@
 use crate::{
-    monitor::probe::{SnmpGetSpec, SnmpSetSpec},
     polling::AttemptConfig,
+    snmp::{SnmpGetSpec, SnmpSetSpec},
 };
 
 use super::{PollSchedule, ScenarioSpecError};

@@ -209,11 +209,9 @@ impl Task {
 mod tests {
     use super::*;
     use crate::{
-        monitor::{
-            probe::SnmpGetSpec,
-            scenario::{PollSchedule, ScenarioOutcome, ScenarioSpec, SnmpGetScenarioSpec},
-        },
+        monitor::scenario::{PollSchedule, ScenarioOutcome, ScenarioSpec, SnmpGetScenarioSpec},
         polling::{AttemptConfig, Response},
+        snmp::SnmpGetSpec,
     };
     use tokio::time::Duration;
 

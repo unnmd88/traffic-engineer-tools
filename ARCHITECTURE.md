@@ -47,7 +47,7 @@
 
 Публичная точка входа — `tools_core::monitor`.
 Она реэкспортирует конфигурации, управление, результаты, события и ошибки.
-Внутренние модули `runtime`, `task`, `scenario` и `probe` скрыты за этой границей.
+Внутренние модули `runtime`, `task` и `scenario` скрыты за этой границей.
 Отдельные механизмы запросов и SNMP также доступны через `tools_core::polling`
 и `tools_core::snmp`.
 
@@ -62,7 +62,7 @@
 | `Task` | Внутренняя конфигурация, ревизия, результаты, метрики и здоровье задачи | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
 | `ScenarioSpec` | Публичное описание выбранного сценария | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
 | Исполнение GET/SET | Подготовка запроса, расписание, команды и отчёты конкретного сценария | [snmp_get.rs](crates/tools-core/src/monitor/scenario/snmp_get.rs), [snmp_set.rs](crates/tools-core/src/monitor/scenario/snmp_set.rs) |
-| `SnmpGetSpec`, `SnmpSetSpec` | Проверенные параметры SNMP-запросов без сетевого клиента | [probe/snmp.rs](crates/tools-core/src/monitor/probe/snmp.rs) |
+| `SnmpGetSpec`, `SnmpSetSpec` | Проверенные параметры SNMP-запросов без сетевого клиента | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
 | `poll`, `AttemptConfig`, `Pollable` | Общий механизм попыток одного полного запроса | [polling](crates/tools-core/src/polling/mod.rs) |
 | `SnmpClient`, `Resolver` | Сетевые операции и подготовка OID с учётом профиля устройства | [client.rs](crates/tools-core/src/snmp/client.rs), [resolve.rs](crates/tools-core/src/snmp/resolve.rs) |
 | `MonitorSnapshot`, `MonitorSubscription`, `MonitorEvent` | Наблюдение за состоянием и изменениями | [view.rs](crates/tools-core/src/monitor/task/view.rs), [subscription.rs](crates/tools-core/src/monitor/runtime/subscription.rs), [event.rs](crates/tools-core/src/monitor/event.rs) |
@@ -236,6 +236,10 @@ pub async fn initial_snapshot(
 ## Запросы, попытки и SNMP
 
 `SnmpGetSpec` и `SnmpSetSpec` описывают сетевые параметры и элементы запроса.
+Спецификации, `RawSnmpOidItem`, `RawSnmpSetItem` и `SnmpQueryError` принадлежат
+`tools_core::snmp` и доступны независимо от монитора. `tools_core::monitor`
+сохраняет реэкспорты этих типов. Расписание и параметры попыток принадлежат
+описанию сценария и не входят в спецификацию SNMP-запроса.
 GET принимает `SnmpGetItem`: OID, необязательное имя и пользовательский парсер.
 SET принимает `SnmpSetItem`: OID, имя и уже типизированное значение.
 Эти элементы доступны в `tools_core::snmp`.

@@ -176,12 +176,12 @@ mod tests {
     use crate::{
         monitor::{
             event::EventData,
-            probe::SnmpGetSpec,
             runtime::{AppConfig, Application, error::OrchestratorError},
             scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec},
             task::{TaskConfig, TaskStatus},
         },
         polling::AttemptConfig,
+        snmp::SnmpGetSpec,
     };
 
     fn spec(name: &str) -> TaskConfig {

@@ -10,7 +10,7 @@ pub enum Error {
     #[error(transparent)]
     Scn(#[from] crate::scn::ScnError),
     #[error(transparent)]
-    SnmpQuery(#[from] crate::monitor::SnmpQueryError),
+    SnmpQuery(#[from] crate::snmp::SnmpQueryError),
     #[error(transparent)]
     Task(#[from] crate::monitor::TaskError),
     #[error(transparent)]
