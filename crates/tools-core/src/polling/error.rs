@@ -1,9 +1,11 @@
+use serde::{Deserialize, Serialize};
+
 use std::fmt::{self, Display, Formatter};
 use thiserror::Error;
 use tokio::time::Duration;
 
 // Ошибка одной попытки опроса: классифицирует АДАПТЕР.
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum AttemptError {
     /// Сеть/таймаут/недоступно — можно повторить.
     #[error("transient error: {0}")]
@@ -14,14 +16,14 @@ pub enum AttemptError {
 }
 
 // Фатальная ошибка итерации опроса (пробрасывается наверх).
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
 #[error("fatal poll error: {message}")]
 pub struct FatalError {
     pub message: String,
 }
 
 // Контекст одной неудачной попытки.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollErrorContext {
     /// Номер попытки (1-based).
     pub attempt: u8,
@@ -44,7 +46,7 @@ impl Display for PollErrorContext {
 }
 
 /// Ошибка валидации параметров попытки (`AttemptConfig`).
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum ConfigError {
     #[error("attempt timeout must be greater than zero")]
     TimeoutMustBePositive,

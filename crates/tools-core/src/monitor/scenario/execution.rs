@@ -1,9 +1,11 @@
+use serde::{Deserialize, Serialize};
+
 use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::{polling::Response, snmp::SnmpGetSample};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PanicStage {
     Build,
@@ -11,14 +13,14 @@ pub enum PanicStage {
     Runtime,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutcomeStatus {
     Succeeded,
     Degraded,
     Failed,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ScenarioOutcome {
     SnmpGet(Response<Vec<SnmpGetSample>>),
@@ -41,7 +43,7 @@ const fn response_status<T>(response: &Response<T>) -> OutcomeStatus {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ScenarioExecution {
     pub finished_at: DateTime<Utc>,
@@ -49,7 +51,7 @@ pub struct ScenarioExecution {
     pub outcome: ScenarioOutcome,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[must_use]
 pub struct Generation(u64);
 

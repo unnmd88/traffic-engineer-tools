@@ -1,8 +1,10 @@
+use serde::{Deserialize, Serialize};
+
 use tokio::time::Duration;
 
 use crate::monitor::scenario::OutcomeStatus;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionMetrics {
     pub executions: u64,
     pub successful: u64,

@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use std::fmt::{self, Display, Formatter, write};
 
 use tokio::time::error::Elapsed;
@@ -7,7 +9,7 @@ use crate::{
     stage::Stage,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BusinessValue {
     Stage(Stage),
     StageUg405 { number: Stage, hex: String },

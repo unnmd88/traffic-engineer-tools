@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use serde::Deserialize;
 
@@ -15,7 +15,14 @@ use tools_core::{
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AppConfigDto {
+    history_sink: Option<PathBuf>,
     tasks: Vec<TaskConfigDto>,
+}
+
+#[derive(Debug)]
+pub struct PollConfig {
+    pub history_sink: Option<PathBuf>,
+    pub tasks: Vec<TaskConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,7 +90,7 @@ struct SnmpSetQueryDto {
 }
 
 /// Загружает и валидирует задачи из YAML.
-pub fn load_tasks_from_yaml(content: &str) -> anyhow::Result<Vec<TaskConfig>> {
+pub fn load_from_yaml(content: &str) -> anyhow::Result<PollConfig> {
     let de = serde_norway::Deserializer::from_str(content);
     let app_dto: AppConfigDto = serde_path_to_error::deserialize(de)?;
     let specs = app_dto
@@ -91,7 +98,10 @@ pub fn load_tasks_from_yaml(content: &str) -> anyhow::Result<Vec<TaskConfig>> {
         .into_iter()
         .map(TaskConfig::try_from)
         .collect::<Result<Vec<_>, Error>>()?;
-    Ok(specs)
+    Ok(PollConfig {
+        history_sink: app_dto.history_sink,
+        tasks: specs,
+    })
 }
 
 impl TryFrom<TaskConfigDto> for TaskConfig {
@@ -146,6 +156,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn history_sink_is_an_optional_path_in_the_application_config() {
+        let config = load_from_yaml("history_sink: logs/history.jsonl\ntasks: []\n").unwrap();
+        assert_eq!(config.history_sink, Some(PathBuf::from("logs/history.jsonl")));
+        assert!(config.tasks.is_empty());
+        assert!(load_from_yaml("history_sink: { file: history.jsonl }\ntasks: []\n").is_err());
+        assert!(load_from_yaml("history_snik: history.jsonl\ntasks: []\n").is_err());
+    }
+
+    #[test]
     fn parses_yaml_into_validated_specs() {
         let yaml = r#"
 tasks:
@@ -183,7 +202,9 @@ tasks:
           value: "3"
 "#;
 
-        let specs = load_tasks_from_yaml(yaml).unwrap();
+        let config = load_from_yaml(yaml).unwrap();
+        assert!(config.history_sink.is_none());
+        let specs = config.tasks;
 
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].name(), "T-1");
@@ -240,7 +261,7 @@ tasks:
                 },
             ),
         ] {
-            let tasks = load_tasks_from_yaml(&task_yaml(mode, "100ms")).unwrap();
+            let tasks = load_from_yaml(&task_yaml(mode, "100ms")).unwrap().tasks;
             let ScenarioSpec::SnmpGet(spec) = tasks[0].scenario() else {
                 panic!("expected SNMP GET scenario");
             };
@@ -250,13 +271,13 @@ tasks:
 
     #[test]
     fn rejects_unknown_schedules() {
-        assert!(load_tasks_from_yaml(&task_yaml("unknown", "1s")).is_err());
+        assert!(load_from_yaml(&task_yaml("unknown", "1s")).is_err());
     }
 
     #[test]
     fn rejects_zero_duration_in_both_schedules() {
         for mode in ["fixed_rate", "fixed_delay"] {
-            let error = load_tasks_from_yaml(&task_yaml(mode, "0s")).unwrap_err();
+            let error = load_from_yaml(&task_yaml(mode, "0s")).unwrap_err();
             assert!(matches!(
                 error.downcast_ref::<Error>(),
                 Some(Error::ScenarioSpec(

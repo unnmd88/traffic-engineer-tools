@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
@@ -19,10 +21,23 @@ pub enum TaskStatus {
     Restarting,
 }
 
-#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
+#[derive(
+    Clone,
+    Debug,
+    Copy,
+    Display,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Constructor,
+    Serialize,
+    Deserialize,
+)]
 pub struct TaskId(pub u64);
 
-#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor)]
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor, Serialize, Deserialize)]
 pub struct SpecRevision(pub u64);
 
 impl SpecRevision {

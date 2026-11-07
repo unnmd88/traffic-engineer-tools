@@ -1,10 +1,12 @@
+use serde::{Deserialize, Serialize};
+
 use std::str::FromStr;
 
 use derive_more::{Constructor, Display};
 
 use crate::snmp::ParseError;
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Display, Constructor)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Display, Constructor, Serialize, Deserialize)]
 pub struct Stage(u32);
 
 impl FromStr for Stage {

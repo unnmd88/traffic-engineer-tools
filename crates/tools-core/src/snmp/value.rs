@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use std::{
     fmt::{self, Formatter},
     str::FromStr,
@@ -72,7 +74,7 @@ impl From<&SnmpValue> for SnmpValueType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SnmpValue {
     OctetString(Vec<u8>),
     Opaque(Vec<u8>),

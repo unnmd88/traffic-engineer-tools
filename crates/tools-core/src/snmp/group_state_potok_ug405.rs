@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::snmp::{ParseError, business_value::BusinessValue, value::SnmpValue};
 
 /*
@@ -23,7 +25,7 @@ ARROW = 21
 ARROW_FLASH = 22
 */
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupStatePotokUg405 {
     num_group: u8,
     source_code: u8,
@@ -52,7 +54,7 @@ impl GroupStatePotokUg405 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GroupStateDefinition {
     Off,
     RedAmber,

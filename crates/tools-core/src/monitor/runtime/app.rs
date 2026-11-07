@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use std::sync::Arc;
 
 use derive_more::Display;
@@ -18,7 +20,7 @@ use crate::monitor::{
     task::{MonitorSnapshot, TaskConfig, TaskId},
 };
 
-#[derive(Clone, Copy, Debug, Display, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ApplicationId(Uuid);
 
 impl ApplicationId {
