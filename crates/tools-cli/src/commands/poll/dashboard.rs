@@ -92,7 +92,7 @@ mod tests {
         monitor::{
             probe::SnmpGetSpec,
             runtime::{AppConfig, Application},
-            scenario::{PollSchedule, Scenario, SnmpGetScenarioSpec},
+            scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec},
             task::TaskConfig,
         },
         polling::AttemptConfig,
@@ -103,7 +103,7 @@ mod tests {
             SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
                 .unwrap();
         let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
-        let scenario = Scenario::SnmpGet(
+        let scenario = ScenarioSpec::SnmpGet(
             SnmpGetScenarioSpec::try_new(
                 request,
                 PollSchedule::FixedDelay {

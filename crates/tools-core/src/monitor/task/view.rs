@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::monitor::{
-    scenario::{Scenario, ScenarioExecution},
+    scenario::{ScenarioExecution, ScenarioSpec},
     task::{ExecutionMetrics, SpecRevision, TaskId, TaskStatus, task::Health},
 };
 
@@ -13,7 +13,7 @@ pub struct TaskView {
     pub target: String,
     pub status: TaskStatus,
     pub deep_history: u8,
-    pub scenario: Scenario,
+    pub scenario: ScenarioSpec,
     pub limit: u64,
     pub metrics: ExecutionMetrics,
     pub result: Option<ScenarioExecution>,

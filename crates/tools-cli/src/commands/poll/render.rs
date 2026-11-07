@@ -2,7 +2,7 @@ use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
     monitor::{
-        scenario::{PollSchedule, Scenario, ScenarioExecution, ScenarioOutcome},
+        scenario::{PollSchedule, ScenarioExecution, ScenarioOutcome, ScenarioSpec},
         task::TaskView,
     },
     polling::Response,
@@ -40,8 +40,8 @@ fn format_card(view: &TaskView) -> String {
     lines.push(labeled("Revision", &view.revision.to_string()));
 
     let (schedule, attempt) = match &view.scenario {
-        Scenario::SnmpGet(spec) => (spec.schedule(), spec.attempt()),
-        Scenario::SnmpSet(spec) => (spec.schedule(), spec.attempt()),
+        ScenarioSpec::SnmpGet(spec) => (spec.schedule(), spec.attempt()),
+        ScenarioSpec::SnmpSet(spec) => (spec.schedule(), spec.attempt()),
     };
     let cadence = match schedule {
         PollSchedule::FixedRate { period } => format!("Period: {period:?} (fixed rate)"),
@@ -103,7 +103,7 @@ fn format_response(view: &TaskView) -> String {
             | ScenarioOutcome::SnmpSet(Response::NoResponse { attempts, .. }) => {
                 format!("No response: {attempts} attempts\n")
             }
-            _ => format!("Scenario outcome: {:?}\n", execution.outcome.status()),
+            _ => format!("ScenarioSpec outcome: {:?}\n", execution.outcome.status()),
         },
         None => String::new(),
     }
@@ -137,9 +137,9 @@ fn format_response_summary<T>(response: &Response<T>) -> String {
     }
 }
 
-fn push_query(lines: &mut Vec<String>, scenario: &Scenario) {
+fn push_query(lines: &mut Vec<String>, scenario: &ScenarioSpec) {
     match scenario {
-        Scenario::SnmpGet(spec) => {
+        ScenarioSpec::SnmpGet(spec) => {
             let request = spec.request();
             lines.push("Oids to request:".to_string());
             for item in &request.oids {
@@ -147,7 +147,7 @@ fn push_query(lines: &mut Vec<String>, scenario: &Scenario) {
                 lines.push(format!("  {name:<16}{}", item.oid));
             }
         }
-        Scenario::SnmpSet(spec) => {
+        ScenarioSpec::SnmpSet(spec) => {
             let request = spec.request();
             lines.push("Oids to set:".to_string());
             for item in &request.sets {

@@ -6,7 +6,7 @@ use tools_core::{
     error::Error,
     monitor::{
         probe::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
-        scenario::{PollSchedule, Scenario, SnmpGetScenarioSpec, SnmpSetScenarioSpec},
+        scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec},
         task::TaskConfig,
     },
     polling::AttemptConfig,
@@ -118,7 +118,7 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
             QueryDto::SnmpGet(q) => {
                 let request =
                     SnmpGetSpec::from_raw(q.host, q.port, q.community, q.profile, q.oids)?;
-                Scenario::SnmpGet(SnmpGetScenarioSpec::try_new(request, schedule, attempt)?)
+                ScenarioSpec::SnmpGet(SnmpGetScenarioSpec::try_new(request, schedule, attempt)?)
             }
             QueryDto::SnmpSet(q) => {
                 let request = SnmpSetSpec::from_raw(
@@ -129,7 +129,7 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
                     q.profile,
                     q.oids,
                 )?;
-                Scenario::SnmpSet(SnmpSetScenarioSpec::try_new(request, schedule, attempt)?)
+                ScenarioSpec::SnmpSet(SnmpSetScenarioSpec::try_new(request, schedule, attempt)?)
             }
         };
 
@@ -189,7 +189,7 @@ tasks:
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].name(), "T-1");
         assert_eq!(specs[0].limit(), 100);
-        let Scenario::SnmpGet(spec) = specs[0].scenario() else {
+        let ScenarioSpec::SnmpGet(spec) = specs[0].scenario() else {
             panic!("expected SNMP GET scenario");
         };
         assert_eq!(
@@ -200,7 +200,7 @@ tasks:
         );
         assert_eq!(specs[1].name(), "T-2");
         assert_eq!(specs[1].limit(), 0);
-        let Scenario::SnmpSet(spec) = specs[1].scenario() else {
+        let ScenarioSpec::SnmpSet(spec) = specs[1].scenario() else {
             panic!("expected SNMP SET scenario");
         };
         let request = spec.request();
@@ -242,7 +242,7 @@ tasks:
             ),
         ] {
             let tasks = load_tasks_from_yaml(&task_yaml(mode, "100ms")).unwrap();
-            let Scenario::SnmpGet(spec) = tasks[0].scenario() else {
+            let ScenarioSpec::SnmpGet(spec) = tasks[0].scenario() else {
                 panic!("expected SNMP GET scenario");
             };
             assert_eq!(spec.schedule(), expected);

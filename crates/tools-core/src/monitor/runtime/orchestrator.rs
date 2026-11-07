@@ -10,7 +10,7 @@ use tokio::{
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
     runtime::{MonitorSubscription, error::OrchestratorError, restart_policy::RestartPolicy},
-    scenario::{Generation, PanicStage, ScenarioCommand, ScenarioReport},
+    scenario::{Generation, PanicStage, ScenarioCommand, ScenarioReport, run_scenario},
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
         TaskView,
@@ -596,7 +596,7 @@ impl Orchestrator {
         let report_tx = self.report_tx.clone();
         let abort = self
             .scenarios
-            .spawn(scenario.run(task_id, generation, report_tx, cmd_rx));
+            .spawn(run_scenario(scenario, task_id, generation, report_tx, cmd_rx));
         entry.scenario = Some(ScenarioHandle {
             generation,
             abort,
@@ -865,8 +865,8 @@ mod tests {
         monitor::{
             probe::{SnmpGetSpec, SnmpSetSpec},
             scenario::{
-                PollSchedule, Scenario, ScenarioBuildError, ScenarioExecution,
-                ScenarioExecutionError, ScenarioOutcome, SnmpGetScenarioSpec, SnmpSetScenarioSpec,
+                PollSchedule, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
+                ScenarioOutcome, ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec,
             },
             task::ExecutionMetrics,
         },
@@ -883,7 +883,7 @@ mod tests {
                 .unwrap();
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(10), 2, Duration::from_millis(1)).unwrap();
-        let scenario = Scenario::SnmpGet(
+        let scenario = ScenarioSpec::SnmpGet(
             SnmpGetScenarioSpec::try_new(
                 request,
                 PollSchedule::FixedDelay {
@@ -953,7 +953,7 @@ mod tests {
         )
         .unwrap();
         let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
-        let scenario = Scenario::SnmpSet(
+        let scenario = ScenarioSpec::SnmpSet(
             SnmpSetScenarioSpec::try_new(
                 request,
                 PollSchedule::FixedDelay {
@@ -1467,7 +1467,7 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Starting);
         assert_eq!(task.metrics, ExecutionMetrics::default());
         assert!(
-            matches!(&task.scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
+            matches!(&task.scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {
@@ -1620,7 +1620,7 @@ mod tests {
             100
         );
         assert!(
-            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
+            matches!(&snapshot.tasks[0].scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {
@@ -1678,7 +1678,7 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].name, "updated while paused");
         assert!(
-            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
+            matches!(&snapshot.tasks[0].scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {
@@ -1752,7 +1752,7 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].name, "latest");
         assert!(
-            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
+            matches!(&snapshot.tasks[0].scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {

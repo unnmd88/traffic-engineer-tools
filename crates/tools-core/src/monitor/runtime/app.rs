@@ -178,7 +178,7 @@ mod tests {
             event::EventData,
             probe::SnmpGetSpec,
             runtime::{AppConfig, Application, error::OrchestratorError},
-            scenario::{PollSchedule, Scenario, SnmpGetScenarioSpec},
+            scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec},
             task::{TaskConfig, TaskStatus},
         },
         polling::AttemptConfig,
@@ -191,7 +191,7 @@ mod tests {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
-        let scenario = Scenario::SnmpGet(
+        let scenario = ScenarioSpec::SnmpGet(
             SnmpGetScenarioSpec::try_new(
                 request,
                 PollSchedule::FixedDelay {

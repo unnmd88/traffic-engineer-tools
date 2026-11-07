@@ -1,11 +1,11 @@
-use crate::monitor::scenario::Scenario;
+use crate::monitor::scenario::ScenarioSpec;
 
 use super::error::TaskError;
 
 #[derive(Clone, Debug)]
 pub struct TaskConfig {
     name: String,
-    scenario: Scenario,
+    scenario: ScenarioSpec,
     limit: u64,
     deep_history: u8,
 }
@@ -13,7 +13,7 @@ pub struct TaskConfig {
 impl TaskConfig {
     pub fn try_new(
         name: String,
-        scenario: Scenario,
+        scenario: ScenarioSpec,
         limit: u64,
         deep_history: u8,
     ) -> Result<Self, TaskError> {
@@ -33,7 +33,7 @@ impl TaskConfig {
         &self.name
     }
 
-    pub const fn scenario(&self) -> &Scenario {
+    pub const fn scenario(&self) -> &ScenarioSpec {
         &self.scenario
     }
 
@@ -58,14 +58,14 @@ mod tests {
     };
     use tokio::time::Duration;
 
-    fn valid_scenario() -> Scenario {
+    fn valid_scenario() -> ScenarioSpec {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::from_millis(0))
                 .unwrap();
         let request =
             SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
                 .unwrap();
-        Scenario::SnmpGet(
+        ScenarioSpec::SnmpGet(
             SnmpGetScenarioSpec::try_new(
                 request,
                 PollSchedule::FixedDelay {
