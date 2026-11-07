@@ -7,9 +7,7 @@ use tokio::{
 use tools_core::{
     DT_FMT,
     monitor::{
-        event::MonitorEvent,
-        runtime::{ApplicationHandle, MonitorSubscription, error::OrchestratorError},
-        task::MonitorSnapshot,
+        ApplicationHandle, MonitorEvent, MonitorSnapshot, MonitorSubscription, OrchestratorError,
     },
 };
 
@@ -90,10 +88,8 @@ mod tests {
     use super::*;
     use tools_core::{
         monitor::{
-            probe::SnmpGetSpec,
-            runtime::{AppConfig, Application},
-            scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec},
-            task::TaskConfig,
+            AppConfig, Application, PollSchedule, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec,
+            TaskConfig,
         },
         polling::AttemptConfig,
     };

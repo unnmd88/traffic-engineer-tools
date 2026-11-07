@@ -32,14 +32,14 @@ impl SpecRevision {
 }
 
 #[derive(Clone, Debug)]
-pub struct HistoryEntry {
+pub(in crate::monitor) struct HistoryEntry {
     pub timestamp: DateTime<Utc>,
     pub result: ScenarioExecution,
 }
 
 /// Кольцо последних N результатов. `deep_history == 0` → всегда пустое.
 #[derive(Clone, Debug)]
-pub struct History {
+pub(in crate::monitor) struct History {
     deep: usize,
     history: VecDeque<HistoryEntry>,
 }
@@ -65,18 +65,6 @@ impl History {
 
     pub fn iter(&self) -> impl Iterator<Item = &HistoryEntry> {
         self.history.iter()
-    }
-
-    pub fn deep(&self) -> usize {
-        self.deep
-    }
-
-    pub fn len(&self) -> usize {
-        self.history.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.history.is_empty()
     }
 }
 
@@ -107,7 +95,7 @@ impl Health {
 }
 
 #[derive(Clone, Debug)]
-pub struct Task {
+pub(in crate::monitor) struct Task {
     id: TaskId,
     config: TaskConfig,
     revision: SpecRevision,

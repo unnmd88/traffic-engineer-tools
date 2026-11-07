@@ -88,7 +88,7 @@ enum Command {
     },
 }
 
-pub struct Orchestrator {
+pub(super) struct Orchestrator {
     next_id: u64,
     initial_tasks: Vec<TaskId>,
     entries: HashMap<TaskId, TaskEntry>,
@@ -691,6 +691,9 @@ impl Orchestrator {
             id: t.id(),
             name: config.name().to_string(),
             revision: t.revision(),
+            created_at: *t.created_at(),
+            config_updated_at: *t.config_updated_at(),
+            updated_at: *t.updated_at(),
             target: config.scenario().target(),
             status: status(entry),
             deep_history: config.deep_history(),
@@ -741,7 +744,7 @@ async fn log_writer(mut rx: mpsc::Receiver<MonitorEvent>, hist_tx: mpsc::Sender<
 }
 
 #[derive(Clone)]
-pub struct OrchestratorHandle {
+pub(super) struct OrchestratorHandle {
     cmd_tx: mpsc::Sender<Command>,
     live_tx: broadcast::WeakSender<MonitorEvent>,
 }

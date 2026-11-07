@@ -4,7 +4,7 @@ mod render;
 
 use std::path::PathBuf;
 
-use tools_core::monitor::runtime::{AppConfig, Application};
+use tools_core::monitor::{AppConfig, Application};
 
 pub async fn run(config: PathBuf) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(config)?;

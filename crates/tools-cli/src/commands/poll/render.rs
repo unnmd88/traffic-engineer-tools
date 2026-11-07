@@ -1,10 +1,7 @@
 use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
-    monitor::{
-        scenario::{PollSchedule, ScenarioExecution, ScenarioOutcome, ScenarioSpec},
-        task::TaskView,
-    },
+    monitor::{PollSchedule, ScenarioExecution, ScenarioOutcome, ScenarioSpec, TaskView},
     polling::Response,
     snmp::SnmpGetSample,
 };

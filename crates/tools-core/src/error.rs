@@ -10,19 +10,19 @@ pub enum Error {
     #[error(transparent)]
     Scn(#[from] crate::scn::ScnError),
     #[error(transparent)]
-    SnmpQuery(#[from] crate::monitor::probe::SnmpQueryError),
+    SnmpQuery(#[from] crate::monitor::SnmpQueryError),
     #[error(transparent)]
-    Task(#[from] crate::monitor::task::TaskError),
+    Task(#[from] crate::monitor::TaskError),
     #[error(transparent)]
-    ScenarioBuild(#[from] crate::monitor::scenario::ScenarioBuildError),
+    ScenarioBuild(#[from] crate::monitor::ScenarioBuildError),
     #[error(transparent)]
-    ScenarioExecution(#[from] crate::monitor::scenario::ScenarioExecutionError),
+    ScenarioExecution(#[from] crate::monitor::ScenarioExecutionError),
     #[error(transparent)]
-    MonitorOrchestrator(#[from] crate::monitor::runtime::error::OrchestratorError),
+    MonitorOrchestrator(#[from] crate::monitor::OrchestratorError),
     #[error(transparent)]
-    MonitorApplication(#[from] crate::monitor::runtime::error::ApplicationError),
+    MonitorApplication(#[from] crate::monitor::ApplicationError),
     #[error(transparent)]
     PollingConfig(#[from] crate::polling::ConfigError),
     #[error(transparent)]
-    ScenarioSpec(#[from] crate::monitor::scenario::ScenarioSpecError),
+    ScenarioSpec(#[from] crate::monitor::ScenarioSpecError),
 }

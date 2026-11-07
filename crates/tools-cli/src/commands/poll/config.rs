@@ -5,9 +5,8 @@ use serde::Deserialize;
 use tools_core::{
     error::Error,
     monitor::{
-        probe::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec},
-        scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec},
-        task::TaskConfig,
+        PollSchedule, RawSnmpOidItem, RawSnmpSetItem, ScenarioSpec, SnmpGetScenarioSpec,
+        SnmpGetSpec, SnmpSetScenarioSpec, SnmpSetSpec, TaskConfig,
     },
     polling::AttemptConfig,
 };
@@ -261,7 +260,7 @@ tasks:
             assert!(matches!(
                 error.downcast_ref::<Error>(),
                 Some(Error::ScenarioSpec(
-                    tools_core::monitor::scenario::ScenarioSpecError::ScheduleDurationMustBePositive
+                    tools_core::monitor::ScenarioSpecError::ScheduleDurationMustBePositive
                 ))
             ));
         }

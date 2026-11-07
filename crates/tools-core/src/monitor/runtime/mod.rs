@@ -1,9 +1,10 @@
-pub mod app;
-pub mod error;
-pub mod orchestrator;
-pub mod restart_policy;
+mod app;
+mod error;
+mod orchestrator;
+mod restart_policy;
 mod subscription;
 
-pub use app::{AppConfig, Application, ApplicationHandle, RunningApplication};
-pub use orchestrator::{Orchestrator, OrchestratorHandle};
+pub use app::{AppConfig, Application, ApplicationHandle, ApplicationId, RunningApplication};
+pub use error::{ApplicationError, OrchestratorError};
+pub use restart_policy::RestartPolicy;
 pub use subscription::MonitorSubscription;
