@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::monitor::{
+    ApplicationId,
     scenario::{ScenarioExecution, ScenarioSpec},
     task::{ExecutionMetrics, SpecRevision, TaskId, TaskStatus, task::Health},
 };
@@ -32,7 +33,7 @@ pub struct HistoryEntryView {
 
 #[derive(Debug, Clone)]
 pub struct MonitorSnapshot {
-    pub source: String,
+    pub application_id: ApplicationId,
     pub next_seq: u64,
     pub tasks: Vec<TaskView>,
 }

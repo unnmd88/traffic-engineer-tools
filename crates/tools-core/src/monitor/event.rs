@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::monitor::{
+    ApplicationId,
     scenario::{
         Generation, PanicStage, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
     },
@@ -13,7 +14,7 @@ use crate::monitor::{
 pub struct EventMeta {
     pub seq: u64,
     pub at: DateTime<Utc>,
-    pub source: String,
+    pub application_id: ApplicationId,
     pub task_id: TaskId,
     pub generation: Generation,
     pub revision: SpecRevision,

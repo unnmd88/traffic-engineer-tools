@@ -21,7 +21,7 @@ pub async fn run(
         mut snapshot,
         mut events,
     } = subscription;
-    let monitor_id = app.id().clone();
+    let monitor_id = *app.id();
     let app_created_at = Local::now();
     let app_created_at_fmt = app_created_at.format(DT_FMT);
     let mut refresh = interval(Duration::from_millis(100));
@@ -52,7 +52,7 @@ async fn wait_for_update(
     loop {
         match events.recv().await {
             Ok(event)
-                if event.metadata.source != snapshot.source
+                if event.metadata.application_id != snapshot.application_id
                     || event.metadata.seq >= snapshot.next_seq =>
             {
                 return true;
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscription_updates_request_refresh_when_the_source_changes() {
+    async fn subscription_updates_request_refresh_when_the_application_changes() {
         let running = Application::new(AppConfig::default(), vec![]).spawn();
         let app = running.handle();
         app.add_task(task("first")).await.unwrap();

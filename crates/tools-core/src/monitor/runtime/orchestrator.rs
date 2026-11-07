@@ -9,7 +9,9 @@ use tokio::{
 
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
-    runtime::{MonitorSubscription, error::OrchestratorError, restart_policy::RestartPolicy},
+    runtime::{
+        ApplicationId, MonitorSubscription, error::OrchestratorError, restart_policy::RestartPolicy,
+    },
     scenario::{Generation, PanicStage, ScenarioCommand, ScenarioReport, run_scenario},
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
@@ -104,14 +106,14 @@ pub(super) struct Orchestrator {
     history_writer: JoinSet<()>,
     policy: RestartPolicy,
     seq: u64,
-    source: String,
+    application_id: ApplicationId,
 }
 
 impl Orchestrator {
     pub fn new(
         history_sink: Option<mpsc::Sender<MonitorEvent>>,
         restart: RestartPolicy,
-        source: String,
+        application_id: ApplicationId,
     ) -> (Self, OrchestratorHandle) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (report_tx, report_rx) = mpsc::channel(256);
@@ -133,7 +135,7 @@ impl Orchestrator {
             history_writer: JoinSet::new(),
             policy: restart,
             seq: 0,
-            source,
+            application_id,
         };
         (
             this,
@@ -659,7 +661,7 @@ impl Orchestrator {
         EventMeta {
             seq,
             at: Utc::now(),
-            source: self.source.clone(),
+            application_id: self.application_id,
             task_id,
             generation,
             revision,
@@ -710,7 +712,7 @@ impl Orchestrator {
         let mut tasks: Vec<TaskView> = self.entries.values().map(|e| self.view(e)).collect();
         tasks.sort_by_key(|v| v.id);
         MonitorSnapshot {
-            source: self.source.clone(),
+            application_id: self.application_id,
             next_seq: self.seq,
             tasks,
         }
@@ -878,7 +880,7 @@ mod tests {
 
     fn active_task(limit: u64) -> (Orchestrator, broadcast::Receiver<MonitorEvent>, TaskId) {
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), "test".to_string());
+            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
         let events = handle.subscribe();
         let task_id = TaskId(1);
         let request =
@@ -1023,7 +1025,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_waits_for_scenarios_and_restart_tasks() {
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), "shutdown-test".to_string());
+            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
         let scenario = orchestrator.scenarios.spawn(std::future::pending());
         let restart = orchestrator.restarts.spawn(std::future::pending());
         let runtime = tokio::spawn(orchestrator.run());
@@ -1037,7 +1039,7 @@ mod tests {
     #[tokio::test]
     async fn aborting_runtime_cancels_scenarios_and_restart_tasks() {
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), "abort-test".to_string());
+            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
         let scenario = orchestrator.scenarios.spawn(std::future::pending());
         let restart = orchestrator.restarts.spawn(std::future::pending());
         let runtime = tokio::spawn(orchestrator.run());
@@ -1051,8 +1053,9 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_snapshot_contains_existing_tasks_and_excludes_past_events() {
+        let application_id = ApplicationId::generate();
         let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+            Orchestrator::new(None, RestartPolicy::default(), application_id);
         let runtime = tokio::spawn(orchestrator.run());
         let first = handle.add_task(set_config("first")).await.unwrap();
         let second = handle.add_task(set_config("second")).await.unwrap();
@@ -1061,7 +1064,7 @@ mod tests {
             snapshot,
             mut events,
         } = handle.subscribe_with_snapshot().await.unwrap();
-        assert_eq!(snapshot.source, "subscription-test");
+        assert_eq!(snapshot.application_id, application_id);
         assert_eq!(snapshot.next_seq, 2);
         assert_eq!(snapshot.tasks.len(), 2);
         assert_eq!(snapshot.tasks[0].id, first);
@@ -1070,7 +1073,7 @@ mod tests {
 
         let third = handle.add_task(set_config("third")).await.unwrap();
         let event = events.recv().await.unwrap();
-        assert_eq!(event.metadata.source, snapshot.source);
+        assert_eq!(event.metadata.application_id, snapshot.application_id);
         assert_eq!(event.metadata.seq, snapshot.next_seq);
         assert_eq!(event.metadata.task_id, third);
         assert!(matches!(event.data, EventData::TaskAdded));
@@ -1085,7 +1088,7 @@ mod tests {
         assert_eq!(event.metadata.task_id, first);
         assert!(matches!(event.data, EventData::TaskRemoved));
         let current = handle.get_snapshot().await.unwrap();
-        assert_eq!(current.source, snapshot.source);
+        assert_eq!(current.application_id, snapshot.application_id);
         assert_eq!(current.next_seq, event.metadata.seq + 1);
         assert_eq!(current.tasks.len(), 2);
         assert_eq!(current.tasks[0].id, second);
@@ -1098,7 +1101,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_captures_changes_queued_while_it_is_opening() {
         let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
         let runtime = tokio::spawn(orchestrator.run());
         let (subscription, task_id) = tokio::join!(
             handle.subscribe_with_snapshot(),
@@ -1131,7 +1134,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_closes_when_the_orchestrator_stops_with_handles_alive() {
         let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
         let runtime = tokio::spawn(orchestrator.run());
         let clone = handle.clone();
         let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
@@ -1159,7 +1162,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_snapshot_recovers_state_after_lagging() {
         let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), "subscription-test".to_string());
+            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
         let runtime = tokio::spawn(orchestrator.run());
         let task_id = handle.add_task(set_config("initial")).await.unwrap();
         let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
@@ -1174,7 +1177,7 @@ mod tests {
             Err(broadcast::error::RecvError::Lagged(_))
         ));
         let snapshot = handle.get_snapshot().await.unwrap();
-        assert_eq!(snapshot.source, subscription.snapshot.source);
+        assert_eq!(snapshot.application_id, subscription.snapshot.application_id);
         assert_eq!(snapshot.next_seq, 1026);
         assert_eq!(snapshot.tasks[0].name, "updated");
         assert_eq!(snapshot.tasks[0].revision, SpecRevision::new(1026));
@@ -1192,10 +1195,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn events_share_source_and_sequence_across_tasks() {
-        let source = "contract-test-monitor".to_string();
+    async fn events_share_application_id_and_sequence_across_tasks() {
+        let application_id = ApplicationId::generate();
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), source.clone());
+            Orchestrator::new(None, RestartPolicy::default(), application_id);
         let mut events = handle.subscribe();
         let mut task_ids = Vec::new();
         for name in ["first", "second"] {
@@ -1226,7 +1229,7 @@ mod tests {
         .enumerate()
         {
             let event = events.try_recv().unwrap();
-            assert_eq!(event.metadata.source, source);
+            assert_eq!(event.metadata.application_id, application_id);
             assert_eq!(event.metadata.seq, u64::try_from(seq).unwrap());
             assert_eq!(event.metadata.task_id, task_id);
             assert_eq!(event.metadata.revision, revision);
@@ -1580,7 +1583,7 @@ mod tests {
         assert_eq!(updated.metadata.task_id, task_id);
         assert_eq!(updated.metadata.revision, SpecRevision::new(2));
         assert_eq!(updated.metadata.generation, previous_generation);
-        assert_eq!(starting.metadata.source, updated.metadata.source);
+        assert_eq!(starting.metadata.application_id, updated.metadata.application_id);
         assert_eq!(starting.metadata.task_id, updated.metadata.task_id);
         assert_eq!(starting.metadata.seq, updated.metadata.seq + 1);
         assert_eq!(starting.metadata.revision, SpecRevision::new(2));

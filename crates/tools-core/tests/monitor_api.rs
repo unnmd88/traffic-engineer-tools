@@ -40,7 +40,7 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
     let id: &ApplicationId = application.id();
     let subscription: MonitorSubscription = application.subscribe_with_snapshot();
     let snapshot: MonitorSnapshot = subscription.snapshot;
-    assert_eq!(snapshot.source, id.to_string());
+    assert_eq!(snapshot.application_id, *id);
     assert_eq!(snapshot.tasks.len(), 2);
 
     for (index, view) in snapshot.tasks.iter().enumerate() {
@@ -72,6 +72,7 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     let initial = handle.get_snapshot().await.unwrap().tasks.remove(0);
     let event: MonitorEvent = subscription.events.recv().await.unwrap();
     let metadata: EventMeta = event.metadata;
+    assert_eq!(metadata.application_id, *handle.id());
     let generation: Generation = metadata.generation;
     assert_eq!(generation, Generation::first());
     assert_eq!(metadata.seq, subscription.snapshot.next_seq);

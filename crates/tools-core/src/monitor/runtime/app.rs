@@ -18,7 +18,7 @@ use crate::monitor::{
     task::{MonitorSnapshot, TaskConfig, TaskId},
 };
 
-#[derive(Clone, Display)]
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq, Hash)]
 pub struct ApplicationId(Uuid);
 
 impl ApplicationId {
@@ -56,7 +56,7 @@ impl Application {
     pub fn new(config: AppConfig, tasks: Vec<TaskConfig>) -> Self {
         let uid = ApplicationId::generate();
         let (mut orchestrator, orchestrator_handle) =
-            Orchestrator::new(config.history_sink, config.restart, uid.to_string());
+            Orchestrator::new(config.history_sink, config.restart, uid);
         let task_ids = orchestrator.prepare_tasks(tasks);
 
         Self {
@@ -215,7 +215,7 @@ mod tests {
             vec![spec("first"), spec("second")],
         );
         let mut subscription = application.subscribe_with_snapshot();
-        assert_eq!(subscription.snapshot.source, application.id().to_string());
+        assert_eq!(subscription.snapshot.application_id, *application.id());
         assert_eq!(subscription.snapshot.next_seq, 0);
         assert_eq!(subscription.snapshot.tasks.len(), 2);
         assert_eq!(subscription.snapshot.tasks[0].name, "first");
@@ -260,7 +260,7 @@ mod tests {
         let id = other.add_task(spec("first")).await.unwrap();
         let added = subscription.events.recv().await.unwrap();
         assert_eq!(added.metadata.seq, subscription.snapshot.next_seq);
-        assert_eq!(added.metadata.source, subscription.snapshot.source);
+        assert_eq!(added.metadata.application_id, subscription.snapshot.application_id);
         assert_eq!(added.metadata.task_id, id);
         assert!(matches!(added.data, EventData::TaskAdded));
         assert_eq!(app.get_snapshot().await.unwrap().tasks[0].id, id);
@@ -382,7 +382,7 @@ mod tests {
         let first = app.add_task(spec("first")).await.unwrap();
         let second = app.add_task(spec("second")).await.unwrap();
         let mut subscription = app.subscribe_with_snapshot().await.unwrap();
-        assert_eq!(subscription.snapshot.source, app.id().to_string());
+        assert_eq!(subscription.snapshot.application_id, *app.id());
         assert_eq!(subscription.snapshot.next_seq, 2);
         assert_eq!(subscription.snapshot.tasks.len(), 2);
         assert_eq!(subscription.snapshot.tasks[0].id, first);
