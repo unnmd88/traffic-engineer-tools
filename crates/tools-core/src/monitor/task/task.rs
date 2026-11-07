@@ -223,7 +223,7 @@ mod tests {
     use crate::{
         monitor::{
             probe::SnmpGetSpec,
-            scenario::{Scenario, ScenarioOutcome, SnmpGetScenarioSpec},
+            scenario::{PollSchedule, Scenario, ScenarioOutcome, SnmpGetScenarioSpec},
         },
         polling::{AttemptConfig, Response},
     };
@@ -236,7 +236,14 @@ mod tests {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(100), 2, Duration::ZERO).unwrap();
         let scenario = Scenario::SnmpGet(
-            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+            SnmpGetScenarioSpec::try_new(
+                request,
+                PollSchedule::FixedDelay {
+                    delay: Duration::from_secs(1),
+                },
+                attempt,
+            )
+            .unwrap(),
         );
         TaskConfig::try_new(name.to_string(), scenario, 10, 3).unwrap()
     }

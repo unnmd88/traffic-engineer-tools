@@ -50,7 +50,10 @@ impl TaskConfig {
 mod tests {
     use super::*;
     use crate::{
-        monitor::{probe::SnmpGetSpec, scenario::SnmpGetScenarioSpec},
+        monitor::{
+            probe::SnmpGetSpec,
+            scenario::{PollSchedule, SnmpGetScenarioSpec},
+        },
         polling::AttemptConfig,
     };
     use tokio::time::Duration;
@@ -63,7 +66,14 @@ mod tests {
             SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
                 .unwrap();
         Scenario::SnmpGet(
-            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+            SnmpGetScenarioSpec::try_new(
+                request,
+                PollSchedule::FixedDelay {
+                    delay: Duration::from_secs(1),
+                },
+                attempt,
+            )
+            .unwrap(),
         )
     }
 

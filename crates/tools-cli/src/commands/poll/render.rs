@@ -2,7 +2,7 @@ use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
     monitor::{
-        scenario::{Scenario, ScenarioExecution, ScenarioOutcome},
+        scenario::{PollSchedule, Scenario, ScenarioExecution, ScenarioOutcome},
         task::TaskView,
     },
     polling::Response,
@@ -39,13 +39,16 @@ fn format_card(view: &TaskView) -> String {
     lines.push(labeled("Target", &view.target));
     lines.push(labeled("Revision", &view.revision.to_string()));
 
-    let (interval, attempt) = match &view.scenario {
-        Scenario::SnmpGet(spec) => (spec.interval(), spec.attempt()),
-        Scenario::SnmpSet(spec) => (spec.interval(), spec.attempt()),
+    let (schedule, attempt) = match &view.scenario {
+        Scenario::SnmpGet(spec) => (spec.schedule(), spec.attempt()),
+        Scenario::SnmpSet(spec) => (spec.schedule(), spec.attempt()),
+    };
+    let cadence = match schedule {
+        PollSchedule::FixedRate { period } => format!("Period: {period:?} (fixed rate)"),
+        PollSchedule::FixedDelay { delay } => format!("Delay: {delay:?} (fixed delay)"),
     };
     let timings = format!(
-        "Interval: {:?} retries: {} timeout: {:?} retry_delay: {:?}",
-        interval,
+        "{cadence} retries: {} timeout: {:?} retry_delay: {:?}",
         attempt.retries(),
         attempt.timeout(),
         attempt.retry_delay()

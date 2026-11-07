@@ -6,7 +6,7 @@ use futures_util::FutureExt;
 use thiserror::Error;
 use tokio::{
     sync::mpsc,
-    time::{Duration, Instant, sleep_until, timeout},
+    time::{Duration, Instant, timeout},
 };
 
 use crate::{
@@ -21,6 +21,11 @@ use crate::{
         value::SnmpValue,
     },
 };
+
+mod schedule;
+
+pub use schedule::PollSchedule;
+use schedule::PollTimer;
 
 #[derive(Error, Debug, Clone)]
 #[non_exhaustive]
@@ -50,13 +55,8 @@ pub enum PanicStage {
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ScenarioSpecError {
-    #[error("poll interval must be greater than zero")]
-    IntervalMustBePositive,
-    #[error(
-        "poll interval ({interval_ms} ms) must be >= total attempt budget \
-         ({budget_ms} ms = timeout * (retries + 1) + retry_delay * retries)"
-    )]
-    IntervalShorterThanAttemptBudget { interval_ms: u64, budget_ms: u64 },
+    #[error("poll schedule duration must be greater than zero")]
+    ScheduleDurationMustBePositive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,7 +128,7 @@ impl Scenario {
             match self {
                 Self::SnmpGet(SnmpGetScenarioSpec {
                     request,
-                    interval,
+                    schedule,
                     attempt,
                 }) => {
                     let prepare = async {
@@ -177,7 +177,7 @@ impl Scenario {
                         }
                     };
 
-                    let mut next_deadline = Instant::now() + interval;
+                    let mut timer = PollTimer::new(schedule, Instant::now());
                     if report_tx
                         .send(ScenarioReport::Built {
                             task_id,
@@ -199,7 +199,7 @@ impl Scenario {
                             match cmd {
                                 Some(ScenarioCommand::Resume) => {
                                     paused = false;
-                                    next_deadline = Instant::now() + interval;
+                                    timer.resume(Instant::now());
                                     if report_tx
                                         .send(ScenarioReport::Resumed {
                                             task_id,
@@ -233,7 +233,7 @@ impl Scenario {
                                 Some(ScenarioCommand::Resume) => {}
                                 None => return,
                             },
-                            () = sleep_until(next_deadline) => {
+                            () = timer.wait_next() => {
                                 let started_at = Instant::now();
                                 let executed = AssertUnwindSafe(poll(&attempt, &request))
                                     .catch_unwind()
@@ -245,7 +245,7 @@ impl Scenario {
                                             elapsed: started_at.elapsed(),
                                             outcome: ScenarioOutcome::SnmpGet(response),
                                         };
-                                        next_deadline = Instant::now() + interval;
+                                        timer.execution_finished(Instant::now());
                                         if report_tx.send(ScenarioReport::Executed {
                                             task_id,
                                             generation,
@@ -277,7 +277,7 @@ impl Scenario {
                 }
                 Self::SnmpSet(SnmpSetScenarioSpec {
                     request,
-                    interval,
+                    schedule,
                     attempt,
                 }) => {
                     let prepare = async {
@@ -332,7 +332,7 @@ impl Scenario {
                         }
                     };
 
-                    let mut next_deadline = Instant::now() + interval;
+                    let mut timer = PollTimer::new(schedule, Instant::now());
                     if report_tx
                         .send(ScenarioReport::Built {
                             task_id,
@@ -354,7 +354,7 @@ impl Scenario {
                             match cmd {
                                 Some(ScenarioCommand::Resume) => {
                                     paused = false;
-                                    next_deadline = Instant::now() + interval;
+                                    timer.resume(Instant::now());
                                     if report_tx
                                         .send(ScenarioReport::Resumed {
                                             task_id,
@@ -388,7 +388,7 @@ impl Scenario {
                                 Some(ScenarioCommand::Resume) => {}
                                 None => return,
                             },
-                            () = sleep_until(next_deadline) => {
+                            () = timer.wait_next() => {
                                 let started_at = Instant::now();
                                 let executed = AssertUnwindSafe(poll(&attempt, &request))
                                     .catch_unwind()
@@ -400,7 +400,7 @@ impl Scenario {
                                             elapsed: started_at.elapsed(),
                                             outcome: ScenarioOutcome::SnmpSet(response),
                                         };
-                                        next_deadline = Instant::now() + interval;
+                                        timer.execution_finished(Instant::now());
                                         if report_tx.send(ScenarioReport::Executed {
                                             task_id,
                                             generation,
@@ -447,20 +447,20 @@ impl Scenario {
 #[derive(Clone, Debug)]
 pub struct SnmpGetScenarioSpec {
     request: SnmpGetSpec,
-    interval: Duration,
+    schedule: PollSchedule,
     attempt: AttemptConfig,
 }
 
 impl SnmpGetScenarioSpec {
     pub fn try_new(
         request: SnmpGetSpec,
-        interval: Duration,
+        schedule: PollSchedule,
         attempt: AttemptConfig,
     ) -> Result<Self, ScenarioSpecError> {
-        validate_interval(interval, attempt)?;
+        schedule.validate()?;
         Ok(Self {
             request,
-            interval,
+            schedule,
             attempt,
         })
     }
@@ -469,8 +469,8 @@ impl SnmpGetScenarioSpec {
         &self.request
     }
 
-    pub const fn interval(&self) -> Duration {
-        self.interval
+    pub const fn schedule(&self) -> PollSchedule {
+        self.schedule
     }
 
     pub const fn attempt(&self) -> AttemptConfig {
@@ -481,20 +481,20 @@ impl SnmpGetScenarioSpec {
 #[derive(Clone, Debug)]
 pub struct SnmpSetScenarioSpec {
     request: SnmpSetSpec,
-    interval: Duration,
+    schedule: PollSchedule,
     attempt: AttemptConfig,
 }
 
 impl SnmpSetScenarioSpec {
     pub fn try_new(
         request: SnmpSetSpec,
-        interval: Duration,
+        schedule: PollSchedule,
         attempt: AttemptConfig,
     ) -> Result<Self, ScenarioSpecError> {
-        validate_interval(interval, attempt)?;
+        schedule.validate()?;
         Ok(Self {
             request,
-            interval,
+            schedule,
             attempt,
         })
     }
@@ -503,8 +503,8 @@ impl SnmpSetScenarioSpec {
         &self.request
     }
 
-    pub const fn interval(&self) -> Duration {
-        self.interval
+    pub const fn schedule(&self) -> PollSchedule {
+        self.schedule
     }
 
     pub const fn attempt(&self) -> AttemptConfig {
@@ -688,20 +688,6 @@ impl Pollable for SnmpSetRequest {
     }
 }
 
-fn validate_interval(interval: Duration, attempt: AttemptConfig) -> Result<(), ScenarioSpecError> {
-    if interval.is_zero() {
-        return Err(ScenarioSpecError::IntervalMustBePositive);
-    }
-    let budget = attempt.budget();
-    if interval < budget {
-        return Err(ScenarioSpecError::IntervalShorterThanAttemptBudget {
-            interval_ms: u64::try_from(interval.as_millis()).unwrap_or(u64::MAX),
-            budget_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
-        });
-    }
-    Ok(())
-}
-
 async fn connect(
     host: IpAddr,
     port: u16,
@@ -830,15 +816,27 @@ mod tests {
 
     fn get_scenario(request: SnmpGetSpec, retries: u8) -> Scenario {
         Scenario::SnmpGet(
-            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(10), attempt(retries))
-                .unwrap(),
+            SnmpGetScenarioSpec::try_new(
+                request,
+                PollSchedule::FixedDelay {
+                    delay: Duration::from_secs(10),
+                },
+                attempt(retries),
+            )
+            .unwrap(),
         )
     }
 
     fn set_scenario(request: SnmpSetSpec, retries: u8) -> Scenario {
         Scenario::SnmpSet(
-            SnmpSetScenarioSpec::try_new(request, Duration::from_secs(10), attempt(retries))
-                .unwrap(),
+            SnmpSetScenarioSpec::try_new(
+                request,
+                PollSchedule::FixedDelay {
+                    delay: Duration::from_secs(10),
+                },
+                attempt(retries),
+            )
+            .unwrap(),
         )
     }
 
@@ -1234,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn get_and_set_specs_validate_interval_against_attempt_budget() {
+    fn get_and_set_specs_validate_schedules_independently_of_attempt_budget() {
         let get =
             SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
                 .unwrap();
@@ -1247,27 +1245,28 @@ mod tests {
             vec![],
         )
         .unwrap();
-        for interval in [
+        for duration in [
             Duration::ZERO,
             Duration::from_secs(2),
             Duration::from_secs(3),
         ] {
-            let results = [
-                SnmpGetScenarioSpec::try_new(get.clone(), interval, attempt(1)).map(|_| ()),
-                SnmpSetScenarioSpec::try_new(set.clone(), interval, attempt(1)).map(|_| ()),
-            ];
-            for result in results {
-                match interval.as_secs() {
-                    0 => assert!(matches!(result, Err(ScenarioSpecError::IntervalMustBePositive))),
-                    2 => assert!(matches!(
-                        result,
-                        Err(ScenarioSpecError::IntervalShorterThanAttemptBudget {
-                            interval_ms: 2000,
-                            budget_ms: 3000,
-                        })
-                    )),
-                    3 => assert!(result.is_ok()),
-                    _ => unreachable!(),
+            for schedule in [
+                PollSchedule::FixedRate { period: duration },
+                PollSchedule::FixedDelay { delay: duration },
+            ] {
+                let results = [
+                    SnmpGetScenarioSpec::try_new(get.clone(), schedule, attempt(1)).map(|_| ()),
+                    SnmpSetScenarioSpec::try_new(set.clone(), schedule, attempt(1)).map(|_| ()),
+                ];
+                for result in results {
+                    if duration.is_zero() {
+                        assert!(matches!(
+                            result,
+                            Err(ScenarioSpecError::ScheduleDurationMustBePositive)
+                        ));
+                    } else {
+                        assert!(result.is_ok());
+                    }
                 }
             }
         }

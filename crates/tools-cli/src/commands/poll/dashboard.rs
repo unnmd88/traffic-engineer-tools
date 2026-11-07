@@ -92,7 +92,7 @@ mod tests {
         monitor::{
             probe::SnmpGetSpec,
             runtime::{AppConfig, Application},
-            scenario::{Scenario, SnmpGetScenarioSpec},
+            scenario::{PollSchedule, Scenario, SnmpGetScenarioSpec},
             task::TaskConfig,
         },
         polling::AttemptConfig,
@@ -104,7 +104,14 @@ mod tests {
                 .unwrap();
         let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
         let scenario = Scenario::SnmpGet(
-            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+            SnmpGetScenarioSpec::try_new(
+                request,
+                PollSchedule::FixedDelay {
+                    delay: Duration::from_secs(1),
+                },
+                attempt,
+            )
+            .unwrap(),
         );
         TaskConfig::try_new(name.to_string(), scenario, 0, 0).unwrap()
     }

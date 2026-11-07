@@ -865,8 +865,8 @@ mod tests {
         monitor::{
             probe::{SnmpGetSpec, SnmpSetSpec},
             scenario::{
-                Scenario, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
-                ScenarioOutcome, SnmpGetScenarioSpec, SnmpSetScenarioSpec,
+                PollSchedule, Scenario, ScenarioBuildError, ScenarioExecution,
+                ScenarioExecutionError, ScenarioOutcome, SnmpGetScenarioSpec, SnmpSetScenarioSpec,
             },
             task::ExecutionMetrics,
         },
@@ -884,7 +884,14 @@ mod tests {
         let attempt =
             AttemptConfig::try_new(Duration::from_millis(10), 2, Duration::from_millis(1)).unwrap();
         let scenario = Scenario::SnmpGet(
-            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+            SnmpGetScenarioSpec::try_new(
+                request,
+                PollSchedule::FixedDelay {
+                    delay: Duration::from_secs(1),
+                },
+                attempt,
+            )
+            .unwrap(),
         );
         let task = Task::new(
             task_id,
@@ -947,7 +954,14 @@ mod tests {
         .unwrap();
         let attempt = AttemptConfig::try_new(Duration::from_millis(10), 0, Duration::ZERO).unwrap();
         let scenario = Scenario::SnmpSet(
-            SnmpSetScenarioSpec::try_new(request, Duration::from_secs(2), attempt).unwrap(),
+            SnmpSetScenarioSpec::try_new(
+                request,
+                PollSchedule::FixedDelay {
+                    delay: Duration::from_secs(2),
+                },
+                attempt,
+            )
+            .unwrap(),
         );
         TaskConfig::try_new(name.to_string(), scenario, 0, 3).unwrap()
     }
@@ -1453,7 +1467,7 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Starting);
         assert_eq!(task.metrics, ExecutionMetrics::default());
         assert!(
-            matches!(&task.scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
+            matches!(&task.scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {
@@ -1606,7 +1620,7 @@ mod tests {
             100
         );
         assert!(
-            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
+            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {
@@ -1664,7 +1678,7 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].name, "updated while paused");
         assert!(
-            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
+            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {
@@ -1738,7 +1752,7 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].name, "latest");
         assert!(
-            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.interval() == Duration::from_secs(2))
+            matches!(&snapshot.tasks[0].scenario, Scenario::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
         );
         orchestrator
             .on_report(ScenarioReport::Built {
