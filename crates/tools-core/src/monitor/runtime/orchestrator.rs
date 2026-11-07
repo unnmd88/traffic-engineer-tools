@@ -406,7 +406,7 @@ impl Orchestrator {
                 .entries
                 .get_mut(&id)
                 .ok_or(OrchestratorError::TaskNotFound(id))?;
-            entry.task.update_spec(spec);
+            entry.task.update_config(spec);
             entry.attempts = 0;
             matches!(entry.state, TaskState::Starting | TaskState::Active | TaskState::Restarting)
         };
@@ -443,7 +443,7 @@ impl Orchestrator {
             scenario.abort.abort();
         }
         let generation = entry.generation;
-        let revision = entry.task.spec().revision();
+        let revision = entry.task.revision();
         let metadata = self.next_meta(id, generation, revision);
         self.emit_event(MonitorEvent {
             metadata,
@@ -591,7 +591,7 @@ impl Orchestrator {
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
         entry.generation = generation;
-        let scenario = entry.task.spec().scenario().clone();
+        let scenario = entry.task.config().scenario().clone();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let report_tx = self.report_tx.clone();
         let abort = self
@@ -640,7 +640,7 @@ impl Orchestrator {
         let Some((generation, revision)) = self
             .entries
             .get(&task_id)
-            .map(|e| (e.generation, e.task.spec().revision()))
+            .map(|e| (e.generation, e.task.revision()))
         else {
             return;
         };
@@ -677,7 +677,7 @@ impl Orchestrator {
 
     fn view(&self, entry: &TaskEntry) -> TaskView {
         let t = &entry.task;
-        let spec = t.spec();
+        let config = t.config();
         let history = t
             .history()
             .iter()
@@ -689,13 +689,13 @@ impl Orchestrator {
 
         TaskView {
             id: t.id(),
-            name: spec.name().to_string(),
-            revision: spec.revision(),
-            target: spec.scenario().target(),
+            name: config.name().to_string(),
+            revision: t.revision(),
+            target: config.scenario().target(),
             status: status(entry),
-            deep_history: spec.deep_history(),
-            scenario: spec.scenario().clone(),
-            limit: spec.limit(),
+            deep_history: config.deep_history(),
+            scenario: config.scenario().clone(),
+            limit: config.limit(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
             history,
@@ -727,7 +727,7 @@ fn status(entry: &TaskEntry) -> TaskStatus {
 }
 
 fn limit_reached(entry: &TaskEntry) -> bool {
-    let limit = entry.task.spec().limit();
+    let limit = entry.task.config().limit();
     limit > 0 && entry.task.metrics().executions >= limit
 }
 
@@ -1274,6 +1274,29 @@ mod tests {
         assert_eq!(snapshot.tasks[0].metrics.executions, 1);
         assert!(snapshot.tasks[0].result.is_some());
         assert!(orchestrator.entries[&task_id].scenario.is_none());
+    }
+
+    #[tokio::test]
+    async fn limit_counts_a_full_failed_request_once_including_all_retries() {
+        let (mut orchestrator, mut events, task_id) = active_task(2);
+        execute(&mut orchestrator, task_id, execution(100, false)).await;
+
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].metrics.executions, 1);
+        assert_eq!(snapshot.tasks[0].metrics.failed, 1);
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Active);
+        assert!(matches!(events.try_recv().unwrap().data, EventData::ExecutionFinished { .. }));
+        assert!(events.try_recv().is_err());
+
+        execute(&mut orchestrator, task_id, execution(200, false)).await;
+
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].metrics.executions, 2);
+        assert_eq!(snapshot.tasks[0].metrics.failed, 2);
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
+        assert!(matches!(events.try_recv().unwrap().data, EventData::ExecutionFinished { .. }));
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskCompleted));
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]

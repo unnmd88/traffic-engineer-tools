@@ -5,7 +5,7 @@ use derive_more::{Constructor, Display};
 
 use crate::monitor::{
     scenario::{OutcomeStatus, ScenarioExecution},
-    task::{ExecutionMetrics, TaskConfig, TaskSpec},
+    task::{ExecutionMetrics, TaskConfig},
 };
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
@@ -21,6 +21,15 @@ pub enum TaskStatus {
 
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Hash, PartialOrd, Ord, Constructor)]
 pub struct TaskId(pub u64);
+
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor)]
+pub struct SpecRevision(pub u64);
+
+impl SpecRevision {
+    pub fn next(self) -> Self {
+        Self::new(self.0 + 1)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
@@ -100,7 +109,9 @@ impl Health {
 #[derive(Clone, Debug)]
 pub struct Task {
     id: TaskId,
-    spec: TaskSpec,
+    config: TaskConfig,
+    revision: SpecRevision,
+    config_updated_at: DateTime<Utc>,
     last_result: Option<ScenarioExecution>,
     history: History,
     metrics: ExecutionMetrics,
@@ -110,13 +121,14 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(id: TaskId, spec: TaskConfig) -> Self {
+    pub fn new(id: TaskId, config: TaskConfig) -> Self {
         let dt = Utc::now();
-        let deep_history = spec.deep_history();
-        let spec = TaskSpec::new(spec);
+        let deep_history = config.deep_history();
         Self {
             id,
-            spec,
+            config,
+            revision: SpecRevision::new(1),
+            config_updated_at: dt,
             last_result: None,
             metrics: ExecutionMetrics::default(),
             health: Health::default(),
@@ -130,8 +142,16 @@ impl Task {
         self.id
     }
 
-    pub fn spec(&self) -> &TaskSpec {
-        &self.spec
+    pub const fn config(&self) -> &TaskConfig {
+        &self.config
+    }
+
+    pub const fn revision(&self) -> SpecRevision {
+        self.revision
+    }
+
+    pub const fn config_updated_at(&self) -> &DateTime<Utc> {
+        &self.config_updated_at
     }
 
     pub fn last_result(&self) -> Option<&ScenarioExecution> {
@@ -180,10 +200,13 @@ impl Task {
         self.health.clear_error();
     }
 
-    /// Заменить спеку (value object) и поднять версию.
-    pub fn update_spec(&mut self, spec: TaskConfig) {
-        self.spec = self.spec.next(spec);
-        self.updated_at = Utc::now();
+    pub fn update_config(&mut self, config: TaskConfig) {
+        let revision = self.revision.next();
+        let now = Utc::now();
+        self.config = config;
+        self.revision = revision;
+        self.config_updated_at = now;
+        self.updated_at = now;
     }
 
     /// Новый запуск: сброс накопительных метрик и здоровья (result/history остаются).
@@ -191,5 +214,91 @@ impl Task {
         self.metrics = ExecutionMetrics::default();
         self.health = Health::default();
         self.updated_at = Utc::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        monitor::{
+            probe::SnmpGetSpec,
+            scenario::{Scenario, ScenarioOutcome, SnmpGetScenarioSpec},
+        },
+        polling::{AttemptConfig, Response},
+    };
+    use tokio::time::Duration;
+
+    fn config(name: &str) -> TaskConfig {
+        let request =
+            SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
+                .unwrap();
+        let attempt =
+            AttemptConfig::try_new(Duration::from_millis(100), 2, Duration::ZERO).unwrap();
+        let scenario = Scenario::SnmpGet(
+            SnmpGetScenarioSpec::try_new(request, Duration::from_secs(1), attempt).unwrap(),
+        );
+        TaskConfig::try_new(name.to_string(), scenario, 10, 3).unwrap()
+    }
+
+    fn failed_execution(finished_at: DateTime<Utc>) -> ScenarioExecution {
+        ScenarioExecution {
+            finished_at,
+            elapsed: Duration::from_millis(300),
+            outcome: ScenarioOutcome::SnmpGet(Response::NoResponse {
+                timestamp: finished_at,
+                attempts: 3,
+                errors: vec![],
+                elapsed: Duration::from_millis(300),
+            }),
+        }
+    }
+
+    #[test]
+    fn execution_and_restart_preserve_configuration_metadata() {
+        let mut task = Task::new(TaskId(1), config("first"));
+        let config_updated_at = *task.config_updated_at();
+        let finished_at = config_updated_at + chrono::Duration::seconds(1);
+
+        assert_eq!(task.revision(), SpecRevision::new(1));
+        assert_eq!(task.config_updated_at(), task.created_at());
+        task.apply_execution(failed_execution(finished_at));
+
+        assert_eq!(task.updated_at(), &finished_at);
+        assert_eq!(task.config_updated_at(), &config_updated_at);
+        assert_eq!(task.revision(), SpecRevision::new(1));
+        assert_eq!(task.metrics().executions, 1);
+        assert_eq!(task.metrics().failed, 1);
+
+        task.reset_run();
+        assert_eq!(task.config_updated_at(), &config_updated_at);
+        assert_eq!(task.revision(), SpecRevision::new(1));
+        assert_eq!(task.metrics(), ExecutionMetrics::default());
+        assert_eq!(task.last_result().unwrap().finished_at, finished_at);
+    }
+
+    #[test]
+    fn config_update_advances_revision_and_preserves_execution_state() {
+        let mut task = Task::new(TaskId(1), config("first"));
+        let created_at = *task.created_at();
+        let finished_at = created_at + chrono::Duration::seconds(1);
+        task.apply_execution(failed_execution(finished_at));
+        let metrics = task.metrics();
+        let before_update = Utc::now();
+
+        task.update_config(config("updated"));
+
+        assert_eq!(task.config().name(), "updated");
+        assert_eq!(task.revision(), SpecRevision::new(2));
+        assert!(*task.config_updated_at() >= before_update);
+        assert!(*task.config_updated_at() <= Utc::now());
+        assert_eq!(task.config_updated_at(), task.updated_at());
+        assert_eq!(task.created_at(), &created_at);
+        assert_eq!(task.metrics(), metrics);
+        assert_eq!(task.last_result().unwrap().finished_at, finished_at);
+
+        task.update_config(config("third"));
+        assert_eq!(task.config().name(), "third");
+        assert_eq!(task.revision(), SpecRevision::new(3));
     }
 }

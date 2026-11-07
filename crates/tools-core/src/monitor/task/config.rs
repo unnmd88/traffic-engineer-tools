@@ -1,18 +1,6 @@
-use chrono::{DateTime, Utc};
-use derive_more::{Constructor, Display};
-
 use crate::monitor::scenario::Scenario;
 
 use super::error::TaskError;
-
-#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Constructor)]
-pub struct SpecRevision(pub u64);
-
-impl SpecRevision {
-    pub fn next(self) -> Self {
-        Self::new(self.0 + 1)
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct TaskConfig {
@@ -20,55 +8,6 @@ pub struct TaskConfig {
     scenario: Scenario,
     limit: u64,
     deep_history: u8,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskSpec {
-    value: TaskConfig,
-    revision: SpecRevision,
-    updated_at: DateTime<Utc>,
-}
-
-impl TaskSpec {
-    pub fn new(spec: TaskConfig) -> Self {
-        Self {
-            value: spec,
-            revision: SpecRevision::new(1),
-            updated_at: Utc::now(),
-        }
-    }
-
-    pub fn next(&self, spec: TaskConfig) -> Self {
-        Self {
-            value: spec,
-            revision: self.revision.next(),
-            updated_at: Utc::now(),
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.value.name()
-    }
-
-    pub const fn scenario(&self) -> &Scenario {
-        self.value.scenario()
-    }
-
-    pub const fn limit(&self) -> u64 {
-        self.value.limit()
-    }
-
-    pub fn deep_history(&self) -> u8 {
-        self.value.deep_history()
-    }
-
-    pub fn revision(&self) -> SpecRevision {
-        self.revision
-    }
-
-    pub fn updated_at(&self) -> DateTime<Utc> {
-        self.updated_at
-    }
 }
 
 impl TaskConfig {
