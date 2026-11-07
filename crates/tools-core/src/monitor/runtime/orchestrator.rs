@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
+    task::JoinSet,
     time::{Duration, sleep},
 };
 
@@ -89,6 +90,7 @@ enum Command {
 
 pub struct Orchestrator {
     next_id: u64,
+    initial_tasks: Vec<TaskId>,
     entries: HashMap<TaskId, TaskEntry>,
     cmd_rx: mpsc::Receiver<Command>,
     cmd_tx: mpsc::Sender<Command>,
@@ -96,6 +98,10 @@ pub struct Orchestrator {
     report_tx: mpsc::Sender<ScenarioReport>,
     live_tx: broadcast::Sender<MonitorEvent>,
     record_tx: Option<mpsc::Sender<MonitorEvent>>,
+    history_sink: Option<mpsc::Sender<MonitorEvent>>,
+    scenarios: JoinSet<()>,
+    restarts: JoinSet<()>,
+    history_writer: JoinSet<()>,
     policy: RestartPolicy,
     seq: u64,
     source: String,
@@ -111,21 +117,20 @@ impl Orchestrator {
         let (report_tx, report_rx) = mpsc::channel(256);
         let (live_tx, _) = broadcast::channel(1024);
 
-        let record_tx = history_sink.as_ref().map(|sink| {
-            let (record_tx, record_rx) = mpsc::channel(1024);
-            tokio::spawn(log_writer(record_rx, Some(sink.clone())));
-            record_tx
-        });
-
         let this = Self {
             next_id: 1,
+            initial_tasks: Vec::new(),
             entries: HashMap::new(),
             cmd_rx,
             cmd_tx: cmd_tx.clone(),
             report_rx,
             report_tx,
             live_tx: live_tx.clone(),
-            record_tx,
+            record_tx: None,
+            history_sink,
+            scenarios: JoinSet::new(),
+            restarts: JoinSet::new(),
+            history_writer: JoinSet::new(),
             policy: restart,
             seq: 0,
             source,
@@ -139,7 +144,39 @@ impl Orchestrator {
         )
     }
 
+    pub(super) fn prepare_tasks(&mut self, tasks: Vec<TaskConfig>) -> Vec<TaskId> {
+        let ids: Vec<_> = tasks
+            .into_iter()
+            .map(|spec| self.register_task(spec))
+            .collect();
+        self.initial_tasks.clone_from(&ids);
+        ids
+    }
+
+    fn register_task(&mut self, spec: TaskConfig) -> TaskId {
+        let id = TaskId(self.next_id);
+        self.next_id += 1;
+        self.entries.insert(
+            id,
+            TaskEntry {
+                task: Task::new(id, spec),
+                state: TaskState::Idle,
+                attempts: 0,
+                next_generation: Generation::first(),
+                generation: Generation::first(),
+                scenario: None,
+            },
+        );
+        id
+    }
+
     pub async fn run(mut self) {
+        if let Some(sink) = self.history_sink.take() {
+            let (record_tx, record_rx) = mpsc::channel(1024);
+            self.history_writer.spawn(log_writer(record_rx, sink));
+            self.record_tx = Some(record_tx);
+        }
+        self.start_initial_tasks().await;
         loop {
             tokio::select! {
                 cmd = self.cmd_rx.recv() => match cmd {
@@ -151,26 +188,34 @@ impl Orchestrator {
                     None => break,
                 },
                 Some(rep) = self.report_rx.recv() => self.on_report(rep).await,
+                Some(_) = self.scenarios.join_next() => {},
+                Some(_) = self.restarts.join_next() => {},
             }
+        }
+        self.restarts.shutdown().await;
+        self.scenarios.shutdown().await;
+        self.record_tx.take();
+        while let Some(result) = self.history_writer.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(%error, "history writer failed");
+            }
+        }
+    }
+
+    async fn start_initial_tasks(&mut self) {
+        let initial_tasks = std::mem::take(&mut self.initial_tasks);
+        for &id in &initial_tasks {
+            self.emit(id, EventData::TaskAdded).await;
+        }
+        for id in initial_tasks {
+            self.start(id).await.expect("initial task is registered");
         }
     }
 
     async fn on_command(&mut self, cmd: Command) -> bool {
         match cmd {
             Command::AddTask { spec, reply } => {
-                let id = TaskId(self.next_id);
-                self.next_id += 1;
-                self.entries.insert(
-                    id,
-                    TaskEntry {
-                        task: Task::new(id, spec),
-                        state: TaskState::Idle,
-                        attempts: 0,
-                        next_generation: Generation::first(),
-                        generation: Generation::first(),
-                        scenario: None,
-                    },
-                );
+                let id = self.register_task(spec);
                 self.emit(id, EventData::TaskAdded).await;
                 let _ = reply.send(Ok(id));
                 true
@@ -549,17 +594,19 @@ impl Orchestrator {
         let scenario = entry.task.spec().scenario().clone();
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let report_tx = self.report_tx.clone();
-        let join = tokio::spawn(scenario.run(task_id, generation, report_tx, cmd_rx));
+        let abort = self
+            .scenarios
+            .spawn(scenario.run(task_id, generation, report_tx, cmd_rx));
         entry.scenario = Some(ScenarioHandle {
             generation,
-            abort: join.abort_handle(),
+            abort,
             cmd: cmd_tx,
         });
     }
 
-    fn schedule_respawn(&self, task_id: TaskId, generation: Generation, delay: Duration) {
+    fn schedule_respawn(&mut self, task_id: TaskId, generation: Generation, delay: Duration) {
         let cmd_tx = self.cmd_tx.clone();
-        tokio::spawn(async move {
+        self.restarts.spawn(async move {
             sleep(delay).await;
             let _ = cmd_tx
                 .send(Command::Respawn {
@@ -656,7 +703,7 @@ impl Orchestrator {
         }
     }
 
-    fn snapshot(&self) -> MonitorSnapshot {
+    pub(super) fn snapshot(&self) -> MonitorSnapshot {
         let mut tasks: Vec<TaskView> = self.entries.values().map(|e| self.view(e)).collect();
         tasks.sort_by_key(|v| v.id);
         MonitorSnapshot {
@@ -684,18 +731,11 @@ fn limit_reached(entry: &TaskEntry) -> bool {
     limit > 0 && entry.task.metrics().executions >= limit
 }
 
-/// Надёжный сток: единственный потребитель record-канала.
-/// Если внешний sink задан — шлём туда с backpressure, иначе просто разгребаем.
-async fn log_writer(
-    mut rx: mpsc::Receiver<MonitorEvent>,
-    hist_tx: Option<mpsc::Sender<MonitorEvent>>,
-) {
+async fn log_writer(mut rx: mpsc::Receiver<MonitorEvent>, hist_tx: mpsc::Sender<MonitorEvent>) {
     while let Some(ev) = rx.recv().await {
-        if let Some(tx) = &hist_tx {
-            if tx.send(ev).await.is_err() {
-                tracing::warn!("history sink closed, log writer stops");
-                break;
-            }
+        if hist_tx.send(ev).await.is_err() {
+            tracing::warn!("history sink closed, log writer stops");
+            break;
         }
     }
 }
@@ -961,6 +1001,35 @@ mod tests {
                 execution,
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_scenarios_and_restart_tasks() {
+        let (mut orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), "shutdown-test".to_string());
+        let scenario = orchestrator.scenarios.spawn(std::future::pending());
+        let restart = orchestrator.restarts.spawn(std::future::pending());
+        let runtime = tokio::spawn(orchestrator.run());
+
+        handle.shutdown().await.unwrap();
+        runtime.await.unwrap();
+        assert!(scenario.is_finished());
+        assert!(restart.is_finished());
+    }
+
+    #[tokio::test]
+    async fn aborting_runtime_cancels_scenarios_and_restart_tasks() {
+        let (mut orchestrator, handle) =
+            Orchestrator::new(None, RestartPolicy::default(), "abort-test".to_string());
+        let scenario = orchestrator.scenarios.spawn(std::future::pending());
+        let restart = orchestrator.restarts.spawn(std::future::pending());
+        let runtime = tokio::spawn(orchestrator.run());
+        handle.get_snapshot().await.unwrap();
+
+        runtime.abort();
+        assert!(runtime.await.unwrap_err().is_cancelled());
+        wait_for_abort(scenario).await;
+        wait_for_abort(restart).await;
     }
 
     #[tokio::test]

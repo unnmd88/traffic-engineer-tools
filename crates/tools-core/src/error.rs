@@ -20,6 +20,8 @@ pub enum Error {
     #[error(transparent)]
     MonitorOrchestrator(#[from] crate::monitor::runtime::error::OrchestratorError),
     #[error(transparent)]
+    MonitorApplication(#[from] crate::monitor::runtime::error::ApplicationError),
+    #[error(transparent)]
     PollingConfig(#[from] crate::polling::ConfigError),
     #[error(transparent)]
     ScenarioSpec(#[from] crate::monitor::scenario::ScenarioSpecError),

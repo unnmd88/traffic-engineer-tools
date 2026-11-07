@@ -8,7 +8,7 @@ use tools_core::{
     DT_FMT,
     monitor::{
         event::MonitorEvent,
-        runtime::{Application, MonitorSubscription, error::OrchestratorError},
+        runtime::{ApplicationHandle, MonitorSubscription, error::OrchestratorError},
         task::MonitorSnapshot,
     },
 };
@@ -16,7 +16,7 @@ use tools_core::{
 use super::render::{LINE_DOUBLE_LN, format_snapshot};
 
 pub async fn run(
-    app: &Application,
+    app: &ApplicationHandle,
     subscription: MonitorSubscription,
 ) -> Result<(), OrchestratorError> {
     let MonitorSubscription {
@@ -91,7 +91,7 @@ mod tests {
     use tools_core::{
         monitor::{
             probe::SnmpGetSpec,
-            runtime::AppConfig,
+            runtime::{AppConfig, Application},
             scenario::{Scenario, SnmpGetScenarioSpec},
             task::TaskConfig,
         },
@@ -111,7 +111,8 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_updates_skip_events_already_in_the_snapshot() {
-        let app = Application::new(AppConfig::default());
+        let running = Application::new(AppConfig::default(), vec![]).spawn();
+        let app = running.handle();
         let mut events = app.subscribe();
         app.add_task(task("first")).await.unwrap();
         let snapshot = app.get_snapshot().await.unwrap();
@@ -119,23 +120,25 @@ mod tests {
 
         assert!(wait_for_update(&snapshot, &mut events).await);
         assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
-        app.shutdown().await.unwrap();
+        running.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn subscription_updates_finish_after_covered_events_and_channel_closure() {
-        let app = Application::new(AppConfig::default());
+        let running = Application::new(AppConfig::default(), vec![]).spawn();
+        let app = running.handle();
         let mut events = app.subscribe();
         app.add_task(task("first")).await.unwrap();
         let snapshot = app.get_snapshot().await.unwrap();
-        app.shutdown().await.unwrap();
+        running.shutdown().await.unwrap();
 
         assert!(!wait_for_update(&snapshot, &mut events).await);
     }
 
     #[tokio::test]
     async fn subscription_updates_request_refresh_after_lagging() {
-        let app = Application::new(AppConfig::default());
+        let running = Application::new(AppConfig::default(), vec![]).spawn();
+        let app = running.handle();
         let mut source_events = app.subscribe();
         let (sender, mut events) = broadcast::channel(1);
         for name in ["first", "second", "third"] {
@@ -147,20 +150,22 @@ mod tests {
 
         assert!(wait_for_update(&snapshot, &mut events).await);
         assert!(!wait_for_update(&snapshot, &mut events).await);
-        app.shutdown().await.unwrap();
+        running.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn subscription_updates_request_refresh_when_the_source_changes() {
-        let app = Application::new(AppConfig::default());
+        let running = Application::new(AppConfig::default(), vec![]).spawn();
+        let app = running.handle();
         app.add_task(task("first")).await.unwrap();
         let snapshot = app.get_snapshot().await.unwrap();
-        let other = Application::new(AppConfig::default());
+        let other_running = Application::new(AppConfig::default(), vec![]).spawn();
+        let other = other_running.handle();
         let mut events = other.subscribe();
         other.add_task(task("other")).await.unwrap();
 
         assert!(wait_for_update(&snapshot, &mut events).await);
-        app.shutdown().await.unwrap();
-        other.shutdown().await.unwrap();
+        running.shutdown().await.unwrap();
+        other_running.shutdown().await.unwrap();
     }
 }
