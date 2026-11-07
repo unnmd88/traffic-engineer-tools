@@ -20,6 +20,12 @@ pub enum SnmpQueryError {
     },
     #[error("invalid snmp-oid(pos: {pos}): {oid}")]
     InvalidSnmpOid { pos: usize, oid: String },
+    #[error("invalid SNMP SET value at position {pos}: {source}")]
+    InvalidSetValue {
+        pos: usize,
+        #[source]
+        source: Box<crate::snmp::SnmpError>,
+    },
     #[error("{0}")]
     Other(String),
 }

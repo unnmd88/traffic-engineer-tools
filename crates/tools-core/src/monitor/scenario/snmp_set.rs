@@ -37,13 +37,14 @@ pub(super) async fn run(
         attempt,
     } = spec;
     let prepare = async {
-        let client = connect(request.host, request.port, request.community, attempt).await?;
-        let scn_client = match request.community_r {
-            Some(community) => connect(request.host, request.port, community, attempt).await?,
+        let (host, port, community_r, community, profile, sets) = request.into_parts();
+        let client = connect(host, port, community, attempt).await?;
+        let scn_client = match community_r {
+            Some(community) => connect(host, port, community, attempt).await?,
             None => client.clone(),
         };
-        let items = Resolver::new(scn_client, request.profile)
-            .resolve_set(request.sets)
+        let items = Resolver::new(scn_client, profile)
+            .resolve_set(sets)
             .await
             .map_err(|error| ScenarioBuildError::Other(error.to_string()))?;
         Ok::<_, ScenarioBuildError>(SnmpSetRequest { client, items })

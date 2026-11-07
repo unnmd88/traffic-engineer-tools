@@ -18,8 +18,8 @@ pub enum ScenarioSpec {
 impl ScenarioSpec {
     pub fn target(&self) -> String {
         match self {
-            Self::SnmpGet(spec) => format!("{}:{}", spec.request.host, spec.request.port),
-            Self::SnmpSet(spec) => format!("{}:{}", spec.request.host, spec.request.port),
+            Self::SnmpGet(spec) => format!("{}:{}", spec.request.host(), spec.request.port()),
+            Self::SnmpSet(spec) => format!("{}:{}", spec.request.host(), spec.request.port()),
         }
     }
 }

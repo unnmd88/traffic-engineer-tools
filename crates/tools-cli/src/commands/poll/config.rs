@@ -210,11 +210,11 @@ tasks:
                 period: Duration::from_secs(5)
             }
         );
-        assert_eq!(request.port, 1162);
-        assert_eq!(request.community.as_str(), "private");
-        assert_eq!(request.community_r.as_ref().unwrap().as_str(), "public");
+        assert_eq!(request.port(), 1162);
+        assert_eq!(request.community().as_str(), "private");
+        assert_eq!(request.community_r().unwrap().as_str(), "public");
         assert!(matches!(
-            &request.sets[0].value,
+            &request.sets()[0].value,
             tools_core::snmp::value::SnmpValue::OctetString(bytes) if bytes == &[4]
         ));
     }

@@ -40,9 +40,10 @@ pub(super) async fn run(
         attempt,
     } = spec;
     let prepare = async {
-        let client = connect(request.host, request.port, request.community, attempt).await?;
-        let items = Resolver::new(client.clone(), request.profile)
-            .resolve_get(request.oids)
+        let (host, port, community, profile, oids) = request.into_parts();
+        let client = connect(host, port, community, attempt).await?;
+        let items = Resolver::new(client.clone(), profile)
+            .resolve_get(oids)
             .await
             .map_err(|error| ScenarioBuildError::Other(error.to_string()))?;
         Ok::<_, ScenarioBuildError>(SnmpGetRequest { client, items })

@@ -142,7 +142,7 @@ fn push_query(lines: &mut Vec<String>, scenario: &ScenarioSpec) {
         ScenarioSpec::SnmpGet(spec) => {
             let request = spec.request();
             lines.push("Oids to request:".to_string());
-            for item in &request.oids {
+            for item in request.oids() {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{}", item.oid));
             }
@@ -150,7 +150,7 @@ fn push_query(lines: &mut Vec<String>, scenario: &ScenarioSpec) {
         ScenarioSpec::SnmpSet(spec) => {
             let request = spec.request();
             lines.push("Oids to set:".to_string());
-            for item in &request.sets {
+            for item in request.sets() {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{:<32} = {}", item.oid, item.value));
             }

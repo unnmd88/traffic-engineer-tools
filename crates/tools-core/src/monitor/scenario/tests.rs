@@ -373,8 +373,15 @@ async fn fatal_protocol_error_ends_scenario_without_execution_report() {
 #[tokio::test(start_paused = true)]
 async fn parser_panic_is_reported_as_execution_panic() {
     let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let mut spec = request(&peer, None, "1.3.6.1.2.1.1.1.0");
-    spec.oids[0].parser = Some(|_| panic!("test parser panic"));
+    let spec = request(&peer, None, "1.3.6.1.2.1.1.1.0");
+    let mut oids = spec.oids().to_vec();
+    oids[0].parser = Some(|_| panic!("test parser panic"));
+    let spec = SnmpGetSpec::new(
+        SocketAddr::new(spec.host(), spec.port()),
+        spec.community().clone(),
+        spec.profile(),
+        oids,
+    );
     let mut session = spawn(get_scenario(spec, 0));
     assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
     let (message, source) = receive(&peer).await;
