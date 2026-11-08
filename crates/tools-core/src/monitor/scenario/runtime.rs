@@ -24,10 +24,10 @@ pub(in crate::monitor) async fn run(
     let execution = async move {
         match spec {
             ScenarioSpec::SnmpGet(spec) => {
-                super::snmp_get::run(spec, task_id, generation, report_tx, cmd_rx).await;
+                super::repeat_snmp_get::run(spec, task_id, generation, report_tx, cmd_rx).await;
             }
             ScenarioSpec::SnmpSet(spec) => {
-                super::snmp_set::run(spec, task_id, generation, report_tx, cmd_rx).await;
+                super::repeat_snmp_set::run(spec, task_id, generation, report_tx, cmd_rx).await;
             }
         }
     };

@@ -1,9 +1,9 @@
 mod error;
 mod execution;
+mod repeat_snmp_get;
+mod repeat_snmp_set;
 mod runtime;
 mod schedule;
-mod snmp_get;
-mod snmp_set;
 mod spec;
 
 pub use error::{ScenarioBuildError, ScenarioExecutionError, ScenarioSpecError};
