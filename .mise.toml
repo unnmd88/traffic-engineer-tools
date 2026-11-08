@@ -1,0 +1,83 @@
+[vars]
+TARGET = "x86_64-unknown-linux-gnu"
+ENV_FILE = ".env.dev"
+
+[tasks.test]
+description = "Run all workspace tests"
+run = "cargo test --target {{vars.TARGET}} -- --nocapture"
+
+[tasks.test-core]
+description = "Run tools-core tests"
+run = "cargo test --target {{vars.TARGET}} -p tools-core -- --nocapture"
+
+[tasks.check]
+description = "Check the whole workspace compiles"
+run = "cargo check --target {{vars.TARGET}}"
+
+[tasks.check-core]
+description = "Check tools-core compiles"
+run = "cargo check -p tools-core --target {{vars.TARGET}}"
+
+[tasks.cargo-fix]
+description = "Apply cargo fix to the whole workspace"
+run = "cargo fix --allow-dirty --target {{vars.TARGET}}"
+
+[tasks.clippy]
+description = "Lint the whole workspace"
+run = "cargo clippy --target {{vars.TARGET}}"
+
+[tasks.clippy-fix]
+description = "Lint and auto-fix the whole workspace"
+run = "cargo clippy --fix --allow-dirty --target {{vars.TARGET}}"
+
+[tasks.run]
+description = "Run the default binary with ENV_FILE"
+run = "ENV_FILE={{vars.ENV_FILE}} cargo run --target {{vars.TARGET}}"
+
+[tasks.cbr]
+description = "Release build for Linux"
+run = "cargo build --release --target {{vars.TARGET}}"
+
+[tasks.cbr-win10]
+description = "Release build for Windows 10 (GNU)"
+run = "cargo build --release --target x86_64-pc-windows-gnu"
+
+[tasks.cbr-win7]
+description = "Release build for Windows 7 (nightly + build-std)"
+run = "cargo +nightly build --release"
+
+[tasks.cbr-net-monitor]
+description = "Release build net-monitor for Linux"
+run = "cargo build --release -p net-monitor --target {{vars.TARGET}}"
+
+[tasks.cbr-tctl]
+description = "Release build tctl for Linux"
+run = "cargo build --release -p tctl --target {{vars.TARGET}}"
+
+[tasks.cbr-win10-net-monitor]
+description = "Release build net-monitor for Windows 10 (GNU)"
+run = "cargo build --release -p net-monitor --target x86_64-pc-windows-gnu"
+
+[tasks.cbr-win7-net-monitor]
+description = "Release build net-monitor for Windows 7 (nightly + build-std)"
+run = "cargo +nightly build --release -p net-monitor"
+
+[tasks.objdump]
+description = "Show DLL imports of the win7 release binary"
+run = 'objdump -p target/x86_64-win7-windows-msvc/release/traffic-api.exe | grep "DLL Name"'
+
+[tasks.example-traceroute]
+description = "Build and run the traceroute example (needs cap_net_raw)"
+run = [
+    "cargo build --target {{vars.TARGET}} --example test_traceroute",
+    "sudo setcap cap_net_raw+ep target/{{vars.TARGET}}/debug/examples/test_traceroute",
+    "./target/{{vars.TARGET}}/debug/examples/test_traceroute",
+]
+
+[tasks.snmp-example]
+description = "Run the snmp example"
+run = "cargo run --target {{vars.TARGET}} --example snmp-example"
+
+[tasks.scn-example]
+description = "Run the ascii-scn example"
+run = "cargo run --target {{vars.TARGET}} --example ascii-scn"
