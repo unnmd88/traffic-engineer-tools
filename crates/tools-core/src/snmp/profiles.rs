@@ -6,7 +6,7 @@ use strum::{Display, EnumIter, IntoEnumIterator};
 use crate::snmp::{
     ParseError,
     oid::SnmpOid,
-    oid_metadata::OidMetadata,
+    oid_metadata::{OidKind, OidMetadata},
     registry::oids::{
         POTOK_UG405_FIRMWARE_VERSION, POTOK_UG405_GROUPS_STATE_FROM1_TO66,
         POTOKS_UTC_TRAFFTECH_PHASE_STATUS_METADATA, SWARCO_UTC_TRAFFTECH_PHASE_COMMAND_METADATA,
@@ -51,7 +51,6 @@ impl SnmpProfile {
         }
     }
 
-    /// Получить OidMetadata по алиасу для этого профиля
     pub fn get_metadata_by_name_or_alias(
         &self,
         name_or_alias: &str,
@@ -78,12 +77,17 @@ impl SnmpProfile {
         None
     }
 
-    /// Получить OidMetadata по SnmpOid для этого профиля
     pub fn get_metadata_by_oid(&self, oid: &SnmpOid) -> Option<&'static OidMetadata> {
         let binding = oid.to_string();
         let oid_as_str = binding.as_str();
 
-        self.registry().iter().find(|m| m.oid == oid_as_str)
+        let registry = self.registry();
+        registry.iter().find(|m| m.oid == oid_as_str).or_else(|| {
+            let definition = oid_as_str.strip_suffix(".0")?;
+            registry
+                .iter()
+                .find(|m| m.kind == OidKind::Scalar && m.oid == definition)
+        })
     }
 
     /// Разрешает сырую строку (числовой OID или алиас) в OID этого профиля.
@@ -129,7 +133,35 @@ impl FromStr for SnmpProfile {
 #[cfg(test)]
 mod tests {
     use super::SnmpProfile;
+    use crate::snmp::{business_value::BusinessValue, oid::SnmpOid, value::SnmpValue};
     use std::collections::HashSet;
+
+    #[test]
+    fn site_id_parser_is_available_for_definition_and_scalar_instance() {
+        for oid in [
+            "1.3.6.1.4.1.13267.3.2.5.1.1.2",
+            "1.3.6.1.4.1.13267.3.2.5.1.1.2.0",
+            ".1.3.6.1.4.1.13267.3.2.5.1.1.2.0",
+        ] {
+            let oid = SnmpOid::parse(oid).unwrap();
+            let metadata = SnmpProfile::PotokUg405.get_metadata_by_oid(&oid).unwrap();
+            let parser = metadata.display.unwrap();
+            let value = parser(&SnmpValue::OctetString(b"CO101".to_vec())).unwrap();
+            assert!(matches!(value, BusinessValue::SiteId { bytes } if bytes == b"CO101"));
+        }
+    }
+
+    #[test]
+    fn scalar_metadata_does_not_match_other_instances_or_indexed_oids() {
+        for oid in [
+            "1.3.6.1.4.1.13267.3.2.5.1.1.2.1",
+            "1.3.6.1.4.1.13267.3.2.5.1.1.2.0.0",
+            "1.3.6.1.4.1.13267.3.2.5.1.1.3.0",
+        ] {
+            let oid = SnmpOid::parse(oid).unwrap();
+            assert!(SnmpProfile::PotokUg405.get_metadata_by_oid(&oid).is_none());
+        }
+    }
 
     #[test]
     fn aliases_are_unique_within_profile() {
