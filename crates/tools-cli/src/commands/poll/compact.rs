@@ -219,19 +219,19 @@ fn format_groups(
     push_line(
         out,
         &format!(
-            "{}: {} groups (raw: {}; hex bytes in cells)",
+            "  {}: {} groups (raw: {}; hex bytes in cells)",
             sample_name(sample),
             groups.len(),
             SnmpValueType::from(&sample.raw_value),
         ),
         width,
     );
-    push_line(out, "Group: main/arrow (raw byte)", width);
-    let columns = (width.saturating_sub(2) / GROUP_CELL_WIDTH).max(1);
+    push_line(out, "    Group: main/arrow (raw byte)", width);
+    let columns = (width.saturating_sub(4) / GROUP_CELL_WIDTH).max(1);
     let mut sorted: Vec<_> = groups.iter().collect();
     sorted.sort_by_key(|group| group.num_group());
     for row in sorted.chunks(columns) {
-        let mut line = String::from("  ");
+        let mut line = String::from("    ");
         for (index, group) in row.iter().enumerate() {
             let (main, arrow) = group.state().map_or(("?", "?"), |state| {
                 let (main, arrow) = state.split_state();
@@ -246,8 +246,8 @@ fn format_groups(
         }
         push_line(out, &line, width);
     }
-    push_line(out, "R red | Y amber | G green | RY red+amber | F flashing", width);
-    push_line(out, "- off | ? unknown", width);
+    push_line(out, "    R red | Y amber | G green | RY red+amber | F flashing", width);
+    push_line(out, "    - off | ? unknown", width);
     out.push('\n');
 }
 
@@ -274,13 +274,21 @@ fn push_line(out: &mut String, text: &str, width: usize) {
         }
     }
     for mut line in escaped.split('\n') {
-        while line.width() > width {
+        let indent_width = line
+            .bytes()
+            .take_while(|byte| *byte == b' ')
+            .count()
+            .min(width.saturating_sub(1));
+        let indent = " ".repeat(indent_width);
+        let content_width = width - indent_width;
+        line = line.trim_start_matches(' ');
+        while line.width() > content_width {
             let mut column = 0;
             let mut end = 0;
             let mut last_space = None;
             for (index, character) in line.char_indices() {
                 let character_width = character.width().unwrap_or(0);
-                if column + character_width > width && end > 0 {
+                if column + character_width > content_width && end > 0 {
                     break;
                 }
                 column += character_width;
@@ -290,10 +298,12 @@ fn push_line(out: &mut String, text: &str, width: usize) {
                 }
             }
             let (head, tail) = line.split_at(last_space.unwrap_or(end));
+            out.push_str(&indent);
             out.push_str(head.trim_end());
             out.push('\n');
             line = tail.trim_start_matches(' ');
         }
+        out.push_str(&indent);
         out.push_str(line);
         out.push('\n');
     }
