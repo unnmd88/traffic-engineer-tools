@@ -1,9 +1,8 @@
 use chrono::Local;
 use tokio::{
     sync::broadcast,
-    time::{Duration, MissedTickBehavior, interval},
+    time::{Duration, MissedTickBehavior, interval, timeout},
 };
-
 use tools_core::{
     DT_FMT,
     monitor::{
@@ -11,11 +10,16 @@ use tools_core::{
     },
 };
 
-use super::render::{LINE_DOUBLE_LN, format_snapshot};
+use super::{
+    compact,
+    render::{LINE_DOUBLE_LN, format_snapshot},
+};
+use crate::cli::PollView;
 
 pub async fn run(
     app: &ApplicationHandle,
     subscription: MonitorSubscription,
+    view: PollView,
 ) -> Result<(), MonitorCommandError> {
     let MonitorSubscription {
         mut snapshot,
@@ -29,15 +33,37 @@ pub async fn run(
 
     loop {
         clear_screen();
-        let uptime = Local::now() - app_created_at;
-        println!(
-            "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {}m {}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
-            uptime.num_minutes(),
-            uptime.num_seconds() % 60,
-            format_snapshot(&snapshot.tasks),
-        );
+        let now = Local::now();
+        match view {
+            PollView::Classic => {
+                let uptime = now - app_created_at;
+                println!(
+                    "{LINE_DOUBLE_LN}Monitor ID: {monitor_id}\nUptime: {}m {}s. Started: {app_created_at_fmt}\n{LINE_DOUBLE_LN}\n{}",
+                    uptime.num_minutes(),
+                    uptime.num_seconds() % 60,
+                    format_snapshot(&snapshot.tasks),
+                );
+            }
+            PollView::Compact => {
+                let width = crossterm::terminal::size()
+                    .map(|(width, _)| usize::from(width))
+                    .unwrap_or(80)
+                    .max(1);
+                print!("{}", compact::format_snapshot(&snapshot.tasks, app_created_at, now, width));
+            }
+        }
 
-        if !wait_for_update(&snapshot, &mut events).await {
+        let updated = match view {
+            PollView::Classic => wait_for_update(&snapshot, &mut events).await,
+            PollView::Compact => {
+                match timeout(Duration::from_secs(1), wait_for_update(&snapshot, &mut events)).await
+                {
+                    Ok(updated) => updated,
+                    Err(_) => continue,
+                }
+            }
+        };
+        if !updated {
             return Ok(());
         }
         refresh.tick().await;
@@ -74,18 +100,18 @@ fn clear_screen() {
 
 #[cfg(target_os = "windows")]
 fn clear_screen() {
+    use std::io::stdout;
+
     use crossterm::{
         cursor::MoveTo,
         execute,
         terminal::{Clear, ClearType},
     };
-    use std::io::stdout;
     let _ = execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tools_core::{
         monitor::{
             AppConfig, Application, PollSchedule, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec,
@@ -93,6 +119,8 @@ mod tests {
         },
         polling::AttemptConfig,
     };
+
+    use super::*;
 
     fn task(name: &str) -> TaskConfig {
         let request =

@@ -21,4 +21,5 @@ serde_path_to_error = "0.1"
 humantime-serde = "1"
 crossterm = "0.29.0"
 tabled = "0.21.0"
+unicode-width = "0.2.2"
 

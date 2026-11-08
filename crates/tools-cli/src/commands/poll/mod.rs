@@ -1,3 +1,4 @@
+mod compact;
 mod config;
 mod dashboard;
 mod history;
@@ -8,7 +9,9 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tools_core::monitor::{AppConfig, Application};
 
-pub async fn run(config: PathBuf) -> anyhow::Result<()> {
+use crate::cli::PollView;
+
+pub async fn run(config: PathBuf, view: PollView) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(&config)?;
     let config_dir = config.parent().unwrap_or_else(|| std::path::Path::new("."));
     let config = config::load_from_yaml(&content)?;
@@ -32,7 +35,7 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
     let app = running.handle();
 
     let result = tokio::select! {
-        result = dashboard::run(&app, subscription) => result.map_err(anyhow::Error::from),
+        result = dashboard::run(&app, subscription, view) => result.map_err(anyhow::Error::from),
         result = tokio::signal::ctrl_c() => {
             result.map_err(anyhow::Error::from)
         }

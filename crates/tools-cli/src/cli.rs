@@ -22,21 +22,30 @@ pub enum OutputFormat {
     PrettyJson,
 }
 
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum PollView {
+    #[default]
+    Classic,
+    Compact,
+}
+
 #[derive(Subcommand)]
 pub enum Commands {
     Poll {
         #[arg(short, long)]
         config: PathBuf,
+        #[arg(long, value_enum, default_value_t = PollView::Classic)]
+        view:   PollView,
     },
 
     ToScn {
-        input: String,
+        input:  String,
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Human)]
         output: OutputFormat,
     },
 
     FromScn {
-        input: String,
+        input:  String,
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Human)]
         output: OutputFormat,
     },

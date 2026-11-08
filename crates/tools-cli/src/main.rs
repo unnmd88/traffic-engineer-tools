@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     let _guard = init_file_logging(log_dir_str, "traffic")?;
 
     match cli.command {
-        cli::Commands::Poll { config } => commands::poll::run(config).await?,
+        cli::Commands::Poll { config, view } => commands::poll::run(config, view).await?,
         cli::Commands::ToScn { input, output } => {
             let res = commands::scn::run_from_string(input)?;
             print_output(output, &res)?;
