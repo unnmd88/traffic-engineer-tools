@@ -218,10 +218,14 @@ fn format_groups(
     out.push('\n');
     push_line(
         out,
+        &format!("  {}: {} groups", sample_name(sample), groups.len()),
+        width,
+    );
+    push_line(
+        out,
         &format!(
-            "  {}: {} groups (raw: {}; hex bytes in cells)",
-            sample_name(sample),
-            groups.len(),
+            "    Raw: {} ({})",
+            sample.raw_value.as_string(),
             SnmpValueType::from(&sample.raw_value),
         ),
         width,
