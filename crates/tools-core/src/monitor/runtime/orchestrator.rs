@@ -6,6 +6,7 @@ use tokio::{
     task::JoinSet,
     time::{Duration, sleep},
 };
+use tracing::Instrument;
 
 use crate::monitor::{
     event::{EventData, EventMeta, MonitorEvent},
@@ -13,7 +14,9 @@ use crate::monitor::{
         ApplicationId, MonitorSubscription, error::MonitorCommandError,
         restart_policy::RestartPolicy,
     },
-    scenario::{Generation, PanicStage, ScenarioCommand, ScenarioReport, run_scenario},
+    scenario::{
+        Generation, PanicStage, ScenarioCommand, ScenarioReport, ScenarioSpec, run_scenario,
+    },
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
         TaskView,
@@ -173,10 +176,17 @@ impl Orchestrator {
         id
     }
 
+    #[tracing::instrument(name = "monitor", skip_all, fields(application_id = %self.application_id))]
     pub async fn run(mut self) {
+        tracing::info!(
+            task_count = self.entries.len(),
+            history_enabled = self.history_sink.is_some(),
+            "monitor started"
+        );
         if let Some(sink) = self.history_sink.take() {
             let (record_tx, record_rx) = mpsc::channel(1024);
-            self.history_writer.spawn(log_writer(record_rx, sink));
+            self.history_writer
+                .spawn(log_writer(record_rx, sink).in_current_span());
             self.record_tx = Some(record_tx);
         }
         self.start_initial_tasks().await;
@@ -191,18 +201,26 @@ impl Orchestrator {
                     None => break,
                 },
                 Some(rep) = self.report_rx.recv() => self.on_report(rep).await,
-                Some(_) = self.scenarios.join_next() => {},
-                Some(_) = self.restarts.join_next() => {},
+                Some(result) = self.scenarios.join_next() => {
+                    log_background_result(result, "scenario", self.application_id);
+                },
+                Some(result) = self.restarts.join_next() => {
+                    log_background_result(result, "restart_timer", self.application_id);
+                },
+                Some(result) = self.history_writer.join_next() => {
+                    log_background_result(result, "history_writer", self.application_id);
+                    self.record_tx.take();
+                },
             }
         }
+        tracing::info!("monitor stopping");
         self.restarts.shutdown().await;
         self.scenarios.shutdown().await;
         self.record_tx.take();
         while let Some(result) = self.history_writer.join_next().await {
-            if let Err(error) = result {
-                tracing::error!(%error, "history writer failed");
-            }
+            log_background_result(result, "history_writer", self.application_id);
         }
+        tracing::info!("monitor stopped");
     }
 
     async fn start_initial_tasks(&mut self) {
@@ -462,9 +480,16 @@ impl Orchestrator {
 
         let (data, respawn_after): (Option<EventData>, Option<Duration>) = {
             let Some(entry) = self.entries.get_mut(&task_id) else {
+                tracing::trace!(%task_id, ?generation, "report ignored for missing task");
                 return;
             };
             if entry.scenario.as_ref().map(|scenario| scenario.generation) != Some(generation) {
+                tracing::trace!(
+                    %task_id,
+                    ?generation,
+                    active_generation = ?entry.scenario.as_ref().map(|scenario| scenario.generation),
+                    "report ignored for inactive generation"
+                );
                 return;
             }
 
@@ -595,11 +620,24 @@ impl Orchestrator {
         entry.next_generation = generation.next();
         entry.generation = generation;
         let scenario = entry.task.config().scenario().clone();
+        let scenario_kind = match &scenario {
+            ScenarioSpec::SnmpGet(_) => "snmp_get",
+            ScenarioSpec::SnmpSet(_) => "snmp_set",
+        };
+        let span = tracing::info_span!(
+            "scenario",
+            task_id = task_id.0,
+            ?generation,
+            revision = entry.task.revision().0,
+            task_name = entry.task.config().name(),
+            scenario_kind,
+            device = %scenario.target(),
+        );
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let report_tx = self.report_tx.clone();
         let abort = self
             .scenarios
-            .spawn(run_scenario(scenario, task_id, generation, report_tx, cmd_rx));
+            .spawn(run_scenario(scenario, task_id, generation, report_tx, cmd_rx).instrument(span));
         entry.scenario = Some(ScenarioHandle {
             generation,
             abort,
@@ -609,15 +647,19 @@ impl Orchestrator {
 
     fn schedule_respawn(&mut self, task_id: TaskId, generation: Generation, delay: Duration) {
         let cmd_tx = self.cmd_tx.clone();
-        self.restarts.spawn(async move {
-            sleep(delay).await;
-            let _ = cmd_tx
-                .send(Command::Respawn {
-                    task_id,
-                    generation,
-                })
-                .await;
-        });
+        let span = tracing::info_span!("restart_timer", task_id = task_id.0, ?generation);
+        self.restarts.spawn(
+            async move {
+                sleep(delay).await;
+                let _ = cmd_tx
+                    .send(Command::Respawn {
+                        task_id,
+                        generation,
+                    })
+                    .await;
+            }
+            .instrument(span),
+        );
     }
 
     async fn maybe_respawn(&mut self, task_id: TaskId, generation: Generation) {
@@ -636,6 +678,8 @@ impl Orchestrator {
             self.spawn_scenario(task_id);
             self.emit(task_id, EventData::TaskStarting { attempt })
                 .await;
+        } else {
+            tracing::trace!(%task_id, ?generation, "restart ignored for inactive generation or state");
         }
     }
 
@@ -670,11 +714,150 @@ impl Orchestrator {
     }
 
     async fn emit_event(&mut self, ev: MonitorEvent) {
+        self.log_event(&ev);
         if self.live_tx.receiver_count() > 0 {
             let _ = self.live_tx.send(ev.clone());
         }
         if let Some(record_tx) = &self.record_tx {
             let _ = record_tx.send(ev).await;
+        }
+    }
+
+    fn log_event(&self, event: &MonitorEvent) {
+        let metadata = &event.metadata;
+        match &event.data {
+            EventData::TaskAdded => {
+                if let Some(entry) = self.entries.get(&metadata.task_id) {
+                    tracing::info!(
+                        application_id = %metadata.application_id,
+                        task_id = metadata.task_id.0,
+                        generation = ?metadata.generation,
+                        revision = metadata.revision.0,
+                        seq = metadata.seq,
+                        task_name = entry.task.config().name(),
+                        "task added"
+                    );
+                }
+            }
+            EventData::TaskSpecUpdated => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task configuration updated"
+            ),
+            EventData::TaskStarting { attempt } => {
+                let entry = self.entries.get(&metadata.task_id);
+                tracing::info!(
+                    application_id = %metadata.application_id,
+                    task_id = metadata.task_id.0,
+                    generation = ?metadata.generation,
+                    revision = metadata.revision.0,
+                    seq = metadata.seq,
+                    task_name = entry.map(|entry| entry.task.config().name()),
+                    device = entry.map(|entry| entry.task.config().scenario().target()),
+                    attempt,
+                    "task starting"
+                );
+            }
+            EventData::TaskStarted => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task started"
+            ),
+            EventData::TaskPaused => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task paused"
+            ),
+            EventData::TaskResumed => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task resumed"
+            ),
+            EventData::TaskStopped => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task stopped"
+            ),
+            EventData::TaskCompleted => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task completed"
+            ),
+            EventData::TaskRemoved => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task removed"
+            ),
+            EventData::ExecutionFinished { execution, metrics } => tracing::debug!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                status = ?execution.outcome.status(),
+                elapsed_ms = execution.elapsed.as_secs_f64() * 1000.0,
+                executions = metrics.executions,
+                "execution finished"
+            ),
+            EventData::BuildFailed { error, retry_in } => tracing::warn!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                %error,
+                attempt = self.entries.get(&metadata.task_id).map(|entry| entry.attempts),
+                retry_in_ms = retry_in.map(|delay| delay.as_secs_f64() * 1000.0),
+                "scenario build failed"
+            ),
+            EventData::ExecutionFailed { error, retry_in } => tracing::warn!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                %error,
+                attempt = self.entries.get(&metadata.task_id).map(|entry| entry.attempts),
+                retry_in_ms = retry_in.map(|delay| delay.as_secs_f64() * 1000.0),
+                "scenario execution failed"
+            ),
+            EventData::ScenarioPanicked {
+                stage,
+                reason,
+                retry_in,
+            } => tracing::error!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                ?stage,
+                error = %reason,
+                attempt = self.entries.get(&metadata.task_id).map(|entry| entry.attempts),
+                retry_in_ms = retry_in.map(|delay| delay.as_secs_f64() * 1000.0),
+                "scenario panicked"
+            ),
         }
     }
 
@@ -737,10 +920,32 @@ fn limit_reached(entry: &TaskEntry) -> bool {
     limit > 0 && entry.task.metrics().executions >= limit
 }
 
+fn log_background_result(
+    result: Result<(), tokio::task::JoinError>,
+    operation: &str,
+    application_id: ApplicationId,
+) {
+    if let Err(error) = result {
+        if error.is_cancelled() {
+            tracing::debug!(%application_id, operation, tokio_task_id = %error.id(), "background task cancelled");
+        } else {
+            tracing::error!(%application_id, operation, tokio_task_id = %error.id(), %error, "background task failed");
+        }
+    }
+}
+
 async fn log_writer(mut rx: mpsc::Receiver<MonitorEvent>, hist_tx: mpsc::Sender<MonitorEvent>) {
     while let Some(ev) = rx.recv().await {
-        if hist_tx.send(ev).await.is_err() {
-            tracing::warn!("history sink closed, log writer stops");
+        if let Err(error) = hist_tx.send(ev).await {
+            let metadata = &error.0.metadata;
+            tracing::warn!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "history sink closed; event forwarding stopped"
+            );
             break;
         }
     }
