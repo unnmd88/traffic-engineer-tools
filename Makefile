@@ -98,4 +98,4 @@ snmp-example:
 
 .PHONY: scn-example
 scn-example:
-	cargo run --target x86_64-unknown-linux-gnu --example ascii-scn
+	cargo run --target x86_64-unknown-linux-gnu --example scn -- str CO101

@@ -26,10 +26,6 @@ memchr = { workspace = true }
 
 
 
-[[example]]
-name = "ascii-scn"
-path = "examples/ascii_scn.rs"
-
 [lints.clippy]
 pedantic = "warn"
 nursery = "warn"

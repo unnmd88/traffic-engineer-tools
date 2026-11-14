@@ -79,5 +79,5 @@ description = "Run the snmp example"
 run = "cargo run --target {{vars.TARGET}} --example snmp-example"
 
 [tasks.scn-example]
-description = "Run the ascii-scn example"
-run = "cargo run --target {{vars.TARGET}} --example ascii-scn"
+description = "Run the scn example"
+run = "cargo run --target {{vars.TARGET}} --example scn -- str CO101"
