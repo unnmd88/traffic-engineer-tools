@@ -3,9 +3,8 @@
 **/*.rs.bk
 *.wasm
 
-# Cargo
-.cargo/
-**/.cargo/
+# Cargo (только личные креды, не коммитятся)
+.cargo/credentials
 
 # Build
 target/
@@ -30,10 +29,6 @@ target/
 # Logs
 *.log
 /logs/
-
-# Локальные конфиги Cargo
-.cargo/config.toml
-.cargo/credentials
 
 # OS generated files
 .DS_Store

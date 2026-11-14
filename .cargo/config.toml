@@ -1,0 +1,14 @@
+# Кросс-сборка под Windows 7 / Server 2008 R2 (MSVC).
+# Таргет встроен в rustc, но его std не распространяется через rustup,
+# поэтому собирается из исходников (build-std, nightly). См. docs/cross-build-win7.md.
+
+[unstable]
+build-std = ["std", "core", "alloc", "panic_abort"]
+
+[target.x86_64-win7-windows-msvc]
+linker = "scripts/xwin-lld-link.sh"
+ar = "lld-link"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-args=-static",
+]
