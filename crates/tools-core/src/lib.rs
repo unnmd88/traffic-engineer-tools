@@ -1,3 +1,11 @@
+//! Библиотека для задач организации дорожного движения (ОДД).
+//!
+//! ## Готовые фичи
+//! - [`scn`] — конвертация SCN (ASCII ↔ dotted ↔ scn-index ↔ utc-index);
+//! - [`monitor`] — опрос и управление ДК по сценариям.
+
+#![warn(missing_docs)]
+
 mod constants;
 mod utils;
 
