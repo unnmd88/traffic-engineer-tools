@@ -116,19 +116,13 @@ mod tests {
 
     #[test]
     fn rejects_empty_cycle() {
-        assert!(matches!(
-            Cycle::try_new(vec![]),
-            Err(CoordinationError::EmptyCycle)
-        ));
+        assert!(matches!(Cycle::try_new(vec![]), Err(CoordinationError::EmptyCycle)));
     }
 
     #[test]
     fn rejects_zero_duration() {
         let err = Cycle::try_new(vec![Phase::new(1, Duration::ZERO)]).unwrap_err();
-        assert!(matches!(
-            err,
-            CoordinationError::NonPositivePhaseDuration { id: 1 }
-        ));
+        assert!(matches!(err, CoordinationError::NonPositivePhaseDuration { id: 1 }));
     }
 
     #[test]

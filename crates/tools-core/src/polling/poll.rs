@@ -102,12 +102,8 @@ mod tests {
     }
 
     fn cfg(retries: u8) -> AttemptConfig {
-        AttemptConfig::try_new(
-            Duration::from_millis(100),
-            retries,
-            Duration::from_millis(1),
-        )
-        .unwrap()
+        AttemptConfig::try_new(Duration::from_millis(100), retries, Duration::from_millis(1))
+            .unwrap()
     }
 
     #[tokio::test]

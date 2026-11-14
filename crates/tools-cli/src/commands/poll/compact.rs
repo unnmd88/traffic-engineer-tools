@@ -216,11 +216,7 @@ fn format_groups(
     width: usize,
 ) {
     out.push('\n');
-    push_line(
-        out,
-        &format!("  {}: {} groups", sample_name(sample), groups.len()),
-        width,
-    );
+    push_line(out, &format!("  {}: {} groups", sample_name(sample), groups.len()), width);
     push_line(
         out,
         &format!(

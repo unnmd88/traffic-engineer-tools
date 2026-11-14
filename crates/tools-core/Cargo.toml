@@ -26,13 +26,8 @@ memchr = { workspace = true }
 
 
 
-[lints.clippy]
-pedantic = "warn"
-nursery = "warn"
-cargo = "warn"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
-missing_errors_doc = "allow"
+[lints]
+workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

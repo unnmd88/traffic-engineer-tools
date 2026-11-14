@@ -2,7 +2,7 @@
 //!
 //! Пример: `cargo run --example scn -- str CO101`
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tools_core::scn::Scn;
 
 fn parse(from: &str, input: &str) -> Result<Scn> {

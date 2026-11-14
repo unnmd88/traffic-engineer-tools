@@ -23,3 +23,6 @@ crossterm = "0.29.0"
 tabled = "0.21.0"
 unicode-width = "0.2.2"
 
+[lints]
+workspace = true
+

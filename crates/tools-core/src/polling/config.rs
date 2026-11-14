@@ -52,12 +52,8 @@ mod tests {
 
     #[test]
     fn rejects_zero_timeout() {
-        let err = AttemptConfig::try_new(
-            Duration::from_millis(0),
-            0,
-            Duration::from_millis(10),
-        )
-        .unwrap_err();
+        let err = AttemptConfig::try_new(Duration::from_millis(0), 0, Duration::from_millis(10))
+            .unwrap_err();
         assert!(matches!(err, ConfigError::TimeoutMustBePositive));
     }
 }

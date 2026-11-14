@@ -35,17 +35,17 @@ pub enum Commands {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long, value_enum, default_value_t = PollView::Classic)]
-        view:   PollView,
+        view: PollView,
     },
 
     ToScn {
-        input:  String,
+        input: String,
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Human)]
         output: OutputFormat,
     },
 
     FromScn {
-        input:  String,
+        input: String,
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Human)]
         output: OutputFormat,
     },
