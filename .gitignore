@@ -47,6 +47,7 @@ AGENTS.md
 
 # Локальные заметки и справочные материалы (не коммитятся)
 /docs/arch_new.txt
+/docs/coordination_mode.txt
 /docs/monitor_dispatcher.png
 /docs/potok_backup_1.5.15/
 /docs/prompt.txt
