@@ -1,0 +1,32 @@
+name: CI
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: Check, test, lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # net-monitor заморожен и исключён (его функционал будет влит в tools-core).
+      - name: Format
+        run: cargo fmt -p tools-core -p tctl --check
+
+      - name: Check
+        run: cargo check -p tools-core -p tctl --all-targets
+
+      - name: Test
+        run: cargo test -p tools-core -p tctl
+
+      - name: Clippy
+        run: cargo clippy -p tools-core -p tctl --all-targets
