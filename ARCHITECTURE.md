@@ -3,7 +3,7 @@
 This file is the primary reference for the purpose of components and how they interact.
 It describes the current state of the code, primarily the monitor in `tools-core`.
 When a component's responsibility or contract changes, the corresponding section must be
-updated together with the code. Development plans live in [TODO.md](TODO.md).
+updated together with the code.
 
 The description below is verified against the current working tree.
 
@@ -490,8 +490,8 @@ component's purpose and a link here.
 
 ## Open questions and checks
 
-Current tasks live in [TODO.md](TODO.md). In particular, decisions remain about counting
-fatal errors and about history-output behavior with a slow receiver.
+Open decisions remain about counting fatal errors and about history-output behavior with
+a slow receiver.
 A separate contract for plugging in external scenarios is not yet implemented.
 
 The depth of the results ring is currently set when a `Task` is created.

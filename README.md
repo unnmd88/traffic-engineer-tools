@@ -88,7 +88,6 @@ See the crate docs (`cargo doc -p tools-core --open`) and
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — component map and responsibilities.
 - [`cross-build-win7.md`](cross-build-win7.md) — cross-compiling for
   Windows 7 / Server 2008 R2.
-- [`TODO.md`](TODO.md) — current backlog.
 
 ## License
 

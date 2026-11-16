@@ -6,6 +6,8 @@ Decisions made:
 - Public documentation is written in **English** (READMEs, `ARCHITECTURE.md`, crate
   metadata descriptions). Local/private notes may stay in Russian.
 - Private notes live in the gitignored `notes/` folder; public docs live at the repo root.
+- crates.io publishing is not planned; crate metadata (`repository`, `description`,
+  `license`) is intentionally out of scope for now.
 
 ## First impression
 
@@ -21,7 +23,6 @@ Decisions made:
 - [x] Keep a single `ARCHITECTURE.md`; remove the `docs/ARCHITECTURE.md` duplicate.
 - [x] Fix intra-doc links once `TODO.md` and READMEs exist (re-check `ARCHITECTURE.md`).
 - [x] Translate `ARCHITECTURE.md` to English.
-- [ ] Align crate `description` fields to English.
 
 ## Structure cleanup
 
@@ -32,16 +33,12 @@ Decisions made:
 
 ## Metadata & tooling
 
-- [ ] Add `repository = "https://github.com/unnmd88/traffic-engineer-tools"` to
-      `[workspace.package]` and reference it from every crate.
-- [ ] Align crate manifests: add `description` to `tctl`; add `license`, `[lints]
-      workspace`, and `edition.workspace` to `net-monitor`.
-- [ ] Fix `mise run` (`[tasks.run]`): use `cargo run -p tctl` (or set `default-members`);
-      drop/fix the broken `example-traceroute` task (missing `test_traceroute` example).
-- [ ] Add `--locked` to CI build steps; consider a doctest step.
+- [x] Fix `mise run` (`[tasks.run]`): use `cargo run -p tctl`; drop the broken
+      `example-traceroute` task (missing `test_traceroute` example).
+- [x] Add `--locked` to CI build steps.
 
 ## Nice-to-have
 
-- [ ] Add `CHANGELOG.md`.
+- [x] Add `CHANGELOG.md`.
 - [ ] Add `CONTRIBUTING.md` (incl. conventional-commit convention).
 - [ ] Add `.github/PULL_REQUEST_TEMPLATE.md` and issue templates.
