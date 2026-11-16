@@ -1,7 +1,6 @@
 mod error;
 mod execution;
-mod repeat_snmp_get;
-mod repeat_snmp_set;
+mod impls;
 mod runtime;
 mod schedule;
 mod spec;

@@ -1,3 +1,10 @@
+//! Сценарий «повторяющийся SNMP SET»: с заданным темпом отправляет устройству
+//! SET-запросы.
+//!
+//! При сборке создаётся SNMP-соединение (при необходимости — отдельное
+//! read-community для резолва SCN) и резолвятся SET-элементы. Затем по
+//! расписанию выполняются SET-запросы; результат — успех или отсутствие ответа.
+
 use std::panic::AssertUnwindSafe;
 
 use async_trait::async_trait;
@@ -14,7 +21,7 @@ use crate::{
     snmp::{SnmpClient, SnmpSetItem, oid::SnmpOid, resolve::Resolver, value::SnmpValue},
 };
 
-use super::{
+use crate::monitor::scenario::{
     Generation, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
     SnmpSetScenarioSpec,
     runtime::{
@@ -24,7 +31,7 @@ use super::{
 };
 
 #[expect(clippy::too_many_lines)]
-pub(super) async fn run(
+pub(in crate::monitor::scenario) async fn run(
     spec: SnmpSetScenarioSpec,
     task_id: TaskId,
     generation: Generation,

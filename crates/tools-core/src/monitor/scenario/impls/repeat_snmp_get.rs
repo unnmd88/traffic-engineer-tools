@@ -1,3 +1,10 @@
+//! Сценарий «повторяющийся SNMP GET»: с заданным темпом опрашивает устройство
+//! GET-запросами и возвращает распарсенные значения.
+//!
+//! При сборке создаётся SNMP-соединение и резолвятся OID (по профилю, если он
+//! задан). Затем по расписанию выполняются GET-запросы; каждый результат —
+//! список `SnmpGetSample` (имя, OID, сырое и бизнес-значение).
+
 use std::panic::AssertUnwindSafe;
 
 use async_trait::async_trait;
@@ -17,7 +24,7 @@ use crate::{
     },
 };
 
-use super::{
+use crate::monitor::scenario::{
     Generation, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
     SnmpGetScenarioSpec,
     runtime::{
@@ -27,7 +34,7 @@ use super::{
 };
 
 #[expect(clippy::too_many_lines)]
-pub(super) async fn run(
+pub(in crate::monitor::scenario) async fn run(
     spec: SnmpGetScenarioSpec,
     task_id: TaskId,
     generation: Generation,
