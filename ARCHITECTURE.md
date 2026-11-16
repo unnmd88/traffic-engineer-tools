@@ -1,92 +1,91 @@
-# Архитектура traffic-engineer-tools
+# traffic-engineer-tools Architecture
 
-Этот файл — основной справочник по назначению компонентов и их взаимодействию.
-Он описывает текущее устройство кода, прежде всего монитора в `tools-core`.
-При изменении ответственности или контракта компонента соответствующий раздел
-нужно обновлять вместе с кодом. Планы разработки ведутся в [TODO.md](TODO.md).
+This file is the primary reference for the purpose of components and how they interact.
+It describes the current state of the code, primarily the monitor in `tools-core`.
+When a component's responsibility or contract changes, the corresponding section must be
+updated together with the code. Development plans live in [TODO.md](TODO.md).
 
-Описание ниже сверено с текущим рабочим деревом. Материалы в `docs/` могут
-описывать предыдущие версии архитектуры и не являются источником этого документа.
+The description below is verified against the current working tree.
 
-## Содержание
+## Contents
 
-- [Назначение и границы проекта](#назначение-и-границы-проекта)
-- [Карта компонентов монитора](#карта-компонентов-монитора)
-- [Описание задачи и проверка конфигурации](#описание-задачи-и-проверка-конфигурации)
-- [Сборка, запуск и завершение](#сборка-запуск-и-завершение)
-- [Оркестратор и внутреннее состояние](#оркестратор-и-внутреннее-состояние)
-- [Сценарии](#сценарии)
-- [Запросы, попытки и SNMP](#запросы-попытки-и-snmp)
-- [Расписание повторяющихся запросов](#расписание-повторяющихся-запросов)
-- [Лимит, результаты и история задачи](#лимит-результаты-и-история-задачи)
-- [События, снимки и подписки](#события-снимки-и-подписки)
-- [Запись истории событий](#запись-истории-событий)
-- [Ошибки и перезапуски](#ошибки-и-перезапуски)
-- [Координация](#координация)
-- [Как расширять библиотеку и этот документ](#как-расширять-библиотеку-и-этот-документ)
-- [Открытые вопросы и проверки](#открытые-вопросы-и-проверки)
+- [Purpose and project boundaries](#purpose-and-project-boundaries)
+- [Monitor component map](#monitor-component-map)
+- [Task description and configuration validation](#task-description-and-configuration-validation)
+- [Build, start, and shutdown](#build-start-and-shutdown)
+- [Orchestrator and internal state](#orchestrator-and-internal-state)
+- [Scenarios](#scenarios)
+- [Requests, attempts, and SNMP](#requests-attempts-and-snmp)
+- [Repeating-request schedule](#repeating-request-schedule)
+- [Limit, results, and task history](#limit-results-and-task-history)
+- [Events, snapshots, and subscriptions](#events-snapshots-and-subscriptions)
+- [Event history output](#event-history-output)
+- [Errors and restarts](#errors-and-restarts)
+- [Coordination](#coordination)
+- [How to extend the library and this document](#how-to-extend-the-library-and-this-document)
+- [Open questions and checks](#open-questions-and-checks)
 
-## Назначение и границы проекта
+## Purpose and project boundaries
 
-Основной продукт — переиспользуемая библиотека для транспортного инженера:
-сетевой опрос и управление устройствами, расчёты и преобразования данных.
-Потребитель библиотеки может иметь собственный интерфейс и способ хранения.
+The main product is a reusable library for the traffic engineer: network polling and
+device management, calculations, and data transformations. A library consumer may have
+their own interface and storage.
 
-| Крейт | Назначение |
+| Crate | Purpose |
 |---|---|
-| [`tools-core`](crates/tools-core/src/lib.rs) | Доменные типы, монитор, SNMP, опрос, конвертеры и другие инструменты без UI |
-| [`tctl`](crates/tools-cli/src/main.rs) | Текущая CLI-реализация: загрузка конфигурации, управление сеансом и отображение результатов |
-| `net-monitor` | Отдельный замороженный сервис; развитие монитора `tools-core` от него не зависит |
+| [`tools-core`](crates/tools-core/src/lib.rs) | Domain types, monitor, SNMP, polling, converters, and other tools without a UI |
+| [`tctl`](crates/tools-cli/src/main.rs) | The current CLI implementation: loads configuration, manages the session, and displays results |
+| `net-monitor` | A separate frozen service; development of the `tools-core` monitor does not depend on it |
 
-Планируемое приложение на axum будет ещё одним потребителем ядра.
-Ни CLI, ни будущий HTTP-интерфейс не определяют границы публичного API библиотеки.
-Разбор внешнего формата и представление ошибок принадлежат интерфейсу;
-правила корректности доменных значений принадлежат ядру.
+The planned axum application will be yet another consumer of the core.
+Neither the CLI nor a future HTTP interface defines the boundaries of the library's
+public API. Parsing the external format and presenting errors belong to the interface;
+correctness rules for domain values belong to the core.
 
-## Карта компонентов монитора
+## Monitor component map
 
-Публичная точка входа — `tools_core::monitor`.
-Она реэкспортирует конфигурации, управление, результаты, события и ошибки.
-Внутренние модули `runtime`, `task` и `scenario` скрыты за этой границей.
-Отдельные механизмы запросов и SNMP также доступны через `tools_core::polling`
-и `tools_core::snmp`.
+The public entry point is `tools_core::monitor`.
+It re-exports configurations, management, results, events, and errors.
+The internal `runtime`, `task`, and `scenario` modules are hidden behind this boundary.
+The individual request and SNMP mechanisms are also available through
+`tools_core::polling` and `tools_core::snmp`.
 
-| Компонент | Ответственность | Исходник |
+| Component | Responsibility | Source |
 |---|---|---|
-| `AppConfig` | Общие настройки: выход истории событий и политика перезапуска | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
-| `TaskConfig` | Проверенное описание одной задачи | [task/config.rs](crates/tools-core/src/monitor/task/config.rs) |
-| `Application` | Подготовленный монитор до запуска | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
-| `RunningApplication` | Владение фоновым выполнением и его завершение | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
-| `ApplicationHandle` | Клонируемый доступ к командам, снимкам и подпискам | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
-| `Orchestrator` | Внутренний владелец состояния задач, их жизненного цикла и порядка событий | [runtime/orchestrator.rs](crates/tools-core/src/monitor/runtime/orchestrator.rs) |
-| `Task` | Внутренняя конфигурация, ревизия, результаты, метрики и здоровье задачи | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
-| `ScenarioSpec` | Публичное описание выбранного сценария | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
-| Исполнение GET/SET | Подготовка запроса, расписание, команды и отчёты конкретного сценария | [snmp_get.rs](crates/tools-core/src/monitor/scenario/snmp_get.rs), [snmp_set.rs](crates/tools-core/src/monitor/scenario/snmp_set.rs) |
-| `SnmpGetSpec`, `SnmpSetSpec` | Проверенные параметры SNMP-запросов без сетевого клиента | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
-| `poll`, `AttemptConfig`, `Pollable` | Общий механизм попыток одного полного запроса | [polling](crates/tools-core/src/polling/mod.rs) |
-| `SnmpClient`, `Resolver` | Сетевые операции и подготовка OID с учётом профиля устройства | [client.rs](crates/tools-core/src/snmp/client.rs), [resolve.rs](crates/tools-core/src/snmp/resolve.rs) |
-| `MonitorSnapshot`, `MonitorSubscription`, `MonitorEvent` | Наблюдение за состоянием и изменениями | [view.rs](crates/tools-core/src/monitor/task/view.rs), [subscription.rs](crates/tools-core/src/monitor/runtime/subscription.rs), [event.rs](crates/tools-core/src/monitor/event.rs) |
+| `AppConfig` | Global settings: event-history output and restart policy | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
+| `TaskConfig` | The validated description of one task | [task/config.rs](crates/tools-core/src/monitor/task/config.rs) |
+| `Application` | A prepared monitor before it is started | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
+| `RunningApplication` | Owns the background execution and its termination | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
+| `ApplicationHandle` | Cloneable access to commands, snapshots, and subscriptions | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
+| `Orchestrator` | Internal owner of task state, their lifecycle, and event ordering | [runtime/orchestrator.rs](crates/tools-core/src/monitor/runtime/orchestrator.rs) |
+| `Task` | Internal configuration, revision, results, metrics, and health of a task | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
+| `ScenarioSpec` | Public description of the selected scenario | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
+| GET/SET execution | Request preparation, schedule, commands, and reports of a concrete scenario | [impls/repeat_snmp_get.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), [impls/repeat_snmp_set.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs) |
+| `SnmpGetSpec`, `SnmpSetSpec` | Validated SNMP-request parameters without a network client | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
+| `poll`, `AttemptConfig`, `Pollable` | The shared mechanism for attempts of one complete request | [polling](crates/tools-core/src/polling/mod.rs) |
+| `SnmpClient`, `Resolver` | Network operations and OID preparation with device-profile awareness | [client.rs](crates/tools-core/src/snmp/client.rs), [resolve.rs](crates/tools-core/src/snmp/resolve.rs) |
+| `MonitorSnapshot`, `MonitorSubscription`, `MonitorEvent` | Observing state and changes | [view.rs](crates/tools-core/src/monitor/task/view.rs), [subscription.rs](crates/tools-core/src/monitor/runtime/subscription.rs), [event.rs](crates/tools-core/src/monitor/event.rs) |
 
-Упрощённая схема работающего монитора:
+A simplified diagram of a running monitor:
 
 ```mermaid
 flowchart LR
-    Consumer[Потребитель] --> Handle[ApplicationHandle]
-    Handle -->|команды| Orchestrator[Orchestrator]
-    Orchestrator -->|запуск и управление| Scenario[Исполнение сценария]
-    Scenario -->|полный запрос| Poll[poll / Pollable]
+    Consumer[Consumer] --> Handle[ApplicationHandle]
+    Handle -->|commands| Orchestrator[Orchestrator]
+    Orchestrator -->|start and manage| Scenario[Scenario execution]
+    Scenario -->|complete request| Poll[poll / Pollable]
     Poll --> Client[SnmpClient]
-    Client --> Device[Устройство]
+    Client --> Device[Device]
     Device --> Client
-    Scenario -->|внутренние отчёты| Orchestrator
-    Orchestrator --> State[Task и состояние выполнения]
-    Orchestrator -->|снимки и события| Consumer
-    Orchestrator -->|опционально| History[Обработчик истории потребителя]
+    Scenario -->|internal reports| Orchestrator
+    Orchestrator --> State[Task and execution state]
+    Orchestrator -->|snapshots and events| Consumer
+    Orchestrator -->|optional| History[Consumer history handler]
 ```
 
-## Описание задачи и проверка конфигурации
+## Task description and configuration validation
 
-Конфигурация состоит из нескольких уровней:
+Configuration consists of several levels:
 
 ```text
 TaskConfig
@@ -100,40 +99,39 @@ TaskConfig
   deep_history
 ```
 
-`TaskConfig` содержит свойства задачи: имя, сценарий, лимит полных выполнений
-и глубину локальной истории. Конструктор отклоняет пустое имя.
-Универсального интервала в `TaskConfig` нет: расписание принадлежит сценарию.
+`TaskConfig` holds the task properties: name, scenario, limit of complete executions,
+and the depth of local history. The constructor rejects an empty name.
+There is no universal interval on `TaskConfig`: the schedule belongs to the scenario.
 
-Конструкторы ядра проверяют конфигурацию по мере её сборки.
-Например, `AttemptConfig::try_new` проверяет таймаут,
-конструктор спецификации сценария — длительность расписания,
-а разбор SNMP-запроса — адрес, community, профиль, OID и значения SET.
-Вызов этих конструкторов из CLI или другого интерфейса не дублирует проверки.
+Core constructors validate the configuration as it is assembled.
+For example, `AttemptConfig::try_new` validates the timeout, the scenario-spec constructor
+validates the schedule duration, and SNMP-request parsing validates the address,
+community, profile, OIDs, and SET values.
+Calling these constructors from the CLI or another interface does not duplicate the checks.
 
-Синтаксически корректный запрос ещё не означает, что устройство доступно
-и поддерживает запрошенную операцию. Такие результаты появляются при исполнении.
+A syntactically correct request does not mean the device is reachable and supports the
+requested operation. Such outcomes appear only at execution time.
 
-## Сборка, запуск и завершение
+## Build, start, and shutdown
 
-`Application::new(config, tasks)` создаёт каналы и внутреннее состояние,
-назначает идентификаторы начальным задачам и оставляет их в `Idle`.
-Этот этап не обращается к сети, не запускает фоновые задачи и может выполняться
-вне контекста Tokio. Пустой набор задач допустим.
+`Application::new(config, tasks)` creates channels and internal state, assigns ids to the
+initial tasks, and leaves them `Idle`. This stage does not touch the network, does not
+start background tasks, and may run outside a Tokio context. An empty set of tasks is valid.
 
-До запуска доступны `id`, `task_ids`, `subscribe` и `subscribe_with_snapshot`.
-Начальные события ещё не публикуются, поэтому можно заранее подключить наблюдателя.
+Before start, `id`, `task_ids`, `subscribe`, and `subscribe_with_snapshot` are available.
+Initial events are not yet published, so an observer can be attached in advance.
 
-`Application::spawn(self)` потребляет подготовленный монитор и запускает
-оркестратор в текущем Tokio runtime. Оркестратор публикует добавление начальных
-задач и инициирует их запуск. Возврат `RunningApplication` не означает,
-что сетевые клиенты уже подготовлены. Готовность каждой задачи подтверждается
-отдельно через `TaskStarted` и состояние `Active`.
+`Application::spawn(self)` consumes the prepared monitor and starts the orchestrator in
+the current Tokio runtime. The orchestrator publishes the addition of the initial tasks
+and initiates their start. Returning `RunningApplication` does not mean the network
+clients are already prepared. Each task's readiness is confirmed separately via
+`TaskStarted` and the `Active` state.
 
-`RunningApplication::handle()` возвращает клонируемый `ApplicationHandle`.
-Копии handle управляют одним монитором; владение выполнением остаётся
-у `RunningApplication`.
+`RunningApplication::handle()` returns a cloneable `ApplicationHandle`.
+Handle copies manage one monitor; ownership of the execution stays with
+`RunningApplication`.
 
-Пример порядка действий для получения начального снимка:
+Example sequence for obtaining an initial snapshot:
 
 ```rust
 use tools_core::monitor::{
@@ -154,354 +152,355 @@ pub async fn initial_snapshot(
 }
 ```
 
-В длительном сеансе потребитель читает подписку и вызывает команды до `shutdown`.
-Пример выше показывает только сборку, получение снимка и завершение;
-он не ожидает первого сетевого результата.
+In a long-running session the consumer reads the subscription and issues commands until
+`shutdown`. The example above only shows assembly, obtaining a snapshot, and shutdown;
+it does not wait for the first network result.
 
-`RunningApplication::shutdown(self).await` запрашивает остановку и ждёт
-оркестратор, завершение сценариев и таймеров, а также обработчик передачи истории.
-Это не команда перевести само устройство в какое-либо безопасное состояние.
+`RunningApplication::shutdown(self).await` requests a stop and waits for the orchestrator,
+the scenario completions and timers, and the history-forwarding handler.
+It is not a command to put the device itself into any safe state.
 
-Удаление владельца без `shutdown`, в том числе при отмене future завершения,
-запрашивает аварийную отмену оркестратора. Его `JoinSet` отменяют внутренние задачи.
-`Drop` не может асинхронно дождаться их завершения или гарантировать доставку
-накопленной истории. Для ожидаемого завершения предназначен `shutdown().await`.
+Dropping the owner without `shutdown`, including when a completion future is cancelled,
+requests an emergency cancellation of the orchestrator. Its `JoinSet` cancels the inner
+tasks. `Drop` cannot asynchronously wait for them to finish or guarantee delivery of
+accumulated history. For an orderly shutdown, use `shutdown().await`.
 
-## Оркестратор и внутреннее состояние
+## Orchestrator and internal state
 
-`Orchestrator` последовательно обрабатывает команды и отчёты сценариев.
-Он владеет реестром задач, состояниями выполнения и счётчиком событий.
-Через внутренний `OrchestratorHandle` публичный handle передаёт команды
-и ожидает ответы по отдельным каналам.
+`Orchestrator` processes commands and scenario reports sequentially.
+It owns the task registry, execution states, and the event counter.
+Through an internal `OrchestratorHandle`, the public handle passes commands and waits
+for replies over separate channels.
 
-`Task` хранит `TaskConfig`, ревизию, временные метки, последний результат,
-локальную историю, метрики и здоровье. Текущий статус, поколение исполнения,
-счётчик перезапусков и handle сценария находятся в записи оркестратора.
-Потребитель видит копию этих данных в `TaskView`.
+`Task` holds the `TaskConfig`, revision, timestamps, the last result, local history,
+metrics, and health. The current status, execution generation, restart counter, and the
+scenario handle live in the orchestrator's record. The consumer sees a copy of these data
+in `TaskView`.
 
-Основные команды `ApplicationHandle`:
+Main `ApplicationHandle` commands:
 
-| Команда | Поведение |
+| Command | Behavior |
 |---|---|
-| `add_task` | Регистрирует задачу в `Idle`, возвращает `TaskId`; исполнения ещё нет |
-| `start_task` | Начинает запуск из `Idle`, `Stopped` или `Completed` |
-| `pause_task` | Передаёт паузу живому сценарию; при ожидании перезапуска переводит в паузу без запуска |
-| `resume_task` | Возобновляет живой сценарий либо создаёт новый, если прежний уже завершился |
-| `stop_task` | Запрашивает отмену сценария и переводит выполнявшуюся задачу в `Stopped` |
-| `update_task` | Заменяет конфигурацию и увеличивает ревизию; поведение зависит от текущего статуса |
-| `remove_task` | Удаляет задачу и отменяет её исполнение, если оно было запущено |
+| `add_task` | Registers a task as `Idle` and returns a `TaskId`; no execution yet |
+| `start_task` | Starts execution from `Idle`, `Stopped`, or `Completed` |
+| `pause_task` | Passes a pause to a live scenario; while waiting for a restart it moves to paused without starting |
+| `resume_task` | Resumes a live scenario or creates a new one if the previous one already finished |
+| `stop_task` | Requests cancellation of the scenario and moves the running task to `Stopped` |
+| `update_task` | Replaces the configuration and increments the revision; behavior depends on the current status |
+| `remove_task` | Removes the task and cancels its execution if it was started |
 
-Ответ команды запуска подтверждает инициирование запуска, а не успешную
-сетевую подготовку. Для живого сценария пауза и возобновление подтверждаются
-его отчётами и соответствующими публичными событиями. Обычная пауза GET/SET
-ожидает завершения текущего полного запроса с его повторами.
+The start-command reply confirms that the start was initiated, not successful network
+preparation. For a live scenario, pause and resume are confirmed by its reports and the
+corresponding public events. A regular GET/SET pause waits for the current complete
+request with its retries to finish.
 
-При изменении конфигурации активной задачи старое исполнение отменяется,
-новое запускается с новым поколением. Метрики и накопленные результаты сохраняются.
-У приостановленной задачи применение нового сценария откладывается до `resume`.
-Явный новый `start_task` сбрасывает метрики и здоровье, сохраняя результаты и историю.
+When the configuration of an active task changes, the old execution is cancelled and a new
+one starts with a new generation. Metrics and accumulated results are preserved.
+For a paused task, applying a new scenario is deferred until `resume`.
+An explicit new `start_task` resets metrics and health while keeping results and history.
 
-Временные метки имеют разные значения: `created_at` — создание задачи,
-`config_updated_at` — изменение конфигурации, `updated_at` — последняя
-учтённая активность задачи, включая результат выполнения или новый запуск.
-Это не универсальная временная метка каждого изменения статуса.
+Timestamps have different meanings: `created_at` is task creation, `config_updated_at` is
+a configuration change, and `updated_at` is the last accounted activity of the task,
+including an execution result or a new start. It is not a universal timestamp of every
+status change.
 
-## Сценарии
+## Scenarios
 
-`ScenarioSpec` — описание поведения, которое можно клонировать, передавать
-в `TaskConfig` и показывать в снимке. Он не содержит сетевого клиента
-и не предоставляет публичный метод запуска.
+`ScenarioSpec` is a description of behavior that can be cloned, passed into `TaskConfig`,
+and shown in a snapshot. It holds no network client and exposes no public start method.
 
-Сейчас доступны два варианта: повторяющиеся `SnmpGet` и `SnmpSet`.
-Это enum с реализациями внутри ядра; API подключения произвольной внешней
-реализации сценария пока отсутствует.
+Two variants are currently available: repeating `SnmpGet` and `SnmpSet`.
+It is an enum with implementations inside the core; there is no API yet for plugging in an
+arbitrary external scenario implementation.
 
-Каждая реализация самостоятельно выполняет подготовку, следует своему расписанию,
-обрабатывает команды и публикует отчёты. Оркестратор отвечает за жизненный цикл,
-а не за вычисление следующего срока конкретного сценария.
+Each implementation independently performs preparation, follows its own schedule, handles
+commands, and publishes reports. The orchestrator owns the lifecycle, not the computation
+of the next deadline of a particular scenario.
 
-Расположение кода в [scenario](crates/tools-core/src/monitor/scenario/mod.rs):
+Code layout in [scenario](crates/tools-core/src/monitor/scenario/mod.rs):
 
-| Файл | Содержимое |
+| File | Contents |
 |---|---|
-| `mod.rs` | Публичные реэкспорты и внутренняя точка запуска |
-| `spec.rs` | Описания сценариев и их проверка |
-| `execution.rs` | Результаты, статусы исходов, поколения и стадии паник |
-| `error.rs` | Ошибки конфигурации, подготовки и исполнения |
-| `runtime.rs` | Внутренние команды, отчёты, выбор реализации и общие вспомогательные функции |
-| `snmp_get.rs`, `snmp_set.rs` | Самостоятельное исполнение GET и SET вместе с адаптерами запросов |
-| `schedule.rs` | Публичный выбор расписания и внутренний таймер |
-| `tests.rs` | Общие тесты сетевого исполнения; проверки без сокетов также находятся рядом с компонентами |
+| `mod.rs` | Public re-exports and the internal entry point |
+| `spec.rs` | Scenario descriptions and their validation |
+| `execution.rs` | Results, outcome statuses, generations, and panic stages |
+| `error.rs` | Configuration, build, and execution errors |
+| `runtime.rs` | Internal commands and reports, dispatch to implementations, panic isolation, and shared helpers |
+| `impls/mod.rs` | Concrete scenario implementations (currently repeating SNMP GET/SET) |
+| `impls/repeat_snmp_get.rs`, `impls/repeat_snmp_set.rs` | Standalone GET and SET execution together with request adapters |
+| `schedule.rs` | Public schedule choice and the internal timer |
+| `tests.rs` | Shared network-execution tests; socket-free checks also live next to components |
 
-## Запросы, попытки и SNMP
+## Requests, attempts, and SNMP
 
-`SnmpGetSpec` и `SnmpSetSpec` описывают сетевые параметры и элементы запроса.
-Спецификации, `RawSnmpOidItem`, `RawSnmpSetItem` и `SnmpQueryError` принадлежат
-`tools_core::snmp` и доступны независимо от монитора. `tools_core::monitor`
-сохраняет реэкспорты этих типов. Расписание и параметры попыток принадлежат
-описанию сценария и не входят в спецификацию SNMP-запроса.
-GET принимает `SnmpGetItem`: OID, необязательное имя и пользовательский парсер.
-SET принимает `SnmpSetItem`: OID, имя и уже типизированное значение.
-Эти элементы доступны в `tools_core::snmp`.
+`SnmpGetSpec` and `SnmpSetSpec` describe the network parameters and the request elements.
+The specs, `RawSnmpOidItem`, `RawSnmpSetItem`, and `SnmpQueryError` belong to
+`tools_core::snmp` and are available independently of the monitor. `tools_core::monitor`
+keeps re-exports of these types. The schedule and attempt parameters belong to the
+scenario description and are not part of the SNMP-request spec.
+GET accepts `SnmpGetItem`: an OID, an optional name, and a user parser.
+SET accepts `SnmpSetItem`: an OID, a name, and an already-typed value.
+These elements are available in `tools_core::snmp`.
 
-Есть два способа сборки:
+There are two ways to build:
 
-- Типизированный: `SnmpGetSpec::new` и `SnmpSetSpec::try_new` принимают
-  `SocketAddr`, `Community`, необязательный профиль и элементы запроса.
-- Строковый: `from_raw` разбирает входные строки и использует тот же путь сборки.
-  Существующие сигнатуры удобны для адаптеров конфигурации.
+- Typed: `SnmpGetSpec::new` and `SnmpSetSpec::try_new` accept `SocketAddr`, `Community`,
+  an optional profile, and the request elements.
+- String-based: `from_raw` parses input strings and uses the same build path.
+  The existing signatures are convenient for configuration adapters.
 
-Поля спецификаций закрыты; методы чтения возвращают значения, ссылки и
-неизменяемые срезы. `Community` создаётся через `parse`, `TryFrom<String>`
-или `FromStr` с действующим ограничением в 1–32 байта.
-Конструктор SET проверяет значения существующим кодировщиком и возвращает
-`SnmpQueryError::InvalidSetValue` с позицией элемента и исходной ошибкой.
-Неподдерживаемые типы, включая текущий `TimeTicks`, отклоняются до запуска.
+Spec fields are private; reader methods return values, references, and immutable slices.
+`Community` is created via `parse`, `TryFrom<String>`, or `FromStr` with a working limit
+of 1–32 bytes.
+The SET constructor validates values with the existing encoder and returns
+`SnmpQueryError::InvalidSetValue` with the element position and the underlying error.
+Unsupported types, including the current `TimeTicks`, are rejected before start.
 
-Произвольные числовые OID доступны без профиля. Профиль добавляет алиасы,
-метаданные, кодирование значений и правила достройки OID.
-`Resolver` выполняется при подготовке сценария: при необходимости получает SCN
-и формирует окончательные OID. Пользовательские имя и парсер GET имеют приоритет
-перед подстановкой из профиля. Для SET значения уже закодированы до резолюции.
-При наличии отдельной community чтения SET использует её для подготовки OID.
+Arbitrary numeric OIDs are available without a profile. A profile adds aliases, metadata,
+value encoding, and OID completion rules.
+The `Resolver` runs during scenario preparation: it fetches the SCN when needed and forms
+the final OIDs. A user-supplied GET name and parser take priority over the profile
+substitution. For SET, the values are already encoded before resolution.
+When a separate read community is present, SET uses it for OID preparation.
 
-`SnmpClient` выполняет сетевые операции. В сценариях его внутренние повторы
-отключены: попытками полного запроса управляет общий `poll`, чтобы не складывать
-независимые механизмы повторов.
+`SnmpClient` performs the network operations. In scenarios its internal retries are
+disabled: the shared `poll` manages attempts of a complete request, so that independent
+retry mechanisms are not stacked.
 
-[`poll`](crates/tools-core/src/polling/poll.rs) работает с адаптером `Pollable`
-и его типизированным результатом. `AttemptConfig` задаёт таймаут одной попытки,
-повторы после первой попытки и задержку между ними. После первого успеха
-дальнейшие попытки не выполняются. Таймауты и временные ошибки допускают повтор,
-фатальная ошибка завершает полный запрос сразу.
+[`poll`](crates/tools-core/src/polling/poll.rs) works with a `Pollable` adapter and its
+typed result. `AttemptConfig` sets the timeout of one attempt, the retries after the first
+attempt, and the delay between them. After the first success, no further attempts run.
+Timeouts and transient errors allow a retry; a fatal error ends the complete request
+immediately.
 
-Итог полного запроса — `Response::Success` или `Response::NoResponse`.
-Отсутствие ответа после исчерпания попыток является штатным результатом.
-`AttemptConfig::budget()` оценивает время по таймаутам и паузам;
-расписание не ограничивается условием `interval >= budget`.
+The outcome of a complete request is `Response::Success` or `Response::NoResponse`.
+The absence of a response after exhausting attempts is a normal result.
+`AttemptConfig::budget()` estimates the time from timeouts and delays;
+the schedule is not constrained by the condition `interval >= budget`.
 
-## Расписание повторяющихся запросов
+## Repeating-request schedule
 
-`PollSchedule` принадлежит спецификации повторяющегося сценария.
-Внутренний `PollTimer` использует монотонный `Instant`.
+`PollSchedule` belongs to the spec of a repeating scenario.
+The internal `PollTimer` uses a monotonic `Instant`.
 
-| Режим | Правило |
+| Mode | Rule |
 |---|---|
-| `FixedRate { period }` | Сроки принадлежат сетке `origin + n × period`; длительность запроса не сдвигает сетку |
-| `FixedDelay { delay }` | Следующий срок отсчитывается от завершения полного запроса, включая его повторы |
+| `FixedRate { period }` | Deadlines belong to the grid `origin + n × period`; request duration does not shift the grid |
+| `FixedDelay { delay }` | The next deadline is counted from the completion of a complete request, including its retries |
 
-Первый запрос ожидает полный период или задержку после подготовки сценария.
-Запросы одного сценария выполняются последовательно. В `FixedRate` просроченные
-старты пропускаются без серии догоняющих запросов; сетка при этом сохраняется.
-Если запрос завершился точно на следующей границе сетки, этот срок ещё доступен.
+The first request waits a full period or delay after scenario preparation.
+Requests of one scenario run sequentially. In `FixedRate`, overdue starts are skipped
+without a series of catch-up requests; the grid is preserved.
+If a request finishes exactly on the next grid boundary, that deadline is still available.
 
-После `resume` режим `FixedDelay` ждёт полную задержку, а `FixedRate` использует
-ближайшую будущую точку исходной сетки. При возобновлении точно на границе
-ожидается следующий период. Новый запуск сценария создаёт новую локальную сетку.
+After `resume`, `FixedDelay` waits a full delay, while `FixedRate` uses the nearest future
+point of the original grid. When resuming exactly on a boundary, the next period is
+expected. A new scenario start creates a new local grid.
 
-Обе длительности должны быть положительными. Локальная сетка отдельного
-сценария не синхронизирует несколько устройств по общей эпохе.
+Both durations must be positive. A scenario's local grid does not synchronize multiple
+devices on a common epoch.
 
-В текущем YAML CLI длительность задаётся `interval`, а режим — необязательным
-`schedule: fixed_rate` или `schedule: fixed_delay`. По умолчанию используется
-`fixed_delay`. Это формат CLI, а не обязательный формат конфигурации библиотеки.
+In the current YAML CLI the duration is given by `interval`, and the mode by an optional
+`schedule: fixed_rate` or `schedule: fixed_delay`. The default is `fixed_delay`. This is a
+CLI format, not a required configuration format of the library.
 
-## Лимит, результаты и история задачи
+## Limit, results, and task history
 
-`limit` считает полные выполнения сценария. Для текущих GET/SET один полный
-запрос с любым количеством внутренних повторов расходует одну единицу.
-Успех и `NoResponse` учитываются одинаково. `limit = 0` означает отсутствие лимита.
+`limit` counts complete scenario executions. For the current GET/SET, one complete request
+with any number of internal retries consumes one unit. Success and `NoResponse` count
+equally. `limit = 0` means no limit.
 
-При достижении лимита публикуется `ExecutionFinished`, затем `TaskCompleted`,
-и сценарий отменяется. Ошибки подготовки, фатальные ошибки исполнения и паники
-сейчас не создают `ScenarioExecution` и счётчик не увеличивают.
-Учёт фатальных ошибок остаётся открытым вопросом.
+When the limit is reached, `ExecutionFinished` is published, then `TaskCompleted`, and the
+scenario is cancelled. Preparation errors, fatal execution errors, and panics currently do
+not create a `ScenarioExecution` and do not increment the counter.
+Accounting for fatal errors remains an open question.
 
-`ScenarioExecution` содержит время завершения, длительность и `ScenarioOutcome`.
-`OutcomeStatus` отделяет оценку результата от статуса самой задачи.
-Текущие GET/SET сопоставляют `Success` со `Succeeded`, а `NoResponse` с `Failed`.
-Вариант `Degraded` присутствует в контракте, но этими исходами сейчас не формируется.
+`ScenarioExecution` holds the completion time, duration, and a `ScenarioOutcome`.
+`OutcomeStatus` separates the assessment of a result from the status of the task itself.
+The current GET/SET map `Success` to `Succeeded` and `NoResponse` to `Failed`.
+The `Degraded` variant exists in the contract but is not currently produced by these
+outcomes.
 
-`ExecutionMetrics` считает полные выполнения и исходы, хранит последнюю,
-минимальную и максимальную длительности. `Health` отражает последние выполнения,
-последовательные неудачные результаты и диагностическую ошибку сценария.
+`ExecutionMetrics` counts complete executions and outcomes, and stores the last, minimum,
+and maximum durations. `Health` reflects the recent executions, consecutive failures, and
+a scenario's diagnostic error.
 
-Последний результат хранится отдельно от истории. `deep_history` задаёт число
-предыдущих результатов в локальном кольце задачи; при нуле последний результат
-остаётся доступным. Эта история результатов отличается от выхода событий
-`history_sink`.
+The last result is stored separately from the history. `deep_history` sets the number of
+previous results in the task's local ring; at zero the last result remains available.
+This results history differs from the `history_sink` event output.
 
-## События, снимки и подписки
+## Events, snapshots, and subscriptions
 
-`MonitorSnapshot` — снимок состояния всех задач. Он содержит `application_id`,
-`next_seq` и список `TaskView`, упорядоченный по идентификаторам.
-Изменение полученного `TaskView` не меняет задачу в мониторе.
+`MonitorSnapshot` is a snapshot of the state of all tasks. It holds `application_id`,
+`next_seq`, and a list of `TaskView` ordered by ids. Mutating a received `TaskView` does
+not change the task in the monitor.
 
-`MonitorEvent` содержит метаданные `EventMeta` и данные `EventData`.
-События сообщают об изменениях жизненного цикла, результатах, ошибках и паниках.
-Некоторые события, например `TaskAdded`, не содержат всей конфигурации задачи:
-полное состояние при необходимости читается из снимка.
+`MonitorEvent` holds `EventMeta` metadata and `EventData` data.
+Events report lifecycle changes, results, errors, and panics.
+Some events, e.g. `TaskAdded`, do not carry the whole task configuration: the full state
+is read from the snapshot when needed.
 
-Идентификаторы решают разные задачи:
+Identifiers serve different purposes:
 
-| Поле | Значение |
+| Field | Meaning |
 |---|---|
-| `application_id` | Типизированный `ApplicationId`; определяет экземпляр монитора |
-| `task_id` | Идентификатор задачи внутри этого монитора |
-| `revision` | Версия конфигурации; начинается с 1 и увеличивается при обновлении |
-| `generation` | Поколение исполнения; меняется при новом запуске сценария, включая перезапуск |
-| `seq` | Общий порядок событий одного монитора, а не отдельной задачи |
+| `application_id` | Typed `ApplicationId`; identifies a monitor instance |
+| `task_id` | The task identifier within this monitor |
+| `revision` | The configuration version; starts at 1 and increments on update |
+| `generation` | The execution generation; changes on a new scenario start, including a restart |
+| `seq` | The global ordering of events of one monitor, not of a single task |
 
-`ApplicationId` поддерживает сравнение, хеширование, отладочный и строковый вывод.
-Для идентификации задачи среди нескольких экземпляров монитора используется
-пара `(ApplicationId, TaskId)`.
+`ApplicationId` supports comparison, hashing, debug, and string output.
+To identify a task across several monitor instances, the `(ApplicationId, TaskId)` pair is
+used.
 
-Оркестратор отбрасывает отчёты, не принадлежащие текущему исполнению задачи.
-Это не позволяет позднему отчёту отменённого сценария изменить новое состояние.
+The orchestrator discards reports that do not belong to the current execution of a task.
+This prevents a late report from a cancelled scenario from changing new state.
 
-`subscribe()` возвращает поток будущих событий через `broadcast`.
-Медленный получатель может получить `Lagged`; библиотека не обещает
-бесконечного хранения событий для каждой подписки.
+`subscribe()` returns a stream of future events via `broadcast`.
+A slow receiver may get `Lagged`; the library does not promise unbounded event storage
+for each subscription.
 
-`subscribe_with_snapshot()` возвращает `MonitorSubscription` из снимка и
-связанного потока событий. До запуска `Application` делает это синхронно;
-после запуска `ApplicationHandle` выполняет операцию через оркестратор.
-Во втором случае снимок и подписка создаются внутри одной обработки команды.
-`next_seq` указывает номер следующего события после снимка.
+`subscribe_with_snapshot()` returns a `MonitorSubscription` of a snapshot and an associated
+event stream. Before start, `Application` does this synchronously; after start,
+`ApplicationHandle` performs the operation through the orchestrator. In the second case
+the snapshot and the subscription are created inside a single command handling.
+`next_seq` indicates the number of the next event after the snapshot.
 
-Для восстановления после `Lagged` потребитель получает новый согласованный
-снимок и подписку. Отдельные вызовы `get_snapshot()` и `subscribe()`
-не предоставляют такой общей границы и могут пропустить изменение между ними.
+To recover from `Lagged`, the consumer obtains a new consistent snapshot and subscription.
+Separate calls to `get_snapshot()` and `subscribe()` do not provide such a common boundary
+and may miss a change between them.
 
-## Запись истории событий
+## Event history output
 
-`AppConfig.history_sink` — необязательный `mpsc::Sender<MonitorEvent>`.
-Потребитель создаёт внешний канал и организует чтение: запись в файл, БД
-или другую обработку. Указывать его для обычной подписки необязательно.
+`AppConfig.history_sink` is an optional `mpsc::Sender<MonitorEvent>`.
+The consumer creates an external channel and organizes reading: writing to a file, a DB,
+or other processing. Specifying it is optional for a regular subscription.
 
-CLI принимает путь к файлу истории в корне YAML-конфигурации:
+The CLI accepts a history-file path at the root of the YAML configuration:
 
 ```yaml
 history_sink: history.jsonl
 tasks: []
 ```
 
-Относительный путь считается от каталога YAML-файла; абсолютный используется
-напрямую. Отсутствующее поле или `null` отключают историю. Каталог назначения
-должен существовать. Полный пример: [poll.yaml](crates/tools-cli/examples/poll.yaml).
-Команда запуска сохраняется: `tctl poll --config path/to/poll.yaml`.
+A relative path is resolved from the YAML file's directory; an absolute path is used
+directly. A missing field or `null` disables history. The destination directory must exist.
+Full example: [poll.yaml](crates/tools-cli/examples/poll.yaml).
+The launch command stays the same: `tctl poll --config path/to/poll.yaml`.
 
-CLI открывает файл до запуска монитора и дописывает в него JSONL: один
-сериализованный `MonitorEvent` на строку. Отдельного типа записи нет.
-Типы событий и вложенных результатов поддерживают `Serialize` и `Deserialize`.
-UUID и OID представлены строками, длительности — объектами `secs`/`nanos`,
-значения enum используют стандартное представление Serde с именами вариантов.
-При чтении OID проверяется штатным парсером. Например:
+The CLI opens the file before starting the monitor and appends JSONL to it: one serialized
+`MonitorEvent` per line. There is no separate record type.
+Event types and nested results support `Serialize` and `Deserialize`.
+UUIDs and OIDs are represented as strings, durations as `secs`/`nanos` objects, and enum
+values use the standard Serde representation with variant names. When reading, an OID is
+validated by the regular parser. For example:
 
 ```json
 {"metadata":{"seq":0,"at":"2026-11-07T00:00:00Z","application_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","task_id":1,"generation":0,"revision":1},"data":"TaskAdded"}
 ```
 
-События `TaskAdded` и `TaskSpecUpdated` по-прежнему не содержат конфигурации
-задачи; файл сохраняет именно поток событий. Формат напрямую отражает типы core.
-Разные запуски в одном файле различаются по `application_id`.
+The `TaskAdded` and `TaskSpecUpdated` events still do not carry the task configuration;
+the file stores exactly the event stream. The format directly reflects the core types.
+Different runs in one file are distinguished by `application_id`.
 
-Отдельная задача CLI читает ограниченный канал и сбрасывает буфер после каждого
-события. Ошибка записи или сбой writer завершает монитор и возвращается из CLI.
-По Ctrl+C CLI останавливает монитор при работающем writer, затем дожидается
-записи оставшихся событий и финального `flush`.
+A separate CLI task reads the bounded channel and flushes the buffer after each event.
+A write error or writer failure ends the monitor and is returned from the CLI.
+On Ctrl+C the CLI stops the monitor with the writer still running, then waits for the
+remaining events to be written and a final `flush`.
 
-Оркестратор передаёт события во внутреннюю ограниченную очередь, а отдельная
-задача пересылает их во внешний канал. Заполнение очередей создаёт обратное
-давление и может задержать обработку команд и отчётов оркестратором.
+The orchestrator forwards events into an internal bounded queue, and a separate task
+forwards them to the external channel. Filling the queues creates backpressure and may
+delay the orchestrator's handling of commands and reports.
 
-При штатной остановке внутренняя очередь закрывается, а обработчик истории
-ожидается до завершения пересылки или обнаружения отключённого получателя.
-Если живой получатель не читает заполненный внешний канал, завершение может ждать
-его неограниченно долго. При отключении получателя обработчик пишет предупреждение
-и прекращает передачу; гарантии записи или повторной доставки сейчас нет.
+On an orderly stop, the internal queue is closed and the history handler is awaited until
+forwarding completes or a disconnected receiver is detected. If a live receiver does not
+read a full external channel, shutdown may wait on it indefinitely. On receiver
+disconnect, the handler logs a warning and stops forwarding; there is currently no
+guarantee of write or redelivery.
 
-Передача в канал не подтверждает сохранение на диск или в БД.
-Текущая реализация не является долговечным журналом и не гарантирует
-сохранность после аварийной отмены или сбоя процесса.
+Forwarding into the channel does not confirm saving to disk or a DB.
+The current implementation is not a durable log and does not guarantee persistence after
+an emergency cancellation or a process crash.
 
-## Ошибки и перезапуски
+## Errors and restarts
 
-Ошибки принадлежат своим модулям; корневой `tools_core::Error` агрегирует их.
+Errors belong to their modules; the root `tools_core::Error` aggregates them.
 
-| Тип | Когда используется |
+| Type | When used |
 |---|---|
-| `TaskError`, `ScenarioSpecError`, `SnmpQueryError`, `polling::ConfigError` | Проверка и сборка конфигурации |
-| `ScenarioBuildError` | Подготовка исполнения, включая клиента и резолюцию OID |
-| `ScenarioExecutionError` | Фатальная ошибка полного запроса |
-| `MonitorCommandError` | Ошибка команды: неизвестная задача или закрытый канал |
-| `ApplicationError` | Завершение приложения и ошибка фонового оркестратора |
+| `TaskError`, `ScenarioSpecError`, `SnmpQueryError`, `polling::ConfigError` | Configuration validation and assembly |
+| `ScenarioBuildError` | Execution preparation, including client and OID resolution |
+| `ScenarioExecutionError` | Fatal error of a complete request |
+| `MonitorCommandError` | Command error: unknown task or closed channel |
+| `ApplicationError` | Application shutdown and background-orchestrator error |
 
-`ApplicationError::Command` оборачивает ошибку команды завершения,
-а `ApplicationError::Runtime` сообщает об ошибке фонового выполнения.
-Корневой `tools_core::Error::MonitorCommand` агрегирует `MonitorCommandError`.
+`ApplicationError::Command` wraps a shutdown-command error, and
+`ApplicationError::Runtime` reports a background-execution error.
+The root `tools_core::Error::MonitorCommand` aggregates `MonitorCommandError`.
 
-Неуспешный сетевой результат `NoResponse` не требует пересоздания сценария.
-Ошибка подготовки, фатальная ошибка исполнения или перехваченная паника
-приводят к `Restarting` и планированию нового запуска.
-`PanicStage` различает подготовку, выполнение запроса и остальную логику сценария.
+An unsuccessful network result `NoResponse` does not require recreating the scenario.
+A preparation error, a fatal execution error, or a caught panic leads to `Restarting` and
+scheduling a new start. `PanicStage` distinguishes preparation, request execution, and the
+rest of the scenario logic.
 
-Текущий `RestartPolicy::default()` увеличивает задержку от 1 до 60 секунд.
-При успешной подготовке счётчик попыток перезапуска сбрасывается.
-Параметры внутри политики пока закрыты и отдельного конструктора для их изменения нет.
-Этот механизм отличается от повторов отдельного сетевого запроса в `AttemptConfig`.
+The current `RestartPolicy::default()` increases the delay from 1 to 60 seconds.
+On a successful preparation, the restart-attempt counter is reset.
+The parameters inside the policy are currently private and there is no separate constructor
+to change them. This mechanism differs from the retries of a single network request in
+`AttemptConfig`.
 
-## Координация
+## Coordination
 
-[coordination.rs](crates/tools-core/src/monitor/coordination.rs) содержит
-расчётные типы: `Phase`, `Cycle`, `Epoch`, `PhaseState` и связанные ошибки.
-Они позволяют определить положение в цикле относительно выбранной эпохи.
-Это ещё не работающий вариант `ScenarioSpec` для управления устройством.
+[coordination.rs](crates/tools-core/src/monitor/coordination.rs) contains the calculation
+types: `Phase`, `Cycle`, `Epoch`, `PhaseState`, and related errors.
+They allow determining the position in a cycle relative to a selected epoch.
+This is not yet a working `ScenarioSpec` variant for controlling a device.
 
-Планируемый сценарий координации должен рассчитывать требуемую фазу
-по общей шкале времени и отправлять управляющие команды, включая keepalive.
-Опоздание сокращает остаток текущей фазы и не сдвигает общую сетку;
-пропущенные фазы не догоняются. Его расписание будет принадлежать самому сценарию.
+The planned coordination scenario must calculate the required phase on a common time scale
+and send control commands, including keepalive. Being late shortens the remainder of the
+current phase and does not shift the common grid; missed phases are not caught up.
+Its schedule will belong to the scenario itself.
 
-## Как расширять библиотеку и этот документ
+## How to extend the library and this document
 
-Для нового сценария нужны описание и его проверки, внутренняя реализация,
-вариант `ScenarioSpec` и выбор исполнения во внутреннем runtime.
-При новом виде результата нужно дополнить контракт исходов и соответствующие
-представления потребителей. Оркестратор должен сохранять общую ответственность
-за жизненный цикл и порядок событий.
+For a new scenario you need a description and its validation, an internal implementation,
+a `ScenarioSpec` variant, and execution dispatch in the internal runtime.
+For a new result kind you need to extend the outcome contract and the corresponding
+consumer views. The orchestrator must keep the overall responsibility for the lifecycle
+and event ordering.
 
-Для новой сетевой операции сначала определяется адаптер запроса и применение
-общего механизма `poll`. Его можно использовать независимо от монитора.
-Проверка оборудования по сети остаётся этапом исполнения, а не разбора конфига.
+For a new network operation, first define the request adapter and the use of the shared
+`poll` mechanism. It can be used independently of the monitor.
+Checking hardware over the network remains an execution stage, not a config-parsing stage.
 
-При пополнении документа для компонента достаточно указать:
+When extending the document, it is enough to specify for a component:
 
-1. Назначение и причину его существования.
-2. Ответственность, входные данные и результат.
-3. Связи с соседними компонентами и владение состоянием.
-4. Публичный контракт либо внутреннюю область использования.
-5. Важные гарантии, ограничения и ссылку на исходник.
+1. Its purpose and the reason it exists.
+2. Its responsibility, inputs, and result.
+3. Its relationships with neighboring components and ownership of state.
+4. Its public contract or internal scope.
+5. Important guarantees, limitations, and a source link.
 
-Существующие разделы нужно исправлять при изменении поведения.
-Завершённые изменения не следует оставлять в виде противоречащих друг другу
-описаний «до» и «после». Новые намерения сначала помечаются как планы.
-Когда раздел разрастается, подробности можно вынести в отдельный документ,
-сохранив здесь назначение компонента и ссылку.
+Existing sections must be corrected when behavior changes.
+Completed changes must not be left as contradictory "before" and "after" descriptions.
+New intentions are first marked as plans.
+When a section grows large, details can be moved to a separate document, keeping the
+component's purpose and a link here.
 
-## Открытые вопросы и проверки
+## Open questions and checks
 
-Актуальные задачи находятся в [TODO.md](TODO.md). В частности, остаются решения
-о подсчёте фатальных ошибок и о поведении выхода истории при медленном получателе.
-Отдельный контракт подключения внешних сценариев пока не реализован.
+Current tasks live in [TODO.md](TODO.md). In particular, decisions remain about counting
+fatal errors and about history-output behavior with a slow receiver.
+A separate contract for plugging in external scenarios is not yet implemented.
 
-Глубина кольца результатов сейчас устанавливается при создании `Task`.
-Обновление `deep_history` через `update_task` само по себе не пересоздаёт кольцо;
-применение такой настройки к уже зарегистрированной задаче требует уточнения.
+The depth of the results ring is currently set when a `Task` is created.
+Updating `deep_history` via `update_task` does not by itself recreate the ring; applying
+such a setting to an already-registered task needs clarification.
 
-Основные проверки: `make check`, тесты `tools-core`, тесты `tctl` и Clippy.
-Из-за настройки кросс-компиляции команды Cargo для локальной проверки используют
+Primary checks: `mise run check`, `mise run test`, and `mise run clippy`.
+Because of the cross-compilation setup, the local-check commands use
 `--target x86_64-unknown-linux-gnu`.
-Сетевые тесты сценариев используют UDP; пока действует отдельное указание
-их не запускать. Такие тесты собираются через `--no-run`, а проверки
-без сокетов и с виртуальным временем запускаются отдельно.
+Scenario network tests use UDP; a separate instruction is currently in effect not to run
+them. Such tests are built via `--no-run`, while socket-free and virtual-time checks run
+separately.
