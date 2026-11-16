@@ -1,0 +1,49 @@
+# tctl
+
+CLI for `tools-core`: a real-time network monitor and other ready-to-use cases.
+
+## Build
+
+```sh
+cargo build -p tctl
+```
+
+The binary is produced at `target/debug/tctl`. You can also run it without an explicit
+build step:
+
+```sh
+cargo run -p tctl -- <command>
+```
+
+## Commands
+
+### `poll` — run the monitor
+
+Polls devices according to a YAML configuration of tasks.
+
+```sh
+tctl poll --config examples/poll.yaml
+tctl poll --config examples/poll.yaml --view compact
+```
+
+`--view` selects the dashboard: `classic` (default) or `compact`.
+
+Each task is a repeating query (e.g. an SNMP GET) with an interval, attempt policy, and
+target. A `history_sink` path records the poll history as JSONL. See
+[`examples/poll.yaml`](examples/poll.yaml) for a minimal configuration.
+
+### `to-scn` / `from-scn` — SCN conversion
+
+`to-scn` converts an ASCII SCN string to its UTC index; `from-scn` parses a UTC index
+back to SCN.
+
+```sh
+tctl to-scn CO101
+tctl from-scn .1.3.67.79.49.48.49
+```
+
+Both accept `--output human|json|pretty-json` (default `human`).
+
+## License
+
+MIT — see the [workspace license](../../LICENSE).

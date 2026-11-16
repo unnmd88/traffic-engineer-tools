@@ -1,15 +1,15 @@
 # tools-core
 
-Библиотека для задач организации дорожного движения (ОДД).
+Library for road-traffic management (ОДД) tasks.
 
-## Готовые фичи
+## Ready-made features
 
-- [`scn`] — конвертация SCN (ASCII ↔ dotted ↔ scn-index ↔ utc-index);
-- [`monitor`] — опрос и управление ДК по сценариям.
+- [`scn`] — SCN conversion (ASCII ↔ dotted ↔ scn-index ↔ utc-index);
+- [`monitor`] — polling and controlling traffic controllers via scenarios.
 
 ## Usage
 
-### Конвертация SCN
+### SCN conversion
 
 ```rust
 use tools_core::Scn;
@@ -22,7 +22,7 @@ let parsed = Scn::from_utc_index(".1.3.65.66.67").unwrap();
 assert_eq!(parsed, s);
 ```
 
-### Монитор
+### Monitor
 
 ```rust
 use tools_core::monitor::{AppConfig, Application};
@@ -31,4 +31,4 @@ let app = Application::new(AppConfig::default(), vec![]);
 assert!(app.task_ids().is_empty());
 ```
 
-Полный асинхронный пример запуска — `examples/monitor.rs`.
+A full async launch example — `examples/monitor.rs`.
