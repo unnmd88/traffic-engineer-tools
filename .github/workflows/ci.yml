@@ -23,10 +23,10 @@ jobs:
         run: cargo fmt -p tools-core -p tctl --check
 
       - name: Check
-        run: cargo check -p tools-core -p tctl --all-targets
+        run: cargo check --locked -p tools-core -p tctl --all-targets
 
       - name: Test
-        run: cargo test -p tools-core -p tctl
+        run: cargo test --locked -p tools-core -p tctl
 
       - name: Clippy
-        run: cargo clippy -p tools-core -p tctl --all-targets
+        run: cargo clippy --locked -p tools-core -p tctl --all-targets
