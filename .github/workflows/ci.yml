@@ -18,7 +18,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # net-monitor заморожен и исключён (его функционал будет влит в tools-core).
+      # net-monitor is frozen and excluded (its functionality will be merged into tools-core).
       - name: Format
         run: cargo fmt -p tools-core -p tctl --check
 

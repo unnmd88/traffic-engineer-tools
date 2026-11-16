@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Линкер для кросс-сборки под Windows 7 / Server 2008 R2 (MSVC).
-# Использует SDK, распакованный через xwin. Путь к SDK берётся из XWIN_SDK
-# (по умолчанию ~/winsdk).
+# Linker for cross-compilation targeting Windows 7 / Server 2008 R2 (MSVC).
+# Uses an SDK unpacked via xwin. The SDK path comes from XWIN_SDK
+# (defaults to ~/winsdk).
 
 XWIN_SDK="${XWIN_SDK:-$HOME/winsdk}"
 

@@ -3,17 +3,17 @@
 **/*.rs.bk
 *.wasm
 
-# Cargo (только личные креды, не коммитятся)
+# Cargo (personal credentials only; never commit)
 .cargo/credentials
 
 # Build
 target/
 **/target/
 
-# Директории с документацией
+# Documentation directories
 /doc/
 
-# Файлы редакторов и IDE
+# Editors and IDEs
 /.idea/
 /.vscode/
 /*.iml
@@ -45,7 +45,7 @@ AGENTS.md
 # Compiled binaries
 /tctl
 
-# Локальные заметки и справочные материалы (не коммитятся)
+# Local notes and reference material (not committed)
 /docs/arch_new.txt
 /docs/coordination_mode.txt
 /docs/monitor_dispatcher.png
