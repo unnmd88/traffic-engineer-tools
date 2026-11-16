@@ -14,7 +14,7 @@ Decisions made:
       (`mise run check/test/clippy`), license, and "active development" status.
 - [x] Add `README.md` for `tctl` (`crates/tools-cli`) with real command examples
       (SCN conversion, `poll`).
-- [ ] Add a one-liner `README.md` for `net-monitor`: frozen, superseded by `tools-core`.
+- [x] Add a one-liner `README.md` for `net-monitor`: frozen, superseded by `tools-core`.
 
 ## Documentation consistency
 
