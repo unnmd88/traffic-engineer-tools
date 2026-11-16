@@ -9,10 +9,10 @@ Decisions made:
 
 ## First impression
 
-- [ ] Add root `README.md`: what the project is, the three crates and their status
+- [x] Add root `README.md`: what the project is, the three crates and their status
       (`tools-core` main library, `tctl` CLI, `net-monitor` frozen), build/run commands
       (`mise run check/test/clippy`), license, and "active development" status.
-- [ ] Add `README.md` for `tctl` (`crates/tools-cli`) with real command examples
+- [x] Add `README.md` for `tctl` (`crates/tools-cli`) with real command examples
       (SCN conversion, `poll`).
 - [ ] Add a one-liner `README.md` for `net-monitor`: frozen, superseded by `tools-core`.
 
@@ -21,9 +21,7 @@ Decisions made:
 - [ ] Keep a single `ARCHITECTURE.md`; remove or mark `docs/ARCHITECTURE.md` as legacy
       (deferred — see last section).
 - [ ] Fix intra-doc links once `TODO.md` and READMEs exist (re-check `ARCHITECTURE.md`).
-- [ ] Translate public docs to English: root README, crate READMEs, `ARCHITECTURE.md`,
-      and non-English comments in tracked tooling files (`.gitignore`, `.mise.toml`,
-      `.cargo/config.toml`).
+- [ ] Translate `ARCHITECTURE.md` to English.
 - [ ] Align crate `description` fields to English.
 
 ## Structure cleanup (separate iteration)
