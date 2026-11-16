@@ -5,7 +5,7 @@ Working backlog for repository and project hygiene (no code-logic changes).
 Decisions made:
 - Public documentation is written in **English** (READMEs, `ARCHITECTURE.md`, crate
   metadata descriptions). Local/private notes may stay in Russian.
-- `docs/` cleanup is a **separate iteration** (see the last section).
+- Private notes live in the gitignored `notes/` folder; public docs live at the repo root.
 
 ## First impression
 
@@ -18,19 +18,16 @@ Decisions made:
 
 ## Documentation consistency
 
-- [ ] Keep a single `ARCHITECTURE.md`; remove or mark `docs/ARCHITECTURE.md` as legacy
-      (deferred — see last section).
-- [ ] Fix intra-doc links once `TODO.md` and READMEs exist (re-check `ARCHITECTURE.md`).
-- [ ] Translate `ARCHITECTURE.md` to English.
+- [x] Keep a single `ARCHITECTURE.md`; remove the `docs/ARCHITECTURE.md` duplicate.
+- [x] Fix intra-doc links once `TODO.md` and READMEs exist (re-check `ARCHITECTURE.md`).
+- [x] Translate `ARCHITECTURE.md` to English.
 - [ ] Align crate `description` fields to English.
 
-## Structure cleanup (separate iteration)
+## Structure cleanup
 
-- [ ] Split `docs/` into public documentation vs private notes/dumps; move private files
-      (`arch_new.txt`, `coordination_mode.txt`, `prompt.txt`, `обсудить.txt`, MIB dumps,
-      `potok_backup_1.5.15/`, `monitor_dispatcher.png`, etc.) out of the repo or into a
-      gitignored `notes/`.
-- [ ] Consolidate `.gitignore`: one language for comments, gather personal excludes into
+- [x] Split `docs/` into public documentation vs private notes; move private files into a
+      gitignored `notes/` and `cross-build-win7.md` to the repo root.
+- [x] Consolidate `.gitignore`: one language for comments, gather personal excludes into
       one block.
 
 ## Metadata & tooling

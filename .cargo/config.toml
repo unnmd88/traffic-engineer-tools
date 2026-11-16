@@ -1,6 +1,6 @@
 # Cross-compilation targeting Windows 7 / Server 2008 R2 (MSVC).
 # The target is built into rustc, but its std is not distributed via rustup,
-# so it is built from source (build-std, nightly). See docs/cross-build-win7.md.
+# so it is built from source (build-std, nightly). See cross-build-win7.md.
 
 [unstable]
 build-std = ["std", "core", "alloc", "panic_abort"]
