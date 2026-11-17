@@ -16,6 +16,22 @@ impl PollSchedule {
         }
     }
 
+    /// Fixed-delay schedule: the next deadline is counted from the completion of
+    /// a complete request. The delay must be positive.
+    pub fn fixed_delay(delay: Duration) -> Result<Self, ScenarioSpecError> {
+        let schedule = Self::FixedDelay { delay };
+        schedule.validate()?;
+        Ok(schedule)
+    }
+
+    /// Fixed-rate schedule: deadlines belong to the grid `origin + n × period`.
+    /// The period must be positive.
+    pub fn fixed_rate(period: Duration) -> Result<Self, ScenarioSpecError> {
+        let schedule = Self::FixedRate { period };
+        schedule.validate()?;
+        Ok(schedule)
+    }
+
     pub(super) const fn validate(self) -> Result<(), ScenarioSpecError> {
         if self.duration().is_zero() {
             return Err(ScenarioSpecError::ScheduleDurationMustBePositive);

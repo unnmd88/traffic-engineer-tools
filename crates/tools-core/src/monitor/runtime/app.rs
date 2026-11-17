@@ -35,6 +35,21 @@ pub struct AppConfig {
     pub restart: RestartPolicy,
 }
 
+/// A prepared monitor, before it is started.
+///
+/// `Application::new` is synchronous, assigns ids to the initial tasks, and does
+/// not touch the network. Subscribe before [`Application::spawn`] to observe
+/// every event from the start without missing any.
+///
+/// # Example
+///
+/// ```
+/// use tools_core::monitor::{AppConfig, Application, TaskConfig};
+///
+/// let app = Application::new(AppConfig::default(), Vec::<TaskConfig>::new());
+/// let sub = app.subscribe_with_snapshot();
+/// assert_eq!(sub.snapshot.tasks.len(), 0);
+/// ```
 #[must_use]
 pub struct Application {
     orchestrator: Orchestrator,

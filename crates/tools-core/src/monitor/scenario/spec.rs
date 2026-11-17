@@ -16,6 +16,28 @@ pub enum ScenarioSpec {
 }
 
 impl ScenarioSpec {
+    /// Builds a repeating SNMP GET scenario from its request, schedule, and attempts.
+    pub fn snmp_get(
+        request: SnmpGetSpec,
+        schedule: PollSchedule,
+        attempt: AttemptConfig,
+    ) -> Result<Self, ScenarioSpecError> {
+        Ok(Self::SnmpGet(SnmpGetScenarioSpec::try_new(
+            request, schedule, attempt,
+        )?))
+    }
+
+    /// Builds a repeating SNMP SET scenario from its request, schedule, and attempts.
+    pub fn snmp_set(
+        request: SnmpSetSpec,
+        schedule: PollSchedule,
+        attempt: AttemptConfig,
+    ) -> Result<Self, ScenarioSpecError> {
+        Ok(Self::SnmpSet(SnmpSetScenarioSpec::try_new(
+            request, schedule, attempt,
+        )?))
+    }
+
     pub fn target(&self) -> String {
         match self {
             Self::SnmpGet(spec) => format!("{}:{}", spec.request.host(), spec.request.port()),
