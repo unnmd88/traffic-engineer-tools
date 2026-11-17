@@ -288,7 +288,7 @@ impl Scn {
             .join(delimiter)
     }
 
-    /// Парсит строку с кодами через точку.
+    /// Парсит строку с кодами через точку, обрезая пробелы по краям.
     ///
     /// Формат: `"65.66.67"` → `Scn("ABC")`
     ///
@@ -308,6 +308,8 @@ impl Scn {
     /// # }
     /// ```
     pub fn from_dotted(s: &str) -> Result<Self, ScnError> {
+        let s = s.trim();
+
         // Пустая строка - ошибка
         if s.is_empty() {
             return Err(ScnError::Empty);
@@ -733,6 +735,12 @@ mod tests {
     fn from_dotted_out_of_range() {
         let err = Scn::from_dotted("65.256.67").unwrap_err();
         assert!(matches!(err, ScnError::InvalidCode(_)));
+    }
+
+    #[test]
+    fn from_dotted_trims_surrounding_whitespace() {
+        let s = Scn::from_dotted("  65.66.67  ").unwrap();
+        assert_eq!(s.as_str(), "ABC");
     }
 
     #[test]
