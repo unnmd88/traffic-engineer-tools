@@ -29,7 +29,7 @@ pub enum SnmpProfile {
 }
 
 impl SnmpProfile {
-    pub fn registry(&self) -> &'static [OidMetadata] {
+    pub(crate) fn registry(&self) -> &'static [OidMetadata] {
         match self {
             Self::Swarco => &[
                 SWARCO_UTC_TRAFFTECH_PHASE_STATUS_METADATA,
@@ -51,7 +51,7 @@ impl SnmpProfile {
         }
     }
 
-    pub fn get_metadata_by_name_or_alias(
+    pub(crate) fn get_metadata_by_name_or_alias(
         &self,
         name_or_alias: &str,
     ) -> Option<&'static OidMetadata> {
@@ -77,7 +77,7 @@ impl SnmpProfile {
         None
     }
 
-    pub fn get_metadata_by_oid(&self, oid: &SnmpOid) -> Option<&'static OidMetadata> {
+    pub(crate) fn get_metadata_by_oid(&self, oid: &SnmpOid) -> Option<&'static OidMetadata> {
         let binding = oid.to_string();
         let oid_as_str = binding.as_str();
 

@@ -235,7 +235,7 @@ tasks:
         assert_eq!(request.community_r().unwrap().as_str(), "public");
         assert!(matches!(
             &request.sets()[0].value,
-            tools_core::snmp::value::SnmpValue::OctetString(bytes) if bytes == &[4]
+            tools_core::snmp::SnmpValue::OctetString(bytes) if bytes == &[4]
         ));
     }
 

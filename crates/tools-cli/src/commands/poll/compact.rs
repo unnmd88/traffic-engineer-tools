@@ -3,10 +3,7 @@ use tools_core::{
     monitor::{OutcomeStatus, ScenarioOutcome, ScenarioSpec, TaskStatus, TaskView},
     polling::{PollErrorContext, Response},
     snmp::{
-        SnmpGetSample,
-        business_value::BusinessValue,
-        group_state_potok_ug405::{GroupStateDefinition, GroupStatePotokUg405},
-        value::SnmpValueType,
+        SnmpGetSample, BusinessValue, GroupStateDefinition, GroupStatePotokUg405, SnmpValueType,
     },
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
