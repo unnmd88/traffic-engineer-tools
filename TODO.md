@@ -48,6 +48,10 @@ Decisions made:
 Goal: an unknown consumer can use `tools-core` from `cargo doc` + examples alone.
 Each item is a small, checkable step, ordered by consumer impact.
 
+See [PUBLIC_API_REVIEW.md](PUBLIC_API_REVIEW.md) for the consumer-facing assessment,
+eight improvement recommendations, and a suggested first increment. Recommendations
+that require a design decision remain proposals rather than accepted API changes.
+
 ### Ergonomics (most visible)
 
 - [x] Flatten scenario construction: `ScenarioSpec::snmp_get` / `snmp_set`.
