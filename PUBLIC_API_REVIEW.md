@@ -74,10 +74,21 @@ recovery from receiver lag. A replacement snapshot restores current state, not l
 Implement each increment with focused tests and the corresponding architecture update.
 Intermediate states must document any guarantees that are not implemented yet.
 
+Start each subsequent increment only on the user's explicit command. After an increment,
+report the changes and validation results and wait for approval before committing.
+Approval to commit an increment does not authorize starting the next one.
+
 Increment 1 now provides operation identity/context, transition causes and restart plans,
 normal/interrupted report types, and the `TaskStateChanged`, `OperationStarted`, and
 `OperationFinished` payloads. Existing runtime publishers remain in place until their
-migration increments. Task descriptions and their event variants belong to increment 2.
+migration increments.
+
+Increment 2 provides serializable `TaskDescription` and `ScenarioDescription` records and
+publishes them through `TaskRegistered` and `TaskConfigurationChanged`. The previous
+`TaskAdded` and `TaskSpecUpdated` variants are removed. Both dynamic registration and
+initial-task publication use the same description-capturing path. Descriptions retain
+configured OID definitions and encoded values; transport credentials and parser callbacks
+are excluded. Each event keeps its own accepted revision through later updates and removal.
 
 Serialized `MonitorEvent` records contain `metadata` and `data`, without a format-version
 field. The user explicitly excluded history versioning and legacy compatibility from

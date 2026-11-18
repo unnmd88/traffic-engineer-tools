@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, Instant, sleep_until};
 
 use super::ScenarioSpecError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PollSchedule {
     FixedRate { period: Duration },
     FixedDelay { delay: Duration },

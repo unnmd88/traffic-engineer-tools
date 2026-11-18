@@ -1,3 +1,4 @@
+mod description;
 mod error;
 mod execution;
 mod impls;
@@ -7,6 +8,7 @@ mod runtime;
 mod schedule;
 mod spec;
 
+pub use description::{ScenarioDescription, SnmpGetItemDescription, SnmpSetItemDescription};
 pub use error::{ScenarioBuildError, ScenarioExecutionError, ScenarioSpecError};
 pub use execution::{Generation, OutcomeStatus, PanicStage, ScenarioExecution, ScenarioOutcome};
 pub use preparation::{

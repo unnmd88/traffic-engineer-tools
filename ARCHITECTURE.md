@@ -428,10 +428,15 @@ occur, and are forwarded to the history sink just like other public events.
 `ExecutionFinished` carries the operation report through its execution. `ExecutionFailed`
 also carries the complete execution alongside the typed scenario error and restart delay,
 so a non-retryable failure does not discard preceding timeouts or adapter errors.
-Some events, e.g. `TaskAdded`, do not carry the whole task configuration: the full state
-is read from the snapshot when needed.
+`TaskRegistered` and `TaskConfigurationChanged` carry a captured `TaskDescription` for
+the accepted revision. It includes the task name, limit, history depth, and a typed
+`ScenarioDescription` with target, profile, configured OID definitions, encoded SET values,
+schedule, and attempt settings. Both read and write communities are excluded by the
+description types. Descriptions are observation records, not executable configurations:
+input aliases are normalized, final OID instances are resolved later, and parser callbacks
+are not serialized. Capturing an accepted revision does not mean its replacement run is ready.
 
-The first increment of the public-contract migration adds payload types alongside those
+The public-contract migration also adds payload types alongside those
 existing runtime publications:
 
 - `TaskStateChanged` carries a `TaskTransition`: previous/current `TaskStatus`, a typed
@@ -449,9 +454,11 @@ existing runtime publications:
 - `OperationReport::status()` distinguishes normal success/degradation/failure from
   cancellation and panic, independently of restart policy and limit accounting.
 
-These new variants can be serialized and consumed, but the runtime does not publish them
-yet. Producers continue emitting the existing lifecycle/execution events, including
-`Preparation`. Centralized transitions, operation-id allocation, snapshot retention, and
+The state-transition and operation variants above can be serialized and consumed, but the
+runtime does not publish them yet. Registration and configuration-change producers already
+emit `TaskRegistered` and `TaskConfigurationChanged`; other producers retain their existing
+lifecycle/execution events, including `Preparation`. Centralized transitions,
+operation-id allocation, snapshot retention, and
 orderly interruption reporting are subsequent increments described in
 [PUBLIC_API_REVIEW.md](PUBLIC_API_REVIEW.md). Declaring interrupted report types does not
 provide a runtime start/finish delivery guarantee. Report and transition payloads are
@@ -515,14 +522,15 @@ support `Serialize` and `Deserialize`. This report format replaces the previous 
 format; old result records are not automatically migrated when reading with the new types.
 UUIDs and OIDs are represented as strings, durations as `secs`/`nanos` objects, and enum
 values use the standard Serde representation with variant names. When reading, an OID is
-validated by the regular parser. For example:
+validated by the regular parser. For example, a task-removal event:
 
 ```json
-{"metadata":{"seq":0,"at":"2026-11-07T00:00:00Z","application_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","task_id":1,"generation":0,"revision":1},"data":"TaskAdded"}
+{"metadata":{"seq":1,"at":"2026-11-07T00:00:00Z","application_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","task_id":1,"generation":0,"revision":1},"data":"TaskRemoved"}
 ```
 
-The `TaskAdded` and `TaskSpecUpdated` events still do not carry the task configuration;
-the file stores exactly the event stream. The format directly reflects the core types.
+`TaskRegistered` and `TaskConfigurationChanged` preserve descriptions of each accepted
+revision in the file, including when a task changes repeatedly or is subsequently removed.
+The file stores exactly the event stream. The format directly reflects the core types.
 Different runs in one file are distinguished by `application_id`.
 The staged contract is still under development and does not promise compatibility with
 intermediate payloads across the remaining migration increments.

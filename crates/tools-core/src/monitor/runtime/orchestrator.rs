@@ -18,8 +18,8 @@ use crate::monitor::{
         Generation, PanicStage, ScenarioCommand, ScenarioReport, ScenarioSpec, run_scenario,
     },
     task::{
-        HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskId, TaskStatus,
-        TaskView,
+        HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskDescription, TaskId,
+        TaskStatus, TaskView,
     },
 };
 
@@ -226,18 +226,28 @@ impl Orchestrator {
     async fn start_initial_tasks(&mut self) {
         let initial_tasks = std::mem::take(&mut self.initial_tasks);
         for &id in &initial_tasks {
-            self.emit(id, EventData::TaskAdded).await;
+            self.emit_task_registered(id).await;
         }
         for id in initial_tasks {
             self.start(id).await.expect("initial task is registered");
         }
     }
 
+    async fn emit_task_registered(&mut self, id: TaskId) {
+        let entry = self
+            .entries
+            .get(&id)
+            .expect("task was registered before publication");
+        let description = Box::new(TaskDescription::from(entry.task.config()));
+        self.emit(id, EventData::TaskRegistered { description })
+            .await;
+    }
+
     async fn on_command(&mut self, cmd: Command) -> bool {
         match cmd {
             Command::AddTask { spec, reply } => {
                 let id = self.register_task(spec);
-                self.emit(id, EventData::TaskAdded).await;
+                self.emit_task_registered(id).await;
                 let _ = reply.send(Ok(id));
                 true
             }
@@ -422,18 +432,25 @@ impl Orchestrator {
     }
 
     async fn update(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), MonitorCommandError> {
-        let respawn = {
+        let (respawn, description) = {
             let entry = self
                 .entries
                 .get_mut(&id)
                 .ok_or(MonitorCommandError::TaskNotFound(id))?;
             entry.task.update_config(spec);
             entry.attempts = 0;
-            matches!(entry.state, TaskState::Starting | TaskState::Active | TaskState::Restarting)
+            (
+                matches!(
+                    entry.state,
+                    TaskState::Starting | TaskState::Active | TaskState::Restarting
+                ),
+                Box::new(TaskDescription::from(entry.task.config())),
+            )
         };
         let paused = matches!(self.entries.get(&id), Some(e) if e.state == TaskState::Paused);
 
-        self.emit(id, EventData::TaskSpecUpdated).await;
+        self.emit(id, EventData::TaskConfigurationChanged { description })
+            .await;
 
         if respawn {
             {
@@ -764,25 +781,22 @@ impl Orchestrator {
                 "operation finished"
             ),
             EventData::Preparation { .. } => {}
-            EventData::TaskAdded => {
-                if let Some(entry) = self.entries.get(&metadata.task_id) {
-                    tracing::info!(
-                        application_id = %metadata.application_id,
-                        task_id = metadata.task_id.0,
-                        generation = ?metadata.generation,
-                        revision = metadata.revision.0,
-                        seq = metadata.seq,
-                        task_name = entry.task.config().name(),
-                        "task added"
-                    );
-                }
-            }
-            EventData::TaskSpecUpdated => tracing::info!(
+            EventData::TaskRegistered { description } => tracing::info!(
                 application_id = %metadata.application_id,
                 task_id = metadata.task_id.0,
                 generation = ?metadata.generation,
                 revision = metadata.revision.0,
                 seq = metadata.seq,
+                task_name = description.name,
+                "task registered"
+            ),
+            EventData::TaskConfigurationChanged { description } => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                task_name = description.name,
                 "task configuration updated"
             ),
             EventData::TaskStarting { attempt } => {
@@ -1325,7 +1339,7 @@ mod tests {
         assert_eq!(event.metadata.application_id, snapshot.application_id);
         assert_eq!(event.metadata.seq, snapshot.next_seq);
         assert_eq!(event.metadata.task_id, third);
-        assert!(matches!(event.data, EventData::TaskAdded));
+        assert!(matches!(event.data, EventData::TaskRegistered { .. }));
         assert_eq!(snapshot.tasks.len(), 2);
 
         let next = handle.subscribe_with_snapshot().await.unwrap();
@@ -1374,7 +1388,7 @@ mod tests {
             let event = subscription.events.try_recv().unwrap();
             assert_eq!(event.metadata.seq, subscription.snapshot.next_seq);
             assert_eq!(event.metadata.task_id, task_id);
-            assert!(matches!(event.data, EventData::TaskAdded));
+            assert!(matches!(event.data, EventData::TaskRegistered { .. }));
         }
         handle.shutdown().await.unwrap();
         runtime.await.unwrap();
@@ -1484,8 +1498,8 @@ mod tests {
             assert_eq!(event.metadata.revision, revision);
             assert_eq!(event.metadata.generation, Generation::first());
             match seq {
-                0 | 1 => assert!(matches!(event.data, EventData::TaskAdded)),
-                2 => assert!(matches!(event.data, EventData::TaskSpecUpdated)),
+                0 | 1 => assert!(matches!(event.data, EventData::TaskRegistered { .. })),
+                2 => assert!(matches!(event.data, EventData::TaskConfigurationChanged { .. })),
                 3 => assert!(matches!(event.data, EventData::TaskRemoved)),
                 _ => unreachable!(),
             }
@@ -1818,7 +1832,10 @@ mod tests {
         control_scenario(&mut orchestrator, task_id);
         assert!(matches!(events.try_recv().unwrap().data, EventData::ExecutionFinished { .. }));
         assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
+        assert!(matches!(
+            events.try_recv().unwrap().data,
+            EventData::TaskConfigurationChanged { .. }
+        ));
         let starting = events.try_recv().unwrap();
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
         let snapshot = orchestrator.snapshot();
@@ -1934,7 +1951,7 @@ mod tests {
         wait_for_abort(abort).await;
         let updated = events.try_recv().unwrap();
         let starting = events.try_recv().unwrap();
-        assert!(matches!(updated.data, EventData::TaskSpecUpdated));
+        assert!(matches!(updated.data, EventData::TaskConfigurationChanged { .. }));
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
         assert_eq!(updated.metadata.task_id, task_id);
         assert_eq!(updated.metadata.revision, SpecRevision::new(2));
@@ -2016,7 +2033,10 @@ mod tests {
             .await
             .unwrap();
         wait_for_abort(abort).await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
+        assert!(matches!(
+            events.try_recv().unwrap().data,
+            EventData::TaskConfigurationChanged { .. }
+        ));
         assert!(events.try_recv().is_err());
         assert!(orchestrator.report_rx.try_recv().is_err());
         assert!(orchestrator.entries[&task_id].scenario.is_none());
@@ -2083,7 +2103,10 @@ mod tests {
             .await
             .unwrap();
         control_scenario(&mut orchestrator, task_id);
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskSpecUpdated));
+        assert!(matches!(
+            events.try_recv().unwrap().data,
+            EventData::TaskConfigurationChanged { .. }
+        ));
         let starting = events.try_recv().unwrap();
         assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
         let generation = starting.metadata.generation;

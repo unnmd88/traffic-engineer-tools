@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::monitor::{
-    ApplicationId, OperationContext, OperationReport, TaskTransition,
+    ApplicationId, OperationContext, OperationReport, TaskDescription, TaskTransition,
     scenario::{
         Generation, PanicStage, PreparationEvent, ScenarioBuildError, ScenarioExecution,
         ScenarioExecutionError,
@@ -62,8 +62,18 @@ pub enum EventData {
         report: Box<OperationReport>,
     },
 
-    TaskAdded,
-    TaskSpecUpdated,
+    /// A newly registered task and its accepted configuration description.
+    #[non_exhaustive]
+    TaskRegistered {
+        /// Captured description for the revision in event metadata, without credentials.
+        description: Box<TaskDescription>,
+    },
+    /// An accepted configuration revision, before any replacement run becomes ready.
+    #[non_exhaustive]
+    TaskConfigurationChanged {
+        /// Captured description for the accepted revision, without credentials.
+        description: Box<TaskDescription>,
+    },
     #[non_exhaustive]
     TaskStarting {
         attempt: u32,
@@ -123,7 +133,7 @@ pub struct MonitorEvent {
 mod tests {
     use super::*;
     use crate::{
-        monitor::{OutcomeStatus, ScenarioOutcome},
+        monitor::{OutcomeStatus, PollSchedule, ScenarioOutcome, ScenarioSpec, TaskConfig},
         polling::{AttemptConfig, AttemptOutcome, AttemptReport, PollOutcome, PollReport},
         snmp::{
             SnmpError, SnmpGetSample, business_value::BusinessValue,
@@ -208,9 +218,31 @@ mod tests {
     }
 
     fn event_data(at: DateTime<Utc>, elapsed: Duration) -> Vec<EventData> {
+        let config = TaskConfig::try_new(
+            "request".to_string(),
+            ScenarioSpec::snmp_get(
+                crate::snmp::SnmpGetSpec::new(
+                    "127.0.0.1:161".parse().unwrap(),
+                    "public".parse().unwrap(),
+                    None,
+                    vec![],
+                ),
+                PollSchedule::fixed_delay(elapsed).unwrap(),
+                AttemptConfig::try_new(elapsed, 1, Duration::ZERO).unwrap(),
+            )
+            .unwrap(),
+            1,
+            3,
+        )
+        .unwrap();
+        let description = TaskDescription::from(&config);
         let mut data = vec![
-            EventData::TaskAdded,
-            EventData::TaskSpecUpdated,
+            EventData::TaskRegistered {
+                description: Box::new(description.clone()),
+            },
+            EventData::TaskConfigurationChanged {
+                description: Box::new(description),
+            },
             EventData::TaskStarting { attempt: 2 },
             EventData::TaskStarted,
             EventData::TaskPaused,

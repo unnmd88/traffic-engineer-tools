@@ -77,12 +77,12 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     assert_eq!(generation, Generation::first());
     assert_eq!(metadata.seq, subscription.snapshot.next_seq);
     assert_eq!(metadata.task_id, id);
-    assert!(matches!(event.data, EventData::TaskAdded));
+    assert!(matches!(event.data, EventData::TaskRegistered { .. }));
 
     handle.update_task(id, task("updated", true)).await.unwrap();
     let updated = handle.get_snapshot().await.unwrap().tasks.remove(0);
     let event = subscription.events.recv().await.unwrap();
-    assert!(matches!(event.data, EventData::TaskSpecUpdated));
+    assert!(matches!(event.data, EventData::TaskConfigurationChanged { .. }));
     assert_eq!(event.metadata.revision, initial.revision.next());
     assert_eq!(updated.revision, event.metadata.revision);
     assert_eq!(updated.name, "updated");

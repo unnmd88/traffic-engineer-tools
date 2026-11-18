@@ -189,7 +189,7 @@ mod tests {
             assert_eq!(session[0].metadata.seq, 0);
             assert_eq!(session[1].metadata.seq, 1);
             assert_eq!(session[0].metadata.task_id, session[1].metadata.task_id);
-            assert!(matches!(session[0].data, EventData::TaskAdded));
+            assert!(matches!(session[0].data, EventData::TaskRegistered { .. }));
             assert!(matches!(session[1].data, EventData::TaskRemoved));
         }
     }

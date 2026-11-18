@@ -20,13 +20,14 @@ pub use runtime::{
 pub use scenario::{
     Generation, OutcomeStatus, PanicStage, PollSchedule, PreparationEvent, PreparationReport,
     PreparationStage, PreparationStageData, PreparationStageOutcome, PreparationStageReport,
-    PreparationView, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
-    ScenarioOutcome, ScenarioSpec, ScenarioSpecError, SnmpGetScenarioSpec, SnmpSetScenarioSpec,
+    PreparationView, ScenarioBuildError, ScenarioDescription, ScenarioExecution,
+    ScenarioExecutionError, ScenarioOutcome, ScenarioSpec, ScenarioSpecError,
+    SnmpGetItemDescription, SnmpGetScenarioSpec, SnmpSetItemDescription, SnmpSetScenarioSpec,
     TransportRole,
 };
 pub use task::{
     ExecutionMetrics, Health, HistoryEntryView, MonitorSnapshot, SpecRevision, TaskConfig,
-    TaskError, TaskId, TaskStatus, TaskView,
+    TaskDescription, TaskError, TaskId, TaskStatus, TaskView,
 };
 pub use transition::{
     RestartPlan, ScenarioFailure, TaskCommandKind, TaskTransition, TaskTransitionCause,

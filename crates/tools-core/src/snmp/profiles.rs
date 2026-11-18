@@ -1,6 +1,7 @@
 use std::{io::Seek, str::FromStr};
 
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, IntoEnumIterator};
 
 use crate::snmp::{
@@ -18,7 +19,7 @@ use crate::snmp::{
 
 pub const POTOK_UG405_PROFILE: SnmpProfile = SnmpProfile::PotokUg405;
 
-#[derive(Debug, Clone, Copy, PartialEq, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Display, Serialize, Deserialize)]
 pub enum SnmpProfile {
     Swarco,
     PotokS,
