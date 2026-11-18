@@ -1,0 +1,63 @@
+{
+  "metadata": {
+    "seq": 17,
+    "at": "2026-11-18T09:00:01.150Z",
+    "application_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "task_id": 7,
+    "generation": 2,
+    "revision": 3
+  },
+  "data": {
+    "OperationFinished": {
+      "context": {
+        "operation_id": 11,
+        "generation": 2,
+        "revision": 3
+      },
+      "report": {
+        "Completed": {
+          "outcome": {
+            "SnmpGet": {
+              "started_at": "2026-11-18T09:00:00Z",
+              "finished_at": "2026-11-18T09:00:01.150Z",
+              "elapsed": { "secs": 1, "nanos": 150000000 },
+              "config": {
+                "timeout": { "secs": 1, "nanos": 0 },
+                "retries": 1,
+                "retry_delay": { "secs": 0, "nanos": 100000000 }
+              },
+              "attempts": [
+                {
+                  "started_after": { "secs": 0, "nanos": 0 },
+                  "elapsed": { "secs": 1, "nanos": 0 },
+                  "outcome": "TimedOut"
+                },
+                {
+                  "started_after": { "secs": 1, "nanos": 100000000 },
+                  "elapsed": { "secs": 0, "nanos": 50000000 },
+                  "outcome": "Succeeded"
+                }
+              ],
+              "outcome": {
+                "Succeeded": [
+                  {
+                    "oid_name": "binary",
+                    "oid": "1.3.6.1.2.1.1.1.0",
+                    "value": null,
+                    "raw_value": { "OctetString": [0, 128, 255] }
+                  },
+                  {
+                    "oid_name": null,
+                    "oid": "1.3.6.1.2.1.1.2.0",
+                    "value": null,
+                    "raw_value": { "Counter64": 18446744073709551615 }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

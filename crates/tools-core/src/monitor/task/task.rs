@@ -10,7 +10,7 @@ use crate::monitor::{
     task::{ExecutionMetrics, TaskConfig},
 };
 
-#[derive(Clone, Debug, Copy, Display, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
     Idle,
     Starting,

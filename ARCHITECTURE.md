@@ -431,6 +431,32 @@ so a non-retryable failure does not discard preceding timeouts or adapter errors
 Some events, e.g. `TaskAdded`, do not carry the whole task configuration: the full state
 is read from the snapshot when needed.
 
+The first increment of the public-contract migration adds payload types alongside those
+existing runtime publications:
+
+- `TaskStateChanged` carries a `TaskTransition`: previous/current `TaskStatus`, a typed
+  `TaskTransitionCause`, and an optional `RestartPlan`. `ScenarioFailure` retains typed
+  preparation/execution errors or a caught panic. `TaskStatus` now supports Serde.
+- `OperationStarted` carries `OperationContext`, a human-readable purpose, UTC start time,
+  and attempt settings. `OperationContext` captures an `OperationId`, generation, and
+  applied configuration revision. An operation number is scoped to a task's generation;
+  the complete identity includes the application and task as well.
+- `OperationFinished` carries that context and an `OperationReport`. A `Completed` report
+  reuses `ScenarioOutcome` and its complete `PollReport`, without duplicate timing fields.
+  `Cancelled` and `Panicked` carry an `InterruptedOperationReport`: timing, settings,
+  completed attempts with typed `ScenarioExecutionError` values, and a separately marked
+  interrupted attempt when there was one. Cancellation includes a typed reason.
+- `OperationReport::status()` distinguishes normal success/degradation/failure from
+  cancellation and panic, independently of restart policy and limit accounting.
+
+These new variants can be serialized and consumed, but the runtime does not publish them
+yet. Producers continue emitting the existing lifecycle/execution events, including
+`Preparation`. Centralized transitions, operation-id allocation, snapshot retention, and
+orderly interruption reporting are subsequent increments described in
+[PUBLIC_API_REVIEW.md](PUBLIC_API_REVIEW.md). Declaring interrupted report types does not
+provide a runtime start/finish delivery guarantee. Report and transition payloads are
+passive data; deserialization does not validate timing, attempt ordering, or legal transitions.
+
 Identifiers serve different purposes:
 
 | Field | Meaning |
@@ -481,7 +507,9 @@ Full example: [poll.yaml](crates/tools-cli/examples/poll.yaml).
 The launch command stays the same: `tctl poll --config path/to/poll.yaml`.
 
 The CLI opens the file before starting the monitor and appends JSONL to it: one serialized
-`MonitorEvent` per line. There is no separate record type.
+`MonitorEvent` per line, containing `metadata` and `data`. There is no separate record type
+or history-format version field. Backward compatibility and automatic migration are not
+part of the current contract refactor.
 Event types, attempt settings, typed SNMP errors, and complete nested operation reports
 support `Serialize` and `Deserialize`. This report format replaces the previous `Response`
 format; old result records are not automatically migrated when reading with the new types.
@@ -496,6 +524,8 @@ validated by the regular parser. For example:
 The `TaskAdded` and `TaskSpecUpdated` events still do not carry the task configuration;
 the file stores exactly the event stream. The format directly reflects the core types.
 Different runs in one file are distinguished by `application_id`.
+The staged contract is still under development and does not promise compatibility with
+intermediate payloads across the remaining migration increments.
 
 A separate CLI task reads the bounded channel and flushes the buffer after each event.
 A write error or writer failure ends the monitor and is returned from the CLI.

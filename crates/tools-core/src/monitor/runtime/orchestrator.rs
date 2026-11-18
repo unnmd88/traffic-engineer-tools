@@ -734,6 +734,35 @@ impl Orchestrator {
     fn log_event(&self, event: &MonitorEvent) {
         let metadata = &event.metadata;
         match &event.data {
+            EventData::TaskStateChanged { transition } => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                seq = metadata.seq,
+                previous = ?transition.previous,
+                current = ?transition.current,
+                cause = ?transition.cause,
+                restart = ?transition.restart,
+                "task state changed"
+            ),
+            EventData::OperationStarted { context, .. } => tracing::debug!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?context.generation,
+                revision = context.revision.0,
+                operation_id = context.operation_id.get(),
+                seq = metadata.seq,
+                "operation started"
+            ),
+            EventData::OperationFinished { context, report } => tracing::debug!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?context.generation,
+                revision = context.revision.0,
+                operation_id = context.operation_id.get(),
+                seq = metadata.seq,
+                status = ?report.status(),
+                "operation finished"
+            ),
             EventData::Preparation { .. } => {}
             EventData::TaskAdded => {
                 if let Some(entry) = self.entries.get(&metadata.task_id) {

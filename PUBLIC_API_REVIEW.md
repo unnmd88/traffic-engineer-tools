@@ -1,210 +1,254 @@
-# Monitor and polling API: proposed next steps
+# Monitor public events: proposal and implementation plan
 
-This document replaces the previous public API review. It is a prioritized proposal based
-on the current working tree and the intended repeating-action and coordination scenarios.
-It describes future work, not additional implemented behavior. [ARCHITECTURE.md](ARCHITECTURE.md)
-remains the reference for current behavior.
+This document proposes the next public event contract and a sequence of implementation
+increments. It describes planned behavior, not the current implementation.
+[ARCHITECTURE.md](ARCHITECTURE.md) remains the reference for implemented behavior and must
+be updated with each code change that changes the contract.
 
-## Foundation already implemented
+## Scope and terminology
 
-An operation is one execution of an action together with all of its attempts. The action
-may perform one or several network requests. A scenario decides when to execute actions;
-the polling mechanism executes an action with its timeout and retry settings.
+The monitor executes scenarios over network equipment and exposes task state and evidence
+of completed operations. A scenario owns its behavior, scheduling, branching, and decisions
+about continuing or stopping.
 
-The current implementation provides:
+An operation is one invocation of an algorithm with its complete retry policy. One attempt
+may contain concurrent SNMP and HTTP requests, parsing, conditional branches, and subsequent
+actions. Retrying the operation invokes that algorithm again. A single protocol request is
+only one possible operation implementation.
 
-- `Pollable` with associated output and error types, without protocol dependencies;
-- `PollReport<T, E>` with UTC start/end timestamps, monotonic total duration, effective
-  attempt settings, every attempt, and the final operation outcome;
-- attempt offsets, durations, successful attempts, polling timeouts, and original typed
-  adapter errors with their retry classification;
-- reports for success, exhausted attempts, and non-retryable failure;
-- report propagation through GET/SET, task results and history, events, JSONL, and the CLI;
-- preparation stage start/completion events, complete preparation reports, typed errors,
-  raw SCN request reports, and current progress in snapshots and CLI;
-- immediate source logging of preparation actions and SCN request attempts;
-- unchanged scheduling and existing `limit` accounting, plus the correction allowing
-  256 attempts for `retries = 255`.
+Keep scenarios as ordinary Rust code and keep `Pollable` and `poll` as the existing generic
+execution boundary. A universal steps model, declarative workflow engine, and external
+scenario-plugin API are outside this change. Composite-operation implementations and their
+additional evidence types should be introduced when a concrete scenario requires them.
 
-Non-retryable failures now retain reports but still follow the existing scenario-restart
-path and do not increment execution metrics or consume `limit`. Cooperative cancellation,
-action expiry, and regular-operation reports surviving a panic are not implemented.
-Preparation stages catch panics and preserve earlier completed stages; forced cancellation
-can still interrupt preparation without a terminal report. Public polling types
-and serialized result records changed; there is no automatic migration of old result data.
+## Proposed public contract
 
-Relevant sources: [operation reports](crates/tools-core/src/polling/report.rs),
-[polling](crates/tools-core/src/polling/poll.rs),
-[scenario execution](crates/tools-core/src/monitor/scenario/execution.rs), and
-[event contract](crates/tools-core/src/monitor/event.rs), and
-[preparation contract](crates/tools-core/src/monitor/scenario/preparation.rs).
+| Event | Meaning and payload |
+|---|---|
+| `TaskRegistered` | A task was registered; includes its description at this revision |
+| `TaskConfigurationChanged` | A new configuration revision was accepted; includes its description |
+| `TaskRemoved` | A task was removed |
+| `TaskStateChanged` | Previous state, next state, typed cause, and state-specific details |
+| `OperationStarted` | An operation began; includes its identity, purpose, start time, and attempt settings |
+| `OperationFinished` | An operation terminated; includes its identity and report |
+| `Preparation` | Existing preparation progress and evidence, retained during this refactor |
 
-## 1. Complete operation reporting with cancellation and expiry
+`Preparation` is retained to preserve live SCN discovery, OID resolution, and preparation
+reports. It does not establish a general steps abstraction.
 
-**Why first:** coordination must stop trying to install a phase once its validity interval
-has ended. Stopping or replacing a task should also preserve the attempts already made.
+Operation outcomes and scenario recovery are independent facts. A failed operation emits
+`OperationFinished`. If the scenario must restart, a separate `TaskStateChanged` describes
+the transition and restart plan. A failure need not cause a state transition.
 
-Proposed changes:
+The operation report distinguishes success, failure, cancellation, and a caught panic.
+Normal reports retain effective attempt settings, completed attempts, original typed errors,
+results, and UTC and monotonic timing. Interrupted reports explicitly identify incomplete
+execution and must not invent a normal response or a completed attempt.
 
-- Give operation execution an explicit cancellation signal and optional validity deadline.
-- Observe cancellation during both an attempt and the delay before another attempt.
-- Distinguish explicit cancellation from expiry, timeout, and exhausted attempts.
-- Return completed attempts and, when execution was interrupted, a terminal record of the
-  in-progress attempt. Cancellation before the first attempt may legitimately have no attempts.
-- Stop starting attempts once the action is obsolete. A deadline should also limit an
-  attempt that would otherwise continue beyond the action's validity interval.
-- Let the scenario await the terminal report during an orderly stop or configuration
-  replacement; retain forced abort as a fallback with an explicitly weaker reporting guarantee.
-- Preserve the generation and revision of the cancelled operation. The orchestrator must
-  retain an authorized terminal report from a retiring run without letting it mutate the
-  state of its replacement. Its current blanket rejection of inactive generations needs
-  an explicit completion path for this purpose.
+Protocol and scenario-specific result types belong inside reports, not in additional
+protocol-specific variants of the top-level event enum. Static enums are sufficient for
+the implemented scenarios; this proposal does not require `dyn` or untyped JSON payloads.
 
-Completion evidence: deterministic tests for cancellation during an attempt, cancellation
-between attempts, expiry before the next attempt, and stop/update while an operation runs.
-The interrupted operation reaches history exactly once under the orderly-stop contract.
-A lost SET acknowledgement or local cancellation must not be presented as proof that the
-device did not execute the command.
+### Identity and snapshots
 
-## 2. Expose prepared SNMP actions independently of monitor scenarios
+- `application_id` identifies a monitor instance; retain the existing public name.
+- `task_id` identifies a task within that instance.
+- `revision` identifies the accepted configuration version.
+- The existing `Generation` identifies a scenario run, including automatic restarts.
+- A new `OperationId` identifies an operation within a run. Its full identity includes the
+  monitor, task, and generation; it is not derived from metrics, which can reset.
+- `seq` orders public events within one monitor.
+- The envelope timestamp is publication time. Reports carry action timestamps.
 
-**Why:** the core library should support a one-off probe, a consumer-owned loop, and a
-coordination scenario using the same request preparation and execution code.
+Execution events and retained results must carry the configuration revision actually used
+by their run. An accepted configuration change may precede its application to a new run.
+Run and operation context should appear only where it has meaning, rather than inventing
+an active run for a task that has not started.
 
-Provide a public describe → prepare → execute path for GET and SET. Preparation resolves
-profiles and SCN and builds reusable action objects. One action attempt performs its work
-once; `poll` remains responsible for retries. Keep the existing scenario-owned schedules.
-Move the private GET/SET adapters into the SNMP layer and reuse them from the monitor.
+Snapshots expose current state, its cause and restart details, operation context, results,
+and accumulated metrics. Preserve the atomic snapshot-plus-subscription boundary and
+recovery from receiver lag. A replacement snapshot restores current state, not lost history.
 
-For an action containing several network steps, specify its retry boundary: invoking its
-adapter again retries the action. Retrying an individual step belongs to the action's
-implementation and must be explicit to avoid multiplying retry policies.
+## Implementation sequence
 
-Completion evidence: an example executes a prepared request through `poll` without
-constructing `Application`; GET/SET scenarios use that same public implementation.
+Implement each increment with focused tests and the corresponding architecture update.
+Intermediate states must document any guarantees that are not implemented yet.
 
-Relevant sources: [request specifications](crates/tools-core/src/snmp/request.rs),
-[GET adapter](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), and
-[SET adapter](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs).
+Increment 1 now provides operation identity/context, transition causes and restart plans,
+normal/interrupted report types, and the `TaskStateChanged`, `OperationStarted`, and
+`OperationFinished` payloads. Existing runtime publishers remain in place until their
+migration increments. Task descriptions and their event variants belong to increment 2.
 
-## 3. Preserve the meaning and quality of returned data
+Serialized `MonitorEvent` records contain `metadata` and `data`, without a format-version
+field. The user explicitly excluded history versioning and legacy compatibility from
+this refactor. Intermediate payloads may change as the migration proceeds.
 
-**Current gap:** GET parser errors still become `BusinessValue::Text("parse error")`,
-while the operation is classified as successful.
+UDP tests are deferred at the user's request. During these increments, run explicitly
+selected socket-free tests and compilation/lint checks instead of the full test suite.
 
-Represent no parser, decoded value, and decoding error explicitly, preserving `raw_value`
-and the error. Represent SNMP absence/exception values as observable outcomes for each OID.
-Check response cardinality and OID correspondence before associating values with parsers;
-the current adapter associates them through `zip`.
+### 1. Define public event types and migrate existing publishers
 
-Specify separate meanings for receiving a response and obtaining useful data. Decide when
-a partially useful result is `Degraded` and when no usable requested data means failure.
-Success after retries should remain success, with retry information available separately.
+Sources: [event types](crates/tools-core/src/monitor/event.rs),
+[public exports](crates/tools-core/src/monitor/mod.rs), and
+[scenario results](crates/tools-core/src/monitor/scenario/execution.rs).
 
-Completion evidence: mixed successful and failed OID decoding retains every available raw
-value and typed decoding error; a consumer can distinguish these cases without parsing text.
+Introduce the event payloads, typed transition causes, operation identity, and terminal
+outcomes. Preserve structured preparation evidence and existing typed SNMP reports.
+Document the serialized representation before replacing the current event variants.
+Introduce payload types alongside existing publishers as needed
+so this increment remains buildable; migrate publishers and remove obsolete variants as
+the following increments land.
 
-Relevant sources: [SNMP samples](crates/tools-core/src/snmp/response.rs) and
-[GET decoding](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs).
+Keep the current metrics and limit semantics until the accounting decision below is agreed.
+Do not promise cancellation reports before increment 5 implements their delivery.
 
-## 4. Make retained reports independently interpretable
+Completion evidence: serialization examples and round-trip tests for the new payloads,
+including typed failures, binary values, and interrupted outcomes. Document the treatment
+of old JSONL records; do not claim automatic compatibility or migration.
 
-**Current gaps:** event metadata identifies a task, generation, and revision, but retained
-`ScenarioExecution` values do not carry that context themselves. Task-add/update events
-omit the request description. A snapshot may therefore combine a new configuration with
-a result produced under an older one.
+### 2. Add task descriptions for registration and configuration changes
 
-Proposed changes:
+Sources: [task configuration](crates/tools-core/src/monitor/task/config.rs),
+[scenario specifications](crates/tools-core/src/monitor/scenario/spec.rs), and
+[SNMP request specifications](crates/tools-core/src/snmp/request.rs).
 
-- Associate monitor operations with an operation identifier, execution generation, and
-  applied configuration revision. Keep these monitor concepts outside generic `polling`.
-- Retain a description of the request for each referenced revision, including its target
-  and requested OIDs/SET values, while excluding credentials from the history description.
-- Distinguish accepted configuration from the configuration applied by a running scenario.
-- Include sufficient context in task-add/update events or explicit description records to
-  interpret an exported session without access to a live monitor.
-- Specify report invariants: attempt ordering, timing bounds, and consistency between the
-  terminal attempt and operation outcome. Decide whether public construction/deserialization
-  validates them before treating reports as a stable interchange contract.
-- Derive scenario timing from the enclosed report instead of keeping independently mutable
-  duplicate timing fields. The current constructor copies timing, but public fields and
-  deserialization still allow contradictory values.
-- Introduce an explicit history-format version before promising long-term compatibility.
+Introduce serializable `TaskDescription` and scenario-specific descriptions derived from
+validated configuration. Include the task name, scenario kind, target, relevant request
+parameters, schedule, attempt settings, limit, and history depth. Exclude credentials.
 
-Completion evidence: exporting a session, changing a task, and reading it later still
-identifies exactly which action and configuration produced each result.
+Capture the description when a revision is registered or accepted. Publish it in
+`TaskRegistered` and `TaskConfigurationChanged` so reading an exported session does not
+require querying a live monitor or guessing which configuration a revision referenced.
 
-## 5. Separate operation failures from scenario recovery policy
+Completion evidence: descriptions correspond to their event revisions, survive task removal,
+and exclude credentials. Rapid consecutive updates remain independently interpretable.
 
-**Current gap:** every SNMP error other than network/timeout is non-retryable, ends the
-scenario, and schedules a restart. Successful preparation immediately resets restart backoff.
+### 3. Centralize task state transitions
 
-Keep three decisions distinct: the observed failure, permission to retry this action, and
-whether the scenario can continue. A device rejection need not imply that recreating the
-scenario will help. Make restart enablement, delays, and stopping conditions configurable.
-Define recovery before resetting backoff so repeated post-build failures do not always
-receive the initial delay.
+Sources: [orchestrator](crates/tools-core/src/monitor/runtime/orchestrator.rs),
+[task state](crates/tools-core/src/monitor/task/task.rs), and
+[snapshots](crates/tools-core/src/monitor/task/view.rs).
 
-Specify SET retry behavior in terms of the command's meaning and the possibility that it
-was executed despite a missing acknowledgement. Coordination may need a read-back check
-or a new decision based on the current time rather than another identical write.
+Introduce a single internal transition path that changes state, records its cause and
+state-specific details, and prepares the corresponding public event. Cover explicit
+commands, scenario readiness, pause/resume acknowledgements, completion, preparation
+failure, execution failure, panic, and restart.
 
-Resolve accounting explicitly with the user: keep the existing meaning of `limit` as a
-count of whole scenario iterations, and decide how non-retryable, cancelled, and expired
-operations affect that count. Attempt counts remain a separate measurement. Do not silently
-change the existing accounting as a side effect of report or recovery work.
+Store the current transition context in snapshots, including the scheduled restart time.
+Use typed causes rather than requiring consumers to parse error strings. Treat command
+acceptance and actual state change as distinct moments. A no-op command need not emit a
+state transition.
 
-Completion evidence: a persistent device rejection follows the selected policy, repeated
-runtime failures follow the configured backoff, and tests document all counting rules.
+Completion evidence: published transitions match snapshots, include their reasons, and
+preserve the established acknowledgement semantics.
 
-Relevant sources: [error classification](crates/tools-core/src/monitor/scenario/runtime.rs),
-[restart policy](crates/tools-core/src/monitor/runtime/restart_policy.rs), and
+### 4. Add operation start/completion reporting to GET and SET
+
+Sources: [internal scenario reports](crates/tools-core/src/monitor/scenario/runtime.rs),
+[GET](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs),
+[SET](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs), and
+[operation reports](crates/tools-core/src/polling/report.rs).
+
+Allocate an `OperationId` before executing the entire retry loop. Send internal start and
+finish reports with immutable run and configuration context. The orchestrator assigns
+public event sequence numbers; scenarios do not publish directly to subscribers.
+
+Use `OperationFinished` for successful requests, exhausted attempts, and non-retryable
+failures. Handle scenario continuation or restart separately. Keep `PollReport<T, E>` as
+the normal operation evidence where possible, and avoid duplicating independently mutable
+timing fields in monitor wrappers.
+
+Retain operation identity, generation, and applied revision with the last result and local
+history, so a configuration update cannot relabel an older result.
+
+Completion evidence: one operation covers all retries; normal start/finish events correlate;
+non-retryable failures preserve their reports; retained results keep their original context.
+
+### 5. Complete operations during orderly cancellation and caught panics
+
+Sources: [polling](crates/tools-core/src/polling/poll.rs),
+[scenario runtime](crates/tools-core/src/monitor/scenario/runtime.rs), and
 [orchestrator](crates/tools-core/src/monitor/runtime/orchestrator.rs).
 
-## 6. Define observation and history-delivery guarantees
+Keep active-operation bookkeeping and completed-attempt evidence outside the future that
+may be cancelled or panic. Reuse or extend the existing internal attempt observer rather
+than introducing a steps engine. Extend the reporting path to return or assemble an
+explicit interrupted outcome.
 
-Preserve the consistent snapshot-plus-subscription boundary. Add examples of recovery from
-lag and document command acknowledgement versus actual completion at public API methods.
+For stop, configuration replacement, removal, and orderly shutdown, coordinate cancellation
+and await completion. Preserve completed attempts and mark any in-progress attempt as
+interrupted. On caught panic, preserve the available evidence and panic context.
+Cancellation does not establish whether a device executed an already-sent command.
 
-For lifecycle events, propose an explicit previous state, next state, and typed cause;
-report configuration acceptance separately from its application. Preserve result reports
-as the evidence of what actions actually did.
+Give retiring runs an explicit terminal-report path. Their operations may be finalized
+exactly once with their original identities, without changing the state or results of a
+replacement run. Emit terminal operation events before the final stop/removal event;
+allow accepted configuration changes to precede completion of old operations.
 
-History currently creates backpressure on the orchestrator and shutdown may wait for an
-unread sink indefinitely. Agree on the required behavior under a slow or disconnected
-consumer, delivery acknowledgement, and bounded shutdown. Distinguish channel delivery
-from persistence. Recovering a snapshot restores current state but cannot recreate lost
-operation reports.
+Specify the fallback for forced abort separately. The matching start/finish guarantee
+applies to orderly execution and handled failures, not process crashes or emergency aborts.
+Clear interrupted preparation progress as part of orderly lifecycle handling as well.
 
-Completion evidence: the documented policy is exercised with slow and disconnected sinks,
-and clients can observe completion or recover current state without guessing event order.
+Completion evidence: cancellation during an attempt and retry delay, panic, stop, update,
+remove, and shutdown. Started operations receive one terminal event under the orderly
+contract; late or duplicate reports cannot mutate a replacement run.
 
-## 7. Implement coordination as a scenario using the shared action mechanism
+### 6. Apply the agreed accounting rules
 
-Use the existing epoch/cycle/phase calculations to derive the required phase from the
-common time scale. A periodic decision loop can check once per second while an action is
-in progress; it must remain able to expire or replace that action.
+Sources: [task accounting](crates/tools-core/src/monitor/task/task.rs),
+[metrics](crates/tools-core/src/monitor/task/metrics.rs), and
+[limit enforcement](crates/tools-core/src/monitor/runtime/orchestrator.rs).
 
-Phase installation is an action with an operation report and bounded attempts. Its validity
-ends when the desired phase changes. An acknowledgement and an observation of the actual
-phase are distinct facts. Specify command refresh/keepalive rules and avoid competing
-writes from obsolete actions. Late execution must preserve the shared phase grid rather
-than extending it or replaying missed phases.
+Current behavior excludes non-retryable operation failures from execution metrics and
+`limit`, despite retaining their reports. Changing event names must not silently change it.
 
-Completion evidence: virtual-time tests cover slow responses, phase-boundary crossings
-during retries, pause/resume, and resumption after a long gap. Old-phase retries never
-continue past the chosen expiry policy.
+Proposed policy, pending agreement:
 
-Relevant source: [coordination calculations](crates/tools-core/src/monitor/coordination.rs).
+- Count every normally completed operation once, including exhausted attempts and
+  non-retryable failure.
+- Keep attempt counts separate from operation counts.
+- Track cancellation and panic separately from normally completed operations.
+- For repeating GET/SET, let `limit` count normally completed operations, including failures.
 
-## Recommended next implementation increment
+Define health updates and counter resets consistently with the chosen policy. Other
+scenarios may need their own completion conditions; do not force every scenario into a
+periodic request counter.
 
-Start with cancellation and expiry in `polling`, then integrate orderly terminal-report
-handling into the current GET/SET scenarios and orchestrator. Agree on cancellation
-acknowledgement and counting rules before changing observable lifecycle behavior. Keep
-this increment separate from prepared-action extraction and the first coordination scenario.
+Completion evidence: tests document success, exhausted attempts, non-retryable failure,
+cancellation, panic, explicit restart, and automatic restart. Limit-triggered termination
+publishes the operation result before task completion.
 
-Do not introduce a universal periodic runner or an external scenario-plugin API before
-repeating GET/SET and coordination demonstrate which behavior is actually shared. The
-stable common boundary is action execution with attempts and reports; schedule and
-behavioral decisions remain owned by each scenario.
+### 7. Finish consumer migration and document the contract
+
+Update the CLI dashboard, JSONL writer expectations, public API tests, examples, and
+[ARCHITECTURE.md](ARCHITECTURE.md). Snapshots remain the primary source for dashboard state;
+operation events provide execution evidence for history and other consumers.
+
+Verify example history records. Add focused tests for event order,
+revision capture, snapshot consistency, old-run completion, and interruption reporting.
+Keep tests meaningful; do not duplicate event constructors as implementation-mirroring tests.
+
+Before completing each code increment, run the relevant tests, `mise run check`, and
+`mise run clippy`. Record existing warnings or environmental blockers explicitly. Do not
+modify the frozen `net-monitor` crate as part of this work.
+
+## Decisions to settle before their implementation increments
+
+- Accounting: whether to accept the proposed treatment of non-retryable failures,
+  cancellation, and panic in metrics and `limit`.
+- Orderly cancellation: acknowledgement semantics and the forced-abort fallback.
+
+These decisions do not prevent defining payloads, descriptions, and transition causes.
+Resolve them before dependent behavior changes rather than guessing during implementation.
+
+## Deferred work
+
+Do not include universal steps, a workflow engine, new composite scenarios, prepared-action
+API extraction, coordination, action expiry, or configurable recovery/history-delivery
+policies in this refactor. Existing subscription and history-delivery behavior remains in
+force unless separately agreed.
+
+When a concrete composite operation is added, design its typed partial evidence then.
+The current `Pollable` return value alone cannot retain intermediate successful data after
+an outer timeout drops the attempt future. Preserving that data requires an explicit
+reporting path, not merely a new top-level event name.

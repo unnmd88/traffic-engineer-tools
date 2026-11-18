@@ -4,28 +4,64 @@ use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::monitor::{
-    ApplicationId,
+    ApplicationId, OperationContext, OperationReport, TaskTransition,
     scenario::{
         Generation, PanicStage, PreparationEvent, ScenarioBuildError, ScenarioExecution,
         ScenarioExecutionError,
     },
     task::{ExecutionMetrics, SpecRevision, TaskId},
 };
+use crate::polling::AttemptConfig;
 
+/// Ordering and task context assigned by the monitor when publishing an event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct EventMeta {
+    /// Zero-based event sequence number within this monitor instance.
     pub seq: u64,
+    /// UTC publication time; action timing belongs to the operation report.
     pub at: DateTime<Utc>,
+    /// The monitor instance that published the event.
     pub application_id: ApplicationId,
+    /// The task within that monitor instance.
     pub task_id: TaskId,
+    /// The task's latest run generation; legacy task events use zero before the first run.
     pub generation: Generation,
+    /// The task revision at publication; operation context retains its applied revision.
     pub revision: SpecRevision,
 }
 
+/// Public payloads during migration from lifecycle notifications to operation reporting.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EventData {
+    /// A transition payload for the next contract; not published by the runtime yet.
+    #[non_exhaustive]
+    TaskStateChanged {
+        /// The previous and current states, typed cause, and optional restart plan.
+        transition: Box<TaskTransition>,
+    },
+    /// The start of an entire algorithm with retries; runtime integration follows separately.
+    #[non_exhaustive]
+    OperationStarted {
+        /// The run and configuration to which the operation belongs.
+        context: OperationContext,
+        /// A human-readable explanation of the algorithm being executed, without credentials.
+        purpose: String,
+        /// UTC operation start time, distinct from envelope publication time.
+        started_at: DateTime<Utc>,
+        /// The policy for all attempts of this operation.
+        config: AttemptConfig,
+    },
+    /// A terminal operation report; runtime integration follows separately.
+    #[non_exhaustive]
+    OperationFinished {
+        /// The original run and applied configuration, even if a new revision was accepted.
+        context: OperationContext,
+        /// Normal results or explicit evidence of interruption.
+        report: Box<OperationReport>,
+    },
+
     TaskAdded,
     TaskSpecUpdated,
     #[non_exhaustive]
@@ -72,9 +108,14 @@ pub enum EventData {
     },
 }
 
+/// A public event with publication context and a typed payload.
+///
+/// Runtime producers retain their existing event variants during the staged migration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MonitorEvent {
+    /// Publication ordering, time, and task context.
     pub metadata: EventMeta,
+    /// The lifecycle change or execution evidence.
     pub data: EventData,
 }
 
