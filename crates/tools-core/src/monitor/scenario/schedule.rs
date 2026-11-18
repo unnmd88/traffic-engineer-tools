@@ -111,9 +111,10 @@ mod tests {
 
     #[async_trait]
     impl Pollable for TimedRequest {
+        type Error = std::convert::Infallible;
         type Output = ();
 
-        async fn poll(&self) -> Result<Self::Output, AttemptError> {
+        async fn poll(&self) -> Result<Self::Output, AttemptError<Self::Error>> {
             sleep(self.duration).await;
             Ok(())
         }
@@ -128,7 +129,7 @@ mod tests {
         for _ in 0..3 {
             timer.wait_next().await;
             starts.push(origin.elapsed());
-            poll(&attempt, &request).await.unwrap();
+            poll(&attempt, &request).await;
             timer.execution_finished(Instant::now());
         }
         starts
@@ -323,8 +324,9 @@ mod tests {
 
         timer.wait_next().await;
         assert_eq!(origin.elapsed(), Duration::from_secs(1));
-        let response = poll(&attempt, &request).await.unwrap();
-        assert!(matches!(response, crate::polling::Response::NoResponse { attempts: 3, .. }));
+        let response = poll(&attempt, &request).await;
+        assert!(matches!(response.outcome, crate::polling::PollOutcome::RetryLimitReached));
+        assert_eq!(response.attempt_count(), 3);
         assert_eq!(origin.elapsed(), Duration::from_secs(9));
         timer.execution_finished(Instant::now());
         timer.wait_next().await;

@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SnmpError {
     #[error("network error communicating with {target}: {reason}")]
     Network { target: SocketAddr, reason: String },

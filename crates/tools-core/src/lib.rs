@@ -16,6 +16,5 @@ pub mod stage;
 pub mod snmp;
 pub use constants::{DT_FMT, DT_FMT_WITH_MICROSECONDS};
 pub use error::Error;
-pub use polling::PollErrorContext;
 pub use scn::{Scn, ScnError};
 pub use snmp::SnmpError;

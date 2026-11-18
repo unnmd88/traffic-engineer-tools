@@ -11,7 +11,7 @@ use tokio::{
 use super::*;
 use crate::{
     monitor::task::TaskId,
-    polling::{AttemptConfig, Response},
+    polling::{AttemptConfig, AttemptOutcome, PollOutcome, PollReport},
     snmp::{
         RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec, business_value::BusinessValue,
         value::SnmpValue,
@@ -22,6 +22,35 @@ struct Session {
     join: JoinHandle<()>,
     commands: mpsc::Sender<ScenarioCommand>,
     reports: mpsc::Receiver<ScenarioReport>,
+    preparation: Vec<PreparationEvent>,
+}
+
+impl Session {
+    async fn next_report(&mut self) -> Option<ScenarioReport> {
+        loop {
+            match self.reports.recv().await? {
+                ScenarioReport::Preparation {
+                    event,
+                    task_id,
+                    generation,
+                } => {
+                    assert_eq!(task_id, TaskId(7));
+                    assert_eq!(generation, Generation::first().next());
+                    self.preparation.push(*event);
+                }
+                report => return Some(report),
+            }
+        }
+    }
+
+    fn drain_preparation(&mut self) {
+        while let Ok(report) = self.reports.try_recv() {
+            let ScenarioReport::Preparation { event, .. } = report else {
+                panic!("scenario became ready before SCN was provided");
+            };
+            self.preparation.push(*event);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -105,7 +134,7 @@ fn set_scenario(request: SnmpSetSpec, retries: u8) -> ScenarioSpec {
 }
 
 fn spawn(scenario: ScenarioSpec) -> Session {
-    let (report_tx, reports) = mpsc::channel(8);
+    let (report_tx, reports) = mpsc::channel(64);
     let (commands, cmd_rx) = mpsc::channel(8);
     let join = tokio::spawn(run_scenario(
         scenario,
@@ -118,6 +147,7 @@ fn spawn(scenario: ScenarioSpec) -> Session {
         join,
         commands,
         reports,
+        preparation: Vec::new(),
     }
 }
 
@@ -128,7 +158,7 @@ async fn start(operation: Operation, retries: u8) -> (Session, UdpSocket) {
         Operation::Set => set_scenario(set_request(&peer, None, None), retries),
     };
     let mut session = spawn(scenario);
-    let report = session.reports.recv().await.unwrap();
+    let report = session.next_report().await.unwrap();
     assert!(matches!(report, ScenarioReport::Built { .. }));
     assert_eq!(report.key(), (TaskId(7), Generation::first().next()));
     (session, peer)
@@ -172,7 +202,7 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
         response.varbinds[0].value = Value::Integer(42);
         reply(&peer, message, source, response).await;
 
-        let report = session.reports.recv().await.unwrap();
+        let report = session.next_report().await.unwrap();
         assert_eq!(report.key(), (TaskId(7), Generation::first().next()));
         let ScenarioReport::Executed { execution, .. } = report else {
             panic!("expected execution report");
@@ -180,23 +210,33 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
         match (operation, execution.outcome) {
             (
                 Operation::Get,
-                ScenarioOutcome::SnmpGet(Response::Success {
-                    payload,
-                    attempts: 1,
+                ScenarioOutcome::SnmpGet(PollReport {
+                    outcome: PollOutcome::Succeeded(payload),
+                    attempts,
                     ..
                 }),
             ) => {
+                assert_eq!(attempts.len(), 1);
                 assert_eq!(payload[0].oid.to_string(), "1.3.6.1.2.1.1.1.0");
                 assert!(matches!(payload[0].raw_value, SnmpValue::Integer(42)));
             }
-            (Operation::Set, ScenarioOutcome::SnmpSet(Response::Success { attempts: 1, .. })) => {}
+            (
+                Operation::Set,
+                ScenarioOutcome::SnmpSet(PollReport {
+                    outcome: PollOutcome::Succeeded(()),
+                    attempts,
+                    ..
+                }),
+            ) => {
+                assert_eq!(attempts.len(), 1);
+            }
             (_, outcome) => panic!("unexpected outcome: {outcome:?}"),
         }
 
         let finished_at = Instant::now();
         receive(&peer).await;
         assert_eq!(finished_at.elapsed(), Duration::from_secs(10));
-        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Executed { .. })));
+        assert!(matches!(session.next_report().await, Some(ScenarioReport::Executed { .. })));
         stop(session).await;
     }
 }
@@ -208,7 +248,7 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
         receive(&peer).await;
         session.commands.send(ScenarioCommand::Pause).await.unwrap();
         receive(&peer).await;
-        let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap()
+        let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap()
         else {
             panic!("expected execution before pause");
         };
@@ -217,13 +257,13 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
             (operation, execution.outcome),
             (
                 Operation::Get,
-                ScenarioOutcome::SnmpGet(Response::NoResponse { attempts: 2, .. })
+                ScenarioOutcome::SnmpGet(PollReport { outcome: PollOutcome::RetryLimitReached, ref attempts, .. })
             ) | (
                 Operation::Set,
-                ScenarioOutcome::SnmpSet(Response::NoResponse { attempts: 2, .. })
-            )
+                ScenarioOutcome::SnmpSet(PollReport { outcome: PollOutcome::RetryLimitReached, ref attempts, .. })
+            ) if attempts.len() == 2
         ));
-        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Paused { .. })));
+        assert!(matches!(session.next_report().await, Some(ScenarioReport::Paused { .. })));
         advance(Duration::from_secs(100)).await;
         session.commands.send(ScenarioCommand::Pause).await.unwrap();
         yield_now().await;
@@ -237,12 +277,12 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
             .send(ScenarioCommand::Resume)
             .await
             .unwrap();
-        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Resumed { .. })));
+        assert!(matches!(session.next_report().await, Some(ScenarioReport::Resumed { .. })));
         let (message, source) = receive(&peer).await;
         assert_eq!(resumed_at.elapsed(), Duration::from_secs(10));
         let response = message.pdu.standard().unwrap().to_response();
         reply(&peer, message, source, response).await;
-        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Executed { .. })));
+        assert!(matches!(session.next_report().await, Some(ScenarioReport::Executed { .. })));
         stop(session).await;
     }
 }
@@ -276,7 +316,7 @@ async fn closed_channels_end_active_and_paused_scenarios() {
                 if paused {
                     session.commands.send(ScenarioCommand::Pause).await.unwrap();
                     assert!(matches!(
-                        session.reports.recv().await,
+                        session.next_report().await,
                         Some(ScenarioReport::Paused { .. })
                     ));
                 }
@@ -299,12 +339,37 @@ async fn resolves_scn_before_reporting_built() {
     let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let mut session = spawn(get_scenario(request(&peer, Some("potok_ug405"), "stage"), 0));
     let (message, source) = receive(&peer).await;
-    assert!(session.reports.try_recv().is_err());
+    session.drain_preparation();
+    assert!(matches!(
+        session.preparation.last(),
+        Some(PreparationEvent::StageStarted {
+            stage: PreparationStage::FetchScn,
+            ..
+        })
+    ));
     let mut response = message.pdu.standard().unwrap().to_response();
     assert_eq!(response.varbinds[0].oid.to_string(), "1.3.6.1.4.1.13267.3.2.5.1.1.2.0");
     response.varbinds[0].value = Value::OctetString(b"CO1".as_slice().into());
     reply(&peer, message, source, response).await;
-    assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
+    assert!(matches!(session.next_report().await, Some(ScenarioReport::Built { .. })));
+    let Some(PreparationEvent::Finished { report }) = session.preparation.last() else {
+        panic!("expected the final preparation report before readiness");
+    };
+    assert!(report.outcome.is_ok());
+    assert_eq!(report.stages.len(), 3);
+    let scn = &report.stages[1];
+    assert!(
+        matches!(&scn.outcome, PreparationStageOutcome::Succeeded(PreparationStageData::ScnFetched { scn }) if scn == "CO1")
+    );
+    let request = scn.request.as_ref().unwrap();
+    assert_eq!(request.attempt_count(), 1);
+    assert_eq!(request.config.retries(), 0);
+    assert!(
+        matches!(&request.outcome, PollOutcome::Succeeded(varbind) if matches!(&varbind.value, SnmpValue::OctetString(bytes) if bytes == b"CO1"))
+    );
+    let json = serde_json::to_value(report).unwrap();
+    let restored: PreparationReport = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), json);
 
     let (message, source) = receive(&peer).await;
     let mut response = message.pdu.standard().unwrap().to_response();
@@ -314,10 +379,14 @@ async fn resolves_scn_before_reporting_built() {
     );
     response.varbinds[0].value = Value::OctetString(vec![4].into());
     reply(&peer, message, source, response).await;
-    let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
+    let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap() else {
         panic!("expected execution report");
     };
-    let ScenarioOutcome::SnmpGet(Response::Success { payload, .. }) = execution.outcome else {
+    let ScenarioOutcome::SnmpGet(PollReport {
+        outcome: PollOutcome::Succeeded(payload),
+        ..
+    }) = execution.outcome
+    else {
         panic!("expected successful GET");
     };
     assert_eq!(payload[0].oid_name.as_deref(), Some("utcReplyGn"));
@@ -339,21 +408,30 @@ async fn failed_scn_resolution_ends_scenario_without_built() {
         response.varbinds[0].value = Value::Integer(42);
         reply(&peer, message, source, response).await;
         assert!(matches!(
-            session.reports.recv().await,
+            session.next_report().await,
             Some(ScenarioReport::BuildFailed {
-                error: ScenarioBuildError::Other(_),
+                error: ScenarioBuildError::Snmp(crate::snmp::SnmpError::UnexpectedValueType { .. }),
                 ..
             })
         ));
-        assert!(session.reports.recv().await.is_none());
+        let Some(PreparationEvent::Finished { report }) = session.preparation.last() else {
+            panic!("missing preparation failure report");
+        };
+        assert!(report.outcome.is_err());
+        assert_eq!(report.stages.len(), 2);
+        assert_eq!(report.stages[1].stage, PreparationStage::FetchScn);
+        assert!(matches!(&report.stages[1].request.as_ref().unwrap().outcome,
+            PollOutcome::Succeeded(varbind) if matches!(varbind.value, SnmpValue::Integer(42))));
+        assert!(session.next_report().await.is_none());
         session.join.await.unwrap();
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn fatal_protocol_error_ends_scenario_without_execution_report() {
+async fn fatal_protocol_error_preserves_the_complete_report_before_ending_scenario() {
     for operation in [Operation::Get, Operation::Set] {
         let (mut session, peer) = start(operation, 1).await;
+        receive(&peer).await;
         let (message, source) = receive(&peer).await;
         let response = message
             .pdu
@@ -361,11 +439,44 @@ async fn fatal_protocol_error_ends_scenario_without_execution_report() {
             .unwrap()
             .to_error_response(ErrorStatus::GenErr, 1);
         reply(&peer, message, source, response).await;
+        let Some(ScenarioReport::ExecutionFailed {
+            execution, error, ..
+        }) = session.next_report().await
+        else {
+            panic!("expected a failure with the operation report");
+        };
         assert!(matches!(
-            session.reports.recv().await,
-            Some(ScenarioReport::ExecutionFailed { .. })
+            error,
+            ScenarioExecutionError::Snmp(crate::snmp::SnmpError::Protocol { index: 1, .. })
         ));
-        assert!(session.reports.recv().await.is_none());
+        let (attempts, finished_at, elapsed) = match &execution.outcome {
+            ScenarioOutcome::SnmpGet(report) => {
+                (&report.attempts, report.finished_at, report.elapsed)
+            }
+            ScenarioOutcome::SnmpSet(report) => {
+                (&report.attempts, report.finished_at, report.elapsed)
+            }
+        };
+        assert_eq!(execution.finished_at, finished_at);
+        assert_eq!(execution.elapsed, elapsed);
+        assert_eq!(attempts.len(), 2);
+        assert!(matches!(
+            attempts[0].outcome,
+            AttemptOutcome::TimedOut
+                | AttemptOutcome::Failed {
+                    error: crate::snmp::SnmpError::Timeout { .. },
+                    retryable: true
+                }
+        ));
+        assert!(matches!(
+            &attempts[1].outcome,
+            AttemptOutcome::Failed {
+                error: crate::snmp::SnmpError::Protocol { index: 1, .. },
+                retryable: false
+            }
+        ));
+        assert!(attempts[1].started_after >= attempts[0].elapsed + Duration::from_secs(1));
+        assert!(session.next_report().await.is_none());
         session.join.await.unwrap();
     }
 }
@@ -383,16 +494,16 @@ async fn parser_panic_is_reported_as_execution_panic() {
         oids,
     );
     let mut session = spawn(get_scenario(spec, 0));
-    assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
+    assert!(matches!(session.next_report().await, Some(ScenarioReport::Built { .. })));
     let (message, source) = receive(&peer).await;
     let response = message.pdu.standard().unwrap().to_response();
     reply(&peer, message, source, response).await;
-    let ScenarioReport::ExecutionPanicked { reason, .. } = session.reports.recv().await.unwrap()
+    let ScenarioReport::ExecutionPanicked { reason, .. } = session.next_report().await.unwrap()
     else {
         panic!("expected execution panic report");
     };
     assert_eq!(reason, "test parser panic");
-    assert!(session.reports.recv().await.is_none());
+    assert!(session.next_report().await.is_none());
     session.join.await.unwrap();
 }
 
@@ -403,7 +514,18 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         let scenario = set_scenario(set_request(&peer, Some("potok_ug405"), community_r), 0);
         let mut session = spawn(scenario);
         let (message, source) = receive(&peer).await;
-        assert!(session.reports.try_recv().is_err());
+        session.drain_preparation();
+        assert!(matches!(
+            session.preparation.last(),
+            Some(PreparationEvent::StageStarted {
+                stage: PreparationStage::FetchScn,
+                ..
+            })
+        ));
+        let read_transports = session.preparation.iter().filter(|event| matches!(event,
+            PreparationEvent::StageFinished { report } if report.stage == PreparationStage::CreateTransport { role: TransportRole::Read }
+        )).count();
+        assert_eq!(read_transports, usize::from(community_r.is_some()));
         assert_eq!(message.community.as_ref(), community_r.unwrap_or("private").as_bytes());
         let mut response = message.pdu.standard().unwrap().to_response();
         assert_eq!(response.pdu_type, PduType::Response);
@@ -411,7 +533,7 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         assert_eq!(response.varbinds[0].oid.to_string(), "1.3.6.1.4.1.13267.3.2.5.1.1.2.0");
         response.varbinds[0].value = Value::OctetString(b"CO1".as_slice().into());
         reply(&peer, message, source, response).await;
-        assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
+        assert!(matches!(session.next_report().await, Some(ScenarioReport::Built { .. })));
 
         let built_at = Instant::now();
         let (message, source) = receive(&peer).await;
@@ -423,11 +545,17 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         assert_eq!(pdu.varbinds[0].value, Value::OctetString(vec![4].into()));
         let response = pdu.to_response();
         reply(&peer, message, source, response).await;
-        let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap()
+        let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap()
         else {
             panic!("expected execution report");
         };
-        assert!(matches!(execution.outcome, ScenarioOutcome::SnmpSet(Response::Success { .. })));
+        assert!(matches!(
+            execution.outcome,
+            ScenarioOutcome::SnmpSet(PollReport {
+                outcome: PollOutcome::Succeeded(()),
+                ..
+            })
+        ));
         stop(session).await;
     }
 }
@@ -449,7 +577,7 @@ async fn scenario_clone_resolves_scn_independently_for_each_run() {
             let mut response = message.pdu.standard().unwrap().to_response();
             response.varbinds[0].value = Value::OctetString(scn.as_bytes().to_vec().into());
             reply(&peer, message, source, response).await;
-            assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Built { .. })));
+            assert!(matches!(session.next_report().await, Some(ScenarioReport::Built { .. })));
 
             let (message, source) = receive(&peer).await;
             let pdu = message.pdu.standard().unwrap();
@@ -462,7 +590,7 @@ async fn scenario_clone_resolves_scn_independently_for_each_run() {
             let mut response = pdu.to_response();
             response.varbinds[0].value = Value::OctetString(vec![4].into());
             reply(&peer, message, source, response).await;
-            assert!(matches!(session.reports.recv().await, Some(ScenarioReport::Executed { .. })));
+            assert!(matches!(session.next_report().await, Some(ScenarioReport::Executed { .. })));
             stop(session).await;
         }
     }
@@ -475,16 +603,26 @@ async fn set_retries_after_timeout_and_stops_on_success() {
     let (message, source) = receive(&peer).await;
     let response = message.pdu.standard().unwrap().to_response();
     reply(&peer, message, source, response).await;
-    let ScenarioReport::Executed { execution, .. } = session.reports.recv().await.unwrap() else {
+    let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap() else {
         panic!("expected execution report");
     };
-    let ScenarioOutcome::SnmpSet(Response::Success {
-        attempts, errors, ..
+    let ScenarioOutcome::SnmpSet(PollReport {
+        outcome: PollOutcome::Succeeded(()),
+        attempts,
+        ..
     }) = execution.outcome
     else {
         panic!("expected successful SET");
     };
-    assert_eq!(attempts, 2);
-    assert_eq!(errors.len(), 1);
+    assert_eq!(attempts.len(), 2);
+    assert!(matches!(
+        attempts[0].outcome,
+        AttemptOutcome::TimedOut
+            | AttemptOutcome::Failed {
+                error: crate::snmp::SnmpError::Timeout { .. },
+                retryable: true
+            }
+    ));
+    assert!(matches!(attempts[1].outcome, AttemptOutcome::Succeeded));
     stop(session).await;
 }

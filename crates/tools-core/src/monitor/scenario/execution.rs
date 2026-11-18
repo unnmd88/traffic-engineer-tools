@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
-use crate::{polling::Response, snmp::SnmpGetSample};
+use crate::{
+    polling::{PollOutcome, PollReport},
+    snmp::{SnmpError, SnmpGetSample},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -23,8 +26,8 @@ pub enum OutcomeStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ScenarioOutcome {
-    SnmpGet(Response<Vec<SnmpGetSample>>),
-    SnmpSet(Response<()>),
+    SnmpGet(PollReport<Vec<SnmpGetSample>, SnmpError>),
+    SnmpSet(PollReport<(), SnmpError>),
 }
 
 impl ScenarioOutcome {
@@ -36,10 +39,10 @@ impl ScenarioOutcome {
     }
 }
 
-const fn response_status<T>(response: &Response<T>) -> OutcomeStatus {
-    match response {
-        Response::Success { .. } => OutcomeStatus::Succeeded,
-        Response::NoResponse { .. } => OutcomeStatus::Failed,
+const fn response_status<T, E>(report: &PollReport<T, E>) -> OutcomeStatus {
+    match &report.outcome {
+        PollOutcome::Succeeded(_) => OutcomeStatus::Succeeded,
+        PollOutcome::RetryLimitReached | PollOutcome::NonRetryableFailure => OutcomeStatus::Failed,
     }
 }
 
@@ -49,6 +52,21 @@ pub struct ScenarioExecution {
     pub finished_at: DateTime<Utc>,
     pub elapsed: Duration,
     pub outcome: ScenarioOutcome,
+}
+
+impl ScenarioExecution {
+    /// Creates an execution whose timing is taken from its operation report.
+    pub fn new(outcome: ScenarioOutcome) -> Self {
+        let (finished_at, elapsed) = match &outcome {
+            ScenarioOutcome::SnmpGet(report) => (report.finished_at, report.elapsed),
+            ScenarioOutcome::SnmpSet(report) => (report.finished_at, report.elapsed),
+        };
+        Self {
+            finished_at,
+            elapsed,
+            outcome,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

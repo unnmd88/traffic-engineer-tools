@@ -8,25 +8,19 @@
 use std::panic::AssertUnwindSafe;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use futures_util::FutureExt;
-use tokio::{
-    sync::mpsc,
-    time::{Instant, timeout},
-};
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::{
     monitor::task::TaskId,
     polling::{AttemptError, Pollable, poll},
-    snmp::{SnmpClient, SnmpSetItem, oid::SnmpOid, resolve::Resolver, value::SnmpValue},
+    snmp::{SnmpClient, SnmpSetItem, oid::SnmpOid, value::SnmpValue},
 };
 
 use crate::monitor::scenario::{
     Generation, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
-    SnmpSetScenarioSpec,
-    runtime::{
-        ScenarioCommand, ScenarioReport, build_timeout, classify_error, connect, panic_message,
-    },
+    SnmpSetScenarioSpec, prepare,
+    runtime::{ScenarioCommand, ScenarioReport, classify_error, panic_message},
     schedule::PollTimer,
 };
 
@@ -43,50 +37,25 @@ pub(in crate::monitor::scenario) async fn run(
         schedule,
         attempt,
     } = spec;
-    let prepare = async {
-        let (host, port, community_r, community, profile, sets) = request.into_parts();
-        let client = connect(host, port, community, attempt).await?;
-        let scn_client = match community_r {
-            Some(community) => connect(host, port, community, attempt).await?,
-            None => client.clone(),
-        };
-        let items = Resolver::new(scn_client, profile)
-            .resolve_set(sets)
-            .await
-            .map_err(|error| ScenarioBuildError::Other(error.to_string()))?;
-        Ok::<_, ScenarioBuildError>(SnmpSetRequest { client, items })
-    };
-    let built = AssertUnwindSafe(timeout(build_timeout(&attempt), prepare))
-        .catch_unwind()
-        .await;
-    let request = match built {
-        Ok(Ok(Ok(request))) => request,
-        Ok(Ok(Err(error))) => {
+    let request = match prepare::set(request, attempt, task_id, generation, report_tx.clone()).await
+    {
+        Ok((client, items)) => SnmpSetRequest { client, items },
+        Err(ScenarioBuildError::Panicked(reason)) => {
+            let _ = report_tx
+                .send(ScenarioReport::BuildPanicked {
+                    task_id,
+                    generation,
+                    reason,
+                })
+                .await;
+            return;
+        }
+        Err(error) => {
             let _ = report_tx
                 .send(ScenarioReport::BuildFailed {
                     task_id,
                     generation,
                     error,
-                })
-                .await;
-            return;
-        }
-        Ok(Err(_)) => {
-            let _ = report_tx
-                .send(ScenarioReport::BuildFailed {
-                    task_id,
-                    generation,
-                    error: ScenarioBuildError::Timeout,
-                })
-                .await;
-            return;
-        }
-        Err(panic) => {
-            let _ = report_tx
-                .send(ScenarioReport::BuildPanicked {
-                    task_id,
-                    generation,
-                    reason: panic_message(panic.as_ref()),
                 })
                 .await;
             return;
@@ -150,17 +119,22 @@ pub(in crate::monitor::scenario) async fn run(
                 None => return,
             },
             () = timer.wait_next() => {
-                let started_at = Instant::now();
                 let executed = AssertUnwindSafe(poll(&attempt, &request))
                     .catch_unwind()
                     .await;
                 match executed {
-                    Ok(Ok(response)) => {
-                        let execution = ScenarioExecution {
-                            finished_at: Utc::now(),
-                            elapsed: started_at.elapsed(),
-                            outcome: ScenarioOutcome::SnmpSet(response),
-                        };
+                    Ok(report) => {
+                        let error = report.non_retryable_error().cloned();
+                        let execution = ScenarioExecution::new(ScenarioOutcome::SnmpSet(report));
+                        if let Some(error) = error {
+                            let _ = report_tx.send(ScenarioReport::ExecutionFailed {
+                                task_id,
+                                generation,
+                                error: ScenarioExecutionError::from(error),
+                                execution,
+                            }).await;
+                            return;
+                        }
                         timer.execution_finished(Instant::now());
                         if report_tx.send(ScenarioReport::Executed {
                             task_id,
@@ -169,14 +143,6 @@ pub(in crate::monitor::scenario) async fn run(
                         }).await.is_err() {
                             return;
                         }
-                    }
-                    Ok(Err(error)) => {
-                        let _ = report_tx.send(ScenarioReport::ExecutionFailed {
-                            task_id,
-                            generation,
-                            error: ScenarioExecutionError::from(error),
-                        }).await;
-                        return;
                     }
                     Err(panic) => {
                         let _ = report_tx.send(ScenarioReport::ExecutionPanicked {
@@ -199,18 +165,16 @@ struct SnmpSetRequest {
 
 #[async_trait]
 impl Pollable for SnmpSetRequest {
+    type Error = crate::snmp::SnmpError;
     type Output = ();
 
-    async fn poll(&self) -> Result<Self::Output, AttemptError> {
+    async fn poll(&self) -> Result<Self::Output, AttemptError<Self::Error>> {
         let sets: Vec<(SnmpOid, SnmpValue)> = self
             .items
             .iter()
             .map(|item| (item.oid.clone(), item.value.clone()))
             .collect();
-        self.client
-            .set_many(&sets)
-            .await
-            .map_err(|error| classify_error(&error))?;
+        self.client.set_many(&sets).await.map_err(classify_error)?;
         Ok(())
     }
 }

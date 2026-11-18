@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
 
 use crate::monitor::{
-    scenario::{OutcomeStatus, ScenarioExecution},
+    scenario::{Generation, OutcomeStatus, PreparationEvent, PreparationView, ScenarioExecution},
     task::{ExecutionMetrics, TaskConfig},
 };
 
@@ -116,6 +116,7 @@ pub(in crate::monitor) struct Task {
     revision: SpecRevision,
     config_updated_at: DateTime<Utc>,
     last_result: Option<ScenarioExecution>,
+    preparation: Option<PreparationView>,
     history: History,
     metrics: ExecutionMetrics,
     health: Health,
@@ -133,6 +134,7 @@ impl Task {
             revision: SpecRevision::new(1),
             config_updated_at: dt,
             last_result: None,
+            preparation: None,
             metrics: ExecutionMetrics::default(),
             health: Health::default(),
             history: History::new(deep_history),
@@ -161,6 +163,38 @@ impl Task {
         self.last_result.as_ref()
     }
 
+    pub fn preparation(&self) -> Option<&PreparationView> {
+        self.preparation.as_ref()
+    }
+
+    pub fn record_preparation(&mut self, generation: Generation, event: &PreparationEvent) {
+        if let PreparationEvent::Started { at } = event {
+            self.preparation = Some(PreparationView {
+                generation,
+                revision: self.revision,
+                started_at: *at,
+                active_stage: None,
+                stages: Vec::new(),
+                report: None,
+            });
+        }
+        let Some(view) = self.preparation.as_mut() else {
+            return;
+        };
+        match event {
+            PreparationEvent::Started { .. } => {}
+            PreparationEvent::StageStarted { stage, .. } => view.active_stage = Some(*stage),
+            PreparationEvent::StageFinished { report } => {
+                view.active_stage = None;
+                view.stages.push((**report).clone());
+            }
+            PreparationEvent::Finished { report } => {
+                view.active_stage = None;
+                view.report = Some((**report).clone());
+            }
+        }
+    }
+
     pub fn metrics(&self) -> ExecutionMetrics {
         self.metrics
     }
@@ -184,6 +218,11 @@ impl Task {
     pub fn apply_execution(&mut self, result: ScenarioExecution) {
         self.health.record(&result);
         self.metrics.record(result.outcome.status(), result.elapsed);
+        self.store_execution(result);
+    }
+
+    /// Stores a result without changing execution metrics or limit accounting.
+    pub fn store_execution(&mut self, result: ScenarioExecution) {
         self.updated_at = result.finished_at;
         if let Some(prev) = self.last_result.replace(result) {
             self.history.push(HistoryEntry {
@@ -225,7 +264,7 @@ mod tests {
     use super::*;
     use crate::{
         monitor::scenario::{PollSchedule, ScenarioOutcome, ScenarioSpec, SnmpGetScenarioSpec},
-        polling::{AttemptConfig, Response},
+        polling::{AttemptConfig, AttemptOutcome, AttemptReport, PollOutcome, PollReport},
         snmp::SnmpGetSpec,
     };
     use tokio::time::Duration;
@@ -250,16 +289,21 @@ mod tests {
     }
 
     fn failed_execution(finished_at: DateTime<Utc>) -> ScenarioExecution {
-        ScenarioExecution {
+        let elapsed = Duration::from_millis(300);
+        ScenarioExecution::new(ScenarioOutcome::SnmpGet(PollReport {
+            started_at: finished_at - elapsed,
             finished_at,
-            elapsed: Duration::from_millis(300),
-            outcome: ScenarioOutcome::SnmpGet(Response::NoResponse {
-                timestamp: finished_at,
-                attempts: 3,
-                errors: vec![],
-                elapsed: Duration::from_millis(300),
-            }),
-        }
+            elapsed,
+            config: AttemptConfig::try_new(Duration::from_millis(100), 2, Duration::ZERO).unwrap(),
+            attempts: (0..3)
+                .map(|index| AttemptReport {
+                    started_after: Duration::from_millis(index * 100),
+                    elapsed: Duration::from_millis(100),
+                    outcome: AttemptOutcome::TimedOut,
+                })
+                .collect(),
+            outcome: PollOutcome::RetryLimitReached,
+        }))
     }
 
     #[test]

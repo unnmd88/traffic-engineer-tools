@@ -6,12 +6,18 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum ScenarioExecutionError {
     #[error(transparent)]
-    Polling(#[from] crate::polling::FatalError),
+    Snmp(#[from] crate::snmp::SnmpError),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ScenarioBuildError {
+    /// The original error from creating a transport, reading SCN, or resolving OIDs.
+    #[error(transparent)]
+    Snmp(#[from] crate::snmp::SnmpError),
+    /// A preparation action panicked.
+    #[error("preparation panic: {0}")]
+    Panicked(String),
     #[error("build timeout")]
     Timeout,
     #[error("can't create snmp-driver, try again later")]

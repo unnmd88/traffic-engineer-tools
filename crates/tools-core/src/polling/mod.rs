@@ -3,11 +3,13 @@ mod error;
 mod metrics;
 mod poll;
 mod pollable;
-mod response;
+mod report;
 
 pub use config::AttemptConfig;
-pub use error::{AttemptError, ConfigError, FatalError, PollErrorContext};
+pub use error::{AttemptError, ConfigError};
 pub use metrics::Metrics;
 pub use poll::poll;
 pub use pollable::Pollable;
-pub use response::Response;
+pub use report::{AttemptOutcome, AttemptReport, PollOutcome, PollReport};
+
+pub(crate) use poll::{AttemptProgress, poll_observed};

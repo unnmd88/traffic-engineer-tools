@@ -10,7 +10,8 @@ use crate::{
 };
 
 use super::{
-    Generation, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioSpec,
+    Generation, PreparationEvent, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
+    ScenarioSpec,
 };
 
 pub(in crate::monitor) async fn run(
@@ -52,6 +53,11 @@ pub(in crate::monitor) enum ScenarioCommand {
 
 #[derive(Debug)]
 pub(in crate::monitor) enum ScenarioReport {
+    Preparation {
+        task_id: TaskId,
+        generation: Generation,
+        event: Box<PreparationEvent>,
+    },
     Built {
         task_id: TaskId,
         generation: Generation,
@@ -75,6 +81,7 @@ pub(in crate::monitor) enum ScenarioReport {
         task_id: TaskId,
         generation: Generation,
         error: ScenarioExecutionError,
+        execution: ScenarioExecution,
     },
     ExecutionPanicked {
         task_id: TaskId,
@@ -99,7 +106,12 @@ pub(in crate::monitor) enum ScenarioReport {
 impl ScenarioReport {
     pub(in crate::monitor) const fn key(&self) -> (TaskId, Generation) {
         match self {
-            Self::Built {
+            Self::Preparation {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::Built {
                 task_id,
                 generation,
             }
@@ -161,10 +173,10 @@ pub(super) async fn connect(
     };
     SnmpClient::new(config)
         .await
-        .map_err(|_| ScenarioBuildError::SnmpClientCreate)
+        .map_err(ScenarioBuildError::from)
 }
 
-fn transport_timeout(attempt: &AttemptConfig) -> Duration {
+pub(super) fn transport_timeout(attempt: &AttemptConfig) -> Duration {
     attempt.timeout().saturating_add(Duration::from_secs(1))
 }
 
@@ -172,12 +184,10 @@ pub(super) fn build_timeout(attempt: &AttemptConfig) -> Duration {
     transport_timeout(attempt).saturating_mul(2)
 }
 
-pub(super) fn classify_error(error: &SnmpError) -> AttemptError {
+pub(super) fn classify_error(error: SnmpError) -> AttemptError<SnmpError> {
     match error {
-        SnmpError::Network { .. } | SnmpError::Timeout { .. } => {
-            AttemptError::Transient(error.to_string())
-        }
-        _ => AttemptError::Fatal(error.to_string()),
+        SnmpError::Network { .. } | SnmpError::Timeout { .. } => AttemptError::Retryable(error),
+        _ => AttemptError::NonRetryable(error),
     }
 }
 

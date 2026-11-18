@@ -66,7 +66,37 @@ mod tests {
             },
             "data": {
                 "ExecutionFailed": {
-                    "error": { "Polling": { "message": "first line\nsecond line" } },
+                    "error": { "Snmp": { "InvalidOid": "first line\nsecond line" } },
+                    "execution": {
+                        "finished_at": "2026-11-07T00:00:01.200Z",
+                        "elapsed": { "secs": 1, "nanos": 200000000 },
+                        "outcome": { "SnmpGet": {
+                            "started_at": "2026-11-07T00:00:00Z",
+                            "finished_at": "2026-11-07T00:00:01.200Z",
+                            "elapsed": { "secs": 1, "nanos": 200000000 },
+                            "config": {
+                                "timeout": { "secs": 1, "nanos": 0 },
+                                "retries": 1,
+                                "retry_delay": { "secs": 0, "nanos": 100000000 }
+                            },
+                            "attempts": [
+                                {
+                                    "started_after": { "secs": 0, "nanos": 0 },
+                                    "elapsed": { "secs": 1, "nanos": 0 },
+                                    "outcome": "TimedOut"
+                                },
+                                {
+                                    "started_after": { "secs": 1, "nanos": 100000000 },
+                                    "elapsed": { "secs": 0, "nanos": 100000000 },
+                                    "outcome": { "Failed": {
+                                        "error": { "InvalidOid": "first line\nsecond line" },
+                                        "retryable": false
+                                    } }
+                                }
+                            ],
+                            "outcome": "NonRetryableFailure"
+                        } }
+                    },
                     "retry_in": null
                 }
             }

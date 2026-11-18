@@ -494,6 +494,10 @@ impl Orchestrator {
             }
 
             match rep {
+                ScenarioReport::Preparation { event, .. } => {
+                    entry.task.record_preparation(generation, &event);
+                    (Some(EventData::Preparation { event }), None)
+                }
                 ScenarioReport::Built { .. } => {
                     entry.attempts = 0;
                     entry.task.clear_error();
@@ -546,7 +550,10 @@ impl Orchestrator {
                         None,
                     )
                 }
-                ScenarioReport::ExecutionFailed { error, .. } => {
+                ScenarioReport::ExecutionFailed {
+                    error, execution, ..
+                } => {
+                    entry.task.store_execution(execution.clone());
                     entry.scenario = None;
                     entry.attempts += 1;
                     entry.state = TaskState::Restarting;
@@ -555,6 +562,7 @@ impl Orchestrator {
                     (
                         Some(EventData::ExecutionFailed {
                             error,
+                            execution,
                             retry_in: Some(delay),
                         }),
                         Some(delay),
@@ -726,6 +734,7 @@ impl Orchestrator {
     fn log_event(&self, event: &MonitorEvent) {
         let metadata = &event.metadata;
         match &event.data {
+            EventData::Preparation { .. } => {}
             EventData::TaskAdded => {
                 if let Some(entry) = self.entries.get(&metadata.task_id) {
                     tracing::info!(
@@ -831,7 +840,9 @@ impl Orchestrator {
                 retry_in_ms = retry_in.map(|delay| delay.as_secs_f64() * 1000.0),
                 "scenario build failed"
             ),
-            EventData::ExecutionFailed { error, retry_in } => tracing::warn!(
+            EventData::ExecutionFailed {
+                error, retry_in, ..
+            } => tracing::warn!(
                 application_id = %metadata.application_id,
                 task_id = metadata.task_id.0,
                 generation = ?metadata.generation,
@@ -887,6 +898,7 @@ impl Orchestrator {
             limit: config.limit(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
+            preparation: t.preparation().cloned(),
             history,
             health: t.health().clone(),
         }
@@ -1082,8 +1094,8 @@ mod tests {
             },
             task::ExecutionMetrics,
         },
-        polling::{AttemptConfig, FatalError, Response},
-        snmp::{SnmpGetSpec, SnmpSetSpec},
+        polling::{AttemptConfig, AttemptOutcome, AttemptReport, PollOutcome, PollReport},
+        snmp::{SnmpError, SnmpGetSpec, SnmpSetSpec},
     };
 
     fn active_task(limit: u64) -> (Orchestrator, broadcast::Receiver<MonitorEvent>, TaskId) {
@@ -1132,27 +1144,27 @@ mod tests {
 
     fn execution(at: i64, success: bool) -> ScenarioExecution {
         let finished_at = DateTime::from_timestamp(at, 0).unwrap();
-        let response = if success {
-            Response::Success {
-                timestamp: finished_at,
-                attempts: 3,
-                errors: vec![],
-                elapsed: Duration::from_millis(25),
-                payload: vec![],
-            }
-        } else {
-            Response::NoResponse {
-                timestamp: finished_at,
-                attempts: 3,
-                errors: vec![],
-                elapsed: Duration::from_millis(30),
-            }
-        };
-        ScenarioExecution {
+        let elapsed = Duration::from_millis(if success { 50 } else { 80 });
+        ScenarioExecution::new(ScenarioOutcome::SnmpGet(PollReport {
+            started_at: finished_at - elapsed,
             finished_at,
-            elapsed: Duration::from_millis(if success { 50 } else { 80 }),
-            outcome: ScenarioOutcome::SnmpGet(response),
-        }
+            elapsed,
+            config: AttemptConfig::try_new(Duration::from_millis(100), 0, Duration::ZERO).unwrap(),
+            attempts: vec![AttemptReport {
+                started_after: Duration::ZERO,
+                elapsed,
+                outcome: if success {
+                    AttemptOutcome::Succeeded
+                } else {
+                    AttemptOutcome::TimedOut
+                },
+            }],
+            outcome: if success {
+                PollOutcome::Succeeded(vec![])
+            } else {
+                PollOutcome::RetryLimitReached
+            },
+        }))
     }
 
     fn set_config(name: &str) -> TaskConfig {
@@ -1545,30 +1557,137 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execution_error_preserves_its_type_and_restarts_the_scenario() {
-        let (mut orchestrator, mut events, task_id) = active_task(0);
+    async fn execution_error_preserves_the_report_without_changing_limit_accounting() {
+        let mut failed = execution(200, false);
+        let ScenarioOutcome::SnmpGet(report) = &mut failed.outcome else {
+            unreachable!()
+        };
+        report.outcome = PollOutcome::NonRetryableFailure;
+        report.attempts[0].outcome = AttemptOutcome::Failed {
+            error: SnmpError::InvalidOid("invalid request".to_string()),
+            retryable: false,
+        };
+        let (mut orchestrator, mut events, task_id) = active_task(2);
+        execute(&mut orchestrator, task_id, execution(100, true)).await;
+        events.try_recv().unwrap();
         orchestrator
             .on_report(ScenarioReport::ExecutionFailed {
                 task_id,
                 generation: Generation::first(),
-                error: ScenarioExecutionError::Polling(FatalError {
-                    message: "invalid request".to_string(),
-                }),
+                error: ScenarioExecutionError::Snmp(SnmpError::InvalidOid(
+                    "invalid request".to_string(),
+                )),
+                execution: failed.clone(),
             })
             .await;
 
-        assert!(matches!(
-            events.try_recv().unwrap().data,
-            EventData::ExecutionFailed {
-                error: ScenarioExecutionError::Polling(FatalError { message }),
-                retry_in: Some(_),
-            } if message == "invalid request"
-        ));
+        let EventData::ExecutionFailed {
+            error,
+            execution: actual,
+            retry_in: Some(_),
+        } = events.try_recv().unwrap().data
+        else {
+            panic!("expected a failed execution with its report");
+        };
+        assert!(
+            matches!(error, ScenarioExecutionError::Snmp(SnmpError::InvalidOid(message)) if message == "invalid request")
+        );
+        assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(&failed).unwrap());
         let snapshot = orchestrator.snapshot();
-        assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
-        assert_eq!(snapshot.tasks[0].metrics.executions, 0);
-        assert!(snapshot.tasks[0].result.is_none());
+        let task = &snapshot.tasks[0];
+        assert_eq!(task.status, TaskStatus::Restarting);
+        assert_eq!(task.metrics.executions, 1);
+        assert_eq!(task.history.len(), 1);
+        assert_eq!(task.history[0].result.finished_at, DateTime::from_timestamp(100, 0).unwrap());
+        assert_eq!(task.result.as_ref().unwrap().finished_at, failed.finished_at);
         assert!(orchestrator.entries[&task_id].scenario.is_none());
+    }
+
+    #[tokio::test]
+    async fn preparation_progress_is_published_in_order_and_retained_in_snapshots() {
+        use crate::monitor::{
+            PreparationEvent, PreparationReport, PreparationStage, PreparationStageData,
+            PreparationStageOutcome, PreparationStageReport, TransportRole,
+        };
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let generation = Generation::first();
+        let at = Utc::now();
+        let stage = PreparationStage::CreateTransport {
+            role: TransportRole::Read,
+        };
+        for event in [
+            PreparationEvent::Started { at },
+            PreparationEvent::StageStarted {
+                stage,
+                at,
+                started_after: Duration::ZERO,
+            },
+        ] {
+            orchestrator
+                .on_report(ScenarioReport::Preparation {
+                    task_id,
+                    generation,
+                    event: Box::new(event),
+                })
+                .await;
+        }
+        let snapshot = orchestrator.snapshot();
+        let view = snapshot.tasks[0].preparation.as_ref().unwrap();
+        assert_eq!(view.active_stage, Some(stage));
+        assert_eq!(view.generation, generation);
+        assert_eq!(view.revision, SpecRevision::new(1));
+        assert!(view.report.is_none());
+        let report = PreparationStageReport {
+            stage,
+            started_at: at,
+            finished_at: at,
+            started_after: Duration::ZERO,
+            elapsed: Duration::ZERO,
+            outcome: PreparationStageOutcome::Succeeded(PreparationStageData::TransportCreated {
+                target: "127.0.0.1:161".parse().unwrap(),
+            }),
+            request: None,
+        };
+        for event in [
+            PreparationEvent::StageFinished {
+                report: Box::new(report.clone()),
+            },
+            PreparationEvent::Finished {
+                report: Box::new(PreparationReport {
+                    started_at: at,
+                    finished_at: at,
+                    elapsed: Duration::ZERO,
+                    stages: vec![report],
+                    outcome: Ok(()),
+                }),
+            },
+        ] {
+            orchestrator
+                .on_report(ScenarioReport::Preparation {
+                    task_id,
+                    generation,
+                    event: Box::new(event),
+                })
+                .await;
+        }
+        for seq in 0..4 {
+            let event = events.try_recv().unwrap();
+            assert_eq!(event.metadata.seq, seq);
+            assert_eq!(event.metadata.generation, generation);
+            assert_eq!(event.metadata.revision, SpecRevision::new(1));
+            assert!(matches!(event.data, EventData::Preparation { .. }));
+            let json = serde_json::to_value(event).unwrap();
+            let restored: MonitorEvent = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), json);
+        }
+        let snapshot = orchestrator.snapshot();
+        let task = &snapshot.tasks[0];
+        let view = task.preparation.as_ref().unwrap();
+        assert!(view.active_stage.is_none());
+        assert_eq!(view.stages.len(), 1);
+        assert!(view.report.as_ref().unwrap().outcome.is_ok());
+        assert_eq!(task.metrics.executions, 0);
+        assert!(task.result.is_none());
     }
 
     #[tokio::test]

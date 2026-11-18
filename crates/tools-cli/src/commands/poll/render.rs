@@ -1,8 +1,11 @@
 use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
-    monitor::{PollSchedule, ScenarioExecution, ScenarioOutcome, ScenarioSpec, TaskView},
-    polling::Response,
+    monitor::{
+        PollSchedule, PreparationStageOutcome, ScenarioExecution, ScenarioOutcome, ScenarioSpec,
+        TaskView,
+    },
+    polling::{AttemptOutcome, PollOutcome, PollReport},
     snmp::SnmpGetSample,
 };
 
@@ -75,6 +78,27 @@ fn format_results(view: &TaskView) -> String {
         execution_duration(view),
     ));
     out.push('\n');
+    if let Some(preparation) = &view.preparation {
+        out.push_str(&format!(
+            "Preparation (generation {:?}, revision {}):\n",
+            preparation.generation, preparation.revision
+        ));
+        for stage in &preparation.stages {
+            let outcome = match &stage.outcome {
+                PreparationStageOutcome::Succeeded(data) => format!("{data:?}"),
+                PreparationStageOutcome::Failed(error) => error.to_string(),
+                PreparationStageOutcome::NotRequired => "not required".to_string(),
+            };
+            out.push_str(&format!(
+                "  {:?}: {}ms, {outcome}\n",
+                stage.stage,
+                stage.elapsed.as_millis()
+            ));
+        }
+        if let Some(stage) = preparation.active_stage {
+            out.push_str(&format!("  {stage:?}: in progress\n"));
+        }
+    }
     out.push_str(&format_response(view));
 
     if !view.history.is_empty() {
@@ -88,22 +112,44 @@ fn format_results(view: &TaskView) -> String {
 fn format_response(view: &TaskView) -> String {
     match view.result.as_ref() {
         Some(execution) => match &execution.outcome {
-            ScenarioOutcome::SnmpGet(Response::Success {
-                payload: samples, ..
-            }) => {
-                format!("Snmp-get response:\n{}\n", format_oids_table(samples))
+            ScenarioOutcome::SnmpGet(report) => {
+                let mut out = format_report(report);
+                if let PollOutcome::Succeeded(samples) = &report.outcome {
+                    out.push_str(&format!("Snmp-get response:\n{}\n", format_oids_table(samples)));
+                }
+                out
             }
-            ScenarioOutcome::SnmpSet(Response::Success { .. }) => {
-                "Snmp-set response: ok\n".to_string()
+            ScenarioOutcome::SnmpSet(report) => {
+                let mut out = format_report(report);
+                if matches!(report.outcome, PollOutcome::Succeeded(())) {
+                    out.push_str("Snmp-set response: ok\n");
+                }
+                out
             }
-            ScenarioOutcome::SnmpGet(Response::NoResponse { attempts, .. })
-            | ScenarioOutcome::SnmpSet(Response::NoResponse { attempts, .. }) => {
-                format!("No response: {attempts} attempts\n")
-            }
-            _ => format!("ScenarioSpec outcome: {:?}\n", execution.outcome.status()),
+            _ => format!("Scenario outcome: {:?}\n", execution.outcome.status()),
         },
         None => String::new(),
     }
+}
+
+fn format_report<T, E: std::fmt::Display>(report: &PollReport<T, E>) -> String {
+    let mut out = format!("{}\n", format_response_summary(report));
+    for (index, attempt) in report.attempts.iter().enumerate() {
+        let outcome = match &attempt.outcome {
+            AttemptOutcome::Succeeded => "success".to_string(),
+            AttemptOutcome::TimedOut => "timeout".to_string(),
+            AttemptOutcome::Failed { error, retryable } => {
+                format!("{error} (retryable: {retryable})")
+            }
+        };
+        out.push_str(&format!(
+            "  Attempt {}: +{}ms, {}ms, {outcome}\n",
+            index + 1,
+            attempt.started_after.as_millis(),
+            attempt.elapsed.as_millis()
+        ));
+    }
+    out
 }
 
 fn format_history(view: &TaskView) -> String {
@@ -123,15 +169,17 @@ fn format_execution_summary(execution: &ScenarioExecution) -> String {
     }
 }
 
-fn format_response_summary<T>(response: &Response<T>) -> String {
-    match response {
-        Response::Success {
-            attempts, elapsed, ..
-        } => {
-            format!("success(attempts: {attempts}, {}ms)", elapsed.as_millis())
-        }
-        Response::NoResponse { attempts, .. } => format!("no response(attempts: {attempts})"),
-    }
+fn format_response_summary<T, E>(report: &PollReport<T, E>) -> String {
+    let status = match &report.outcome {
+        PollOutcome::Succeeded(_) => "success",
+        PollOutcome::RetryLimitReached => "retry limit reached",
+        PollOutcome::NonRetryableFailure => "non-retryable failure",
+    };
+    format!(
+        "{status}(attempts: {}, {}ms)",
+        report.attempt_count(),
+        report.elapsed.as_millis()
+    )
 }
 
 fn push_query(lines: &mut Vec<String>, scenario: &ScenarioSpec) {

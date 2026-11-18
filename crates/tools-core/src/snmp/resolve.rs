@@ -1,8 +1,7 @@
 //! Подготовка запроса и резолюция в финальный план опроса.
 //!
-//! [`Resolver`] — единственная точка резолюции: держит клиент для чтения
-//! (SCN-фетч) и профиль, отвечает за обогащение метаданными (парсер/имя) и
-//! достройку OID идентификатором контроллера (SCN/инстанс).
+//! [`Resolver`] applies profile metadata and constructs final OID instances.
+//! SCN discovery is performed separately so callers can observe and report it.
 //!
 //! Контракт:
 //! - без профиля — библиотека ничего не резолвит (raw-режим);
@@ -13,13 +12,12 @@
 use crate::{
     scn::Scn,
     snmp::{
-        ParseError, SnmpClient, SnmpError,
+        ParseError, SnmpError,
         builders::encode_by_type,
         oid::SnmpOid,
         oid_metadata::OidKind,
         parsers::OidValueDisplayFn,
         profiles::SnmpProfile,
-        site_id::fetch_site_id_potok_ug405,
         value::{SnmpValue, SnmpValueType},
     },
 };
@@ -64,34 +62,32 @@ pub fn encode_set_value(
 }
 
 pub struct Resolver {
-    client: SnmpClient,
     profile: Option<SnmpProfile>,
 }
 
 impl Resolver {
-    pub fn new(client: SnmpClient, profile: Option<SnmpProfile>) -> Self {
-        Self { client, profile }
+    pub fn new(profile: Option<SnmpProfile>) -> Self {
+        Self { profile }
     }
 
-    pub fn profile(&self) -> Option<SnmpProfile> {
-        self.profile
-    }
-
-    pub async fn fetch_scn(&self) -> Result<Option<Scn>, SnmpError> {
-        match self.profile {
-            Some(SnmpProfile::PotokUg405) => {
-                let bytes = fetch_site_id_potok_ug405(&self.client).await?;
-                let scn =
-                    Scn::from_bytes(&bytes).map_err(|e| SnmpError::ConvertScn(e.to_string()))?;
-                Ok(Some(scn))
-            }
-            _ => Ok(None),
-        }
+    /// Returns whether any selected OID requires a device-specific SCN index.
+    pub fn needs_scn(&self, oids: &[SnmpOid]) -> bool {
+        self.profile.is_some_and(|profile| {
+            oids.iter().any(|oid| {
+                profile.registry().iter().any(|metadata| {
+                    metadata.oid == oid.to_string() && metadata.kind == OidKind::ScnIndexed
+                })
+            })
+        })
     }
 
     /// Достраивает OID до полного инстанса по `OidKind` из реестра профиля:
     /// скаляры получают ".0", SCN-колонки — индекс контроллера.
-    pub async fn resolve_oids(&self, to_resolve: &[SnmpOid]) -> Result<Vec<SnmpOid>, SnmpError> {
+    pub fn resolve_oids(
+        &self,
+        to_resolve: &[SnmpOid],
+        scn: Option<&Scn>,
+    ) -> Result<Vec<SnmpOid>, SnmpError> {
         let Some(profile) = self.profile else {
             return Ok(to_resolve.to_vec());
         };
@@ -112,20 +108,14 @@ impl Resolver {
         }
 
         let scn_suffix = if needs_scn {
-            match self.fetch_scn().await? {
-                Some(scn) => {
-                    let suffix = SnmpOid::parse(&scn.to_utc_index())
-                        .map_err(|e| SnmpError::ResolveOid(e.to_string()))?;
-                    Some(suffix)
-                }
-                None => {
-                    tracing::error!(target: "resolve_oids", profile=?profile.to_string(), "Bug: snmp profile must have scn.");
-                    return Err(SnmpError::ScnError {
-                        profile: profile.to_string(),
-                        message: "Scn not found".to_string(),
-                    });
-                }
-            }
+            let scn = scn.ok_or_else(|| SnmpError::ScnError {
+                profile: profile.to_string(),
+                message: "SCN is required before resolving these OIDs".to_string(),
+            })?;
+            Some(
+                SnmpOid::parse(&scn.to_utc_index())
+                    .map_err(|error| SnmpError::ResolveOid(error.to_string()))?,
+            )
         } else {
             None
         };
@@ -147,9 +137,10 @@ impl Resolver {
     }
 
     /// GET: обогащает элементы метаданными профиля и резолвит OID.
-    pub async fn resolve_get(
+    pub fn resolve_get(
         &self,
         items: Vec<SnmpGetItem>,
+        scn: Option<&Scn>,
     ) -> Result<Vec<SnmpGetItem>, SnmpError> {
         let mut resolved = Vec::with_capacity(items.len());
 
@@ -165,7 +156,7 @@ impl Resolver {
         }
 
         let oids: Vec<SnmpOid> = resolved.iter().map(|i| i.oid.clone()).collect();
-        let resolved_oids = self.resolve_oids(&oids).await?;
+        let resolved_oids = self.resolve_oids(&oids, scn)?;
         for (item, oid) in resolved.iter_mut().zip(resolved_oids) {
             item.oid = oid;
         }
@@ -174,12 +165,13 @@ impl Resolver {
     }
 
     /// SET: только SCN-резолюция OID (значения уже закодированы в `SnmpSetItem`).
-    pub async fn resolve_set(
+    pub fn resolve_set(
         &self,
         items: Vec<SnmpSetItem>,
+        scn: Option<&Scn>,
     ) -> Result<Vec<SnmpSetItem>, SnmpError> {
         let oids: Vec<SnmpOid> = items.iter().map(|i| i.oid.clone()).collect();
-        let resolved = self.resolve_oids(&oids).await?;
+        let resolved = self.resolve_oids(&oids, scn)?;
 
         Ok(items
             .into_iter()

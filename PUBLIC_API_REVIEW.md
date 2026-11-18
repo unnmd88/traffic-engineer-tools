@@ -1,142 +1,210 @@
-# tools-core public API review
+# Monitor and polling API: proposed next steps
 
-Consumer-facing review of the public types, implementations, examples, and
-`ARCHITECTURE.md`. These recommendations describe proposed improvements, not implemented
-behavior or settled design decisions. The implementation backlog lives in [TODO.md](TODO.md).
+This document replaces the previous public API review. It is a prioritized proposal based
+on the current working tree and the intended repeating-action and coordination scenarios.
+It describes future work, not additional implemented behavior. [ARCHITECTURE.md](ARCHITECTURE.md)
+remains the reference for current behavior.
 
-## Overall assessment
+## Foundation already implemented
 
-The API has a useful foundation, but consumers still need too much knowledge of the
-library's internals to reach their first useful result, especially when using the monitor.
+An operation is one execution of an action together with all of its attempts. The action
+may perform one or several network requests. A scenario decides when to execute actions;
+the polling mechanism executes an action with its timeout and retry settings.
 
-Preserve the following strengths:
+The current implementation provides:
 
-- `Application`, `RunningApplication`, and `ApplicationHandle` separate preparation,
-  execution ownership, and cloneable access to commands.
-- Configuration is validated before network execution.
-- Identifiers are typed and errors belong to their modules.
-- A snapshot and its event subscription can be obtained at one consistent boundary.
-- SNMP results retain the raw value alongside the decoded business value.
+- `Pollable` with associated output and error types, without protocol dependencies;
+- `PollReport<T, E>` with UTC start/end timestamps, monotonic total duration, effective
+  attempt settings, every attempt, and the final operation outcome;
+- attempt offsets, durations, successful attempts, polling timeouts, and original typed
+  adapter errors with their retry classification;
+- reports for success, exhausted attempts, and non-retryable failure;
+- report propagation through GET/SET, task results and history, events, JSONL, and the CLI;
+- preparation stage start/completion events, complete preparation reports, typed errors,
+  raw SCN request reports, and current progress in snapshots and CLI;
+- immediate source logging of preparation actions and SCN request attempts;
+- unchanged scheduling and existing `limit` accounting, plus the correction allowing
+  256 attempts for `retries = 255`.
 
-## Recommendations, ordered by consumer impact
+Non-retryable failures now retain reports but still follow the existing scenario-restart
+path and do not increment execution metrics or consume `limit`. Cooperative cancellation,
+action expiry, and regular-operation reports surviving a panic are not implemented.
+Preparation stages catch panics and preserve earlier completed stages; forced cancellation
+can still interrupt preparation without a terminal report. Public polling types
+and serialized result records changed; there is no automatic migration of old result data.
 
-### 1. Execute prepared SNMP requests independently of the monitor
+Relevant sources: [operation reports](crates/tools-core/src/polling/report.rs),
+[polling](crates/tools-core/src/polling/poll.rs),
+[scenario execution](crates/tools-core/src/monitor/scenario/execution.rs), and
+[event contract](crates/tools-core/src/monitor/event.rs), and
+[preparation contract](crates/tools-core/src/monitor/scenario/preparation.rs).
 
-`SnmpGetSpec` and `SnmpSetSpec` are public descriptions, but consumers cannot execute them
-through a public API with profile-aware OID completion, SCN discovery, and business-value
-decoding. `SnmpClient` exposes network operations, while preparation and decoding remain
-inside the monitor implementation.
+## 1. Complete operation reporting with cancellation and expiry
 
-Provide a public describe → prepare → execute path, allowing a prepared request to be
-executed repeatedly. The monitor should reuse that mechanism. This supports one-off
-probes, consumer-owned loops, and integration tests without requiring a monitor lifecycle.
+**Why first:** coordination must stop trying to install a phase once its validity interval
+has ended. Stopping or replacing a task should also preserve the attempts already made.
 
-Relevant sources: [request specs](crates/tools-core/src/snmp/request.rs),
-[SNMP client](crates/tools-core/src/snmp/client.rs), and
-[GET scenario](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs).
+Proposed changes:
 
-### 2. Preserve decoding failures in the result
+- Give operation execution an explicit cancellation signal and optional validity deadline.
+- Observe cancellation during both an attempt and the delay before another attempt.
+- Distinguish explicit cancellation from expiry, timeout, and exhausted attempts.
+- Return completed attempts and, when execution was interrupted, a terminal record of the
+  in-progress attempt. Cancellation before the first attempt may legitimately have no attempts.
+- Stop starting attempts once the action is obsolete. A deadline should also limit an
+  attempt that would otherwise continue beyond the action's validity interval.
+- Let the scenario await the terminal report during an orderly stop or configuration
+  replacement; retain forced abort as a fallback with an explicitly weaker reporting guarantee.
+- Preserve the generation and revision of the cancelled operation. The orchestrator must
+  retain an authorized terminal report from a retiring run without letting it mutate the
+  state of its replacement. Its current blanket rejection of inactive generations needs
+  an explicit completion path for this purpose.
 
-The GET implementation currently replaces a parser error with
-`BusinessValue::Text("parse error")`; the request still receives `OutcomeStatus::Succeeded`.
-A consumer cannot reliably distinguish that failure from a legitimate text value.
+Completion evidence: deterministic tests for cancellation during an attempt, cancellation
+between attempts, expiry before the next attempt, and stop/update while an operation runs.
+The interrupted operation reaches history exactly once under the orderly-stop contract.
+A lost SET acknowledgement or local cancellation must not be presented as proof that the
+device did not execute the command.
 
-Represent three states explicitly: no parser, successful decoding, and failed decoding.
-Keep the error details alongside `raw_value`. Consider using the existing `Degraded`
-status for a partially useful response, with its exact meaning decided as part of the
-result contract.
+## 2. Expose prepared SNMP actions independently of monitor scenarios
 
-Relevant sources: [GET decoding](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs),
-[sample](crates/tools-core/src/snmp/response.rs), and
-[outcome status](crates/tools-core/src/monitor/scenario/execution.rs).
+**Why:** the core library should support a one-off probe, a consumer-owned loop, and a
+coordination scenario using the same request preparation and execution code.
 
-### 3. Reduce boilerplate and replace positional magic numbers
+Provide a public describe → prepare → execute path for GET and SET. Preparation resolves
+profiles and SCN and builds reusable action objects. One action attempt performs its work
+once; `poll` remains responsible for retries. Keep the existing scenario-owned schedules.
+Move the private GET/SET adapters into the SNMP layer and reuse them from the monitor.
 
-A basic poll requires assembling a request, schedule, attempt configuration, and task.
-The separation is useful, but a call such as
-`TaskConfig::try_new("sysDescr".to_string(), scenario, 3, 3)` hides the meaning of its numbers.
+For an action containing several network steps, specify its retry boundary: invoking its
+adapter again retries the action. Retrying an individual step belongs to the action's
+implementation and must be explicit to avoid multiplying retry policies.
 
-Provide named configuration for optional settings, such as execution limit and history
-depth, and accept names through `impl Into<String>`. Consider an explicit unlimited value
-or `Option<NonZeroU64>` instead of the special value `0`. Rename `deep_history` to
-`history_depth`. Choose defaults deliberately when designing the convenience API.
+Completion evidence: an example executes a prepared request through `poll` without
+constructing `Application`; GET/SET scenarios use that same public implementation.
 
-Relevant sources: [task configuration](crates/tools-core/src/monitor/task/config.rs),
-[attempt configuration](crates/tools-core/src/polling/config.rs), and
-[consumer example](crates/tools-core/examples/monitor.rs).
+Relevant sources: [request specifications](crates/tools-core/src/snmp/request.rs),
+[GET adapter](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), and
+[SET adapter](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs).
 
-### 4. Explain command acknowledgements and support waiting for completion
+## 3. Preserve the meaning and quality of returned data
 
-Successful `start_task().await` confirms initiation, not successful scenario preparation.
-Pause is also applied asynchronously. Returning `Result<(), _>` does not explain when a
-consumer can rely on the requested state.
+**Current gap:** GET parser errors still become `BusinessValue::Text("parse error")`,
+while the operation is classified as successful.
 
-Document the acknowledgement boundary for every command in rustdoc. Consider helpers
-that wait for readiness or completion of a particular execution generation, so consumers
-do not each implement event filtering and race handling.
+Represent no parser, decoded value, and decoding error explicitly, preserving `raw_value`
+and the error. Represent SNMP absence/exception values as observable outcomes for each OID.
+Check response cardinality and OID correspondence before associating values with parsers;
+the current adapter associates them through `zip`.
 
-Relevant source: [application handle](crates/tools-core/src/monitor/runtime/app.rs).
+Specify separate meanings for receiving a response and obtaining useful data. Decide when
+a partially useful result is `Degraded` and when no usable requested data means failure.
+Success after retries should remain success, with retry information available separately.
 
-### 5. Demonstrate subscription recovery
+Completion evidence: mixed successful and failed OID decoding retains every available raw
+value and typed decoding error; a consumer can distinguish these cases without parsing text.
 
-`subscribe_with_snapshot()` provides a useful consistent observation boundary. However,
-the canonical example uses `while let Ok(...)`, which silently ends observation on
-`Lagged` just as it does on channel closure.
+Relevant sources: [SNMP samples](crates/tools-core/src/snmp/response.rs) and
+[GET decoding](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs).
 
-Handle lag separately in the example and obtain a fresh consistent snapshot and
-subscription to recover. A library-owned receiver wrapper can follow if justified by
-consumer experience; a correct example is useful immediately.
+## 4. Make retained reports independently interpretable
 
-Relevant sources: [consumer example](crates/tools-core/examples/monitor.rs) and
-[subscription](crates/tools-core/src/monitor/runtime/subscription.rs).
+**Current gaps:** event metadata identifies a task, generation, and revision, but retained
+`ScenarioExecution` values do not carry that context themselves. Task-add/update events
+omit the request description. A snapshot may therefore combine a new configuration with
+a result produced under an older one.
 
-### 6. Make restart behavior configurable
+Proposed changes:
 
-`AppConfig` accepts a `RestartPolicy`, but the policy has private fields and no public
-configuration constructor. Consumers can only obtain the default policy.
+- Associate monitor operations with an operation identifier, execution generation, and
+  applied configuration revision. Keep these monitor concepts outside generic `polling`.
+- Retain a description of the request for each referenced revision, including its target
+  and requested OIDs/SET values, while excluding credentials from the history description.
+- Distinguish accepted configuration from the configuration applied by a running scenario.
+- Include sufficient context in task-add/update events or explicit description records to
+  interpret an exported session without access to a live monitor.
+- Specify report invariants: attempt ordering, timing bounds, and consistency between the
+  terminal attempt and operation outcome. Decide whether public construction/deserialization
+  validates them before treating reports as a stable interchange contract.
+- Derive scenario timing from the enclosed report instead of keeping independently mutable
+  duplicate timing fields. The current constructor copies timing, but public fields and
+  deserialization still allow contradictory values.
+- Introduce an explicit history-format version before promising long-term compatibility.
 
-Support disabling restarts and configuring delays; consider a restart-attempt limit.
-A finite probe with a persistent preparation failure can otherwise keep restarting
-without reaching its execution limit.
+Completion evidence: exporting a session, changing a task, and reading it later still
+identifies exactly which action and configuration produced each result.
 
-Relevant sources: [restart policy](crates/tools-core/src/monitor/runtime/restart_policy.rs)
-and [task configuration](crates/tools-core/src/monitor/task/config.rs).
+## 5. Separate operation failures from scenario recovery policy
 
-### 7. State the extension boundaries explicitly
+**Current gap:** every SNMP error other than network/timeout is non-retryable, ends the
+scenario, and schedules a restart. Successful preparation immediately resets restart backoff.
 
-Consumers can supply numeric OIDs and custom GET parsers. However, profile metadata and
-alias catalogs are not publicly discoverable, and the monitor accepts only the built-in
-`ScenarioSpec` variants.
+Keep three decisions distinct: the observed failure, permission to retry this action, and
+whether the scenario can continue. A device rejection need not imply that recreating the
+scenario will help. Make restart enablement, delays, and stopping conditions configurable.
+Define recovery before resetting backoff so repeated post-build failures do not always
+receive the initial delay.
 
-Expose a read-only catalog of profile capabilities. Before designing a scenario extension
-contract, decide whether consumers must be able to supply implementations from another
-crate or whether new implementations belong inside `tools-core`. Avoid introducing a
-universal trait before that requirement is settled.
+Specify SET retry behavior in terms of the command's meaning and the possibility that it
+was executed despite a missing acknowledgement. Coordination may need a read-back check
+or a new decision based on the current time rather than another identical write.
 
-Relevant sources: [profiles](crates/tools-core/src/snmp/profiles.rs) and
-[scenario specifications](crates/tools-core/src/monitor/scenario/spec.rs).
+Resolve accounting explicitly with the user: keep the existing meaning of `limit` as a
+count of whole scenario iterations, and decide how non-retryable, cancelled, and expired
+operations affect that count. Attempt counts remain a separate measurement. Do not silently
+change the existing accounting as a side effect of report or recovery work.
 
-### 8. Put consumer guarantees in rustdoc and useful examples
+Completion evidence: a persistent device rejection follows the selected policy, repeated
+runtime failures follow the configured backoff, and tests document all counting rules.
 
-`ARCHITECTURE.md` explains behavior that consumers need directly at API entry points:
-the first request waits a full interval, the execution limit includes `NoResponse`, local
-history stores previous results separately from the latest result, and shutdown can wait
-for an unread history channel.
+Relevant sources: [error classification](crates/tools-core/src/monitor/scenario/runtime.rs),
+[restart policy](crates/tools-core/src/monitor/runtime/restart_policy.rs), and
+[orchestrator](crates/tools-core/src/monitor/runtime/orchestrator.rs).
 
-Document these guarantees next to the relevant methods and types. Replace the README's
-empty-monitor introduction with a minimal useful poll that obtains a result, followed by
-examples of task management and subscription recovery.
+## 6. Define observation and history-delivery guarantees
 
-Relevant sources: [crate README](crates/tools-core/README.md),
-[architecture](ARCHITECTURE.md), and [consumer example](crates/tools-core/examples/monitor.rs).
+Preserve the consistent snapshot-plus-subscription boundary. Add examples of recovery from
+lag and document command acknowledgement versus actual completion at public API methods.
 
-## Suggested first increment
+For lifecycle events, propose an explicit previous state, next state, and typed cause;
+report configuration acceptance separately from its application. Preserve result reports
+as the evidence of what actions actually did.
 
-Start with explicit decoding failures, independent execution of prepared requests, and a
-complete consumer example. These changes provide immediate value and let real consumer
-code guide the next API decisions.
+History currently creates backpressure on the orchestrator and shutdown may wait for an
+unread sink indefinitely. Agree on the required behavior under a slow or disconnected
+consumer, delivery acknowledgement, and bounded shutdown. Distinguish channel delivery
+from persistence. Recovering a snapshot restores current state but cannot recreate lost
+operation reports.
 
-## Design references
+Completion evidence: the documented policy is exercised with slow and disconnected sinks,
+and clients can observe completion or recover current state without guessing event order.
 
-- [Rust API Guidelines: expressive argument types](https://rust-lang.github.io/api-guidelines/type-safety.html#arguments-convey-meaning-through-types-not-bool-or-option-c-custom-type).
-- [Rust API Guidelines: documentation and examples](https://rust-lang.github.io/api-guidelines/documentation.html).
+## 7. Implement coordination as a scenario using the shared action mechanism
+
+Use the existing epoch/cycle/phase calculations to derive the required phase from the
+common time scale. A periodic decision loop can check once per second while an action is
+in progress; it must remain able to expire or replace that action.
+
+Phase installation is an action with an operation report and bounded attempts. Its validity
+ends when the desired phase changes. An acknowledgement and an observation of the actual
+phase are distinct facts. Specify command refresh/keepalive rules and avoid competing
+writes from obsolete actions. Late execution must preserve the shared phase grid rather
+than extending it or replaying missed phases.
+
+Completion evidence: virtual-time tests cover slow responses, phase-boundary crossings
+during retries, pause/resume, and resumption after a long gap. Old-phase retries never
+continue past the chosen expiry policy.
+
+Relevant source: [coordination calculations](crates/tools-core/src/monitor/coordination.rs).
+
+## Recommended next implementation increment
+
+Start with cancellation and expiry in `polling`, then integrate orderly terminal-report
+handling into the current GET/SET scenarios and orchestrator. Agree on cancellation
+acknowledgement and counting rules before changing observable lifecycle behavior. Keep
+this increment separate from prepared-action extraction and the first coordination scenario.
+
+Do not introduce a universal periodic runner or an external scenario-plugin API before
+repeating GET/SET and coordination demonstrate which behavior is actually shared. The
+stable common boundary is action execution with attempts and reports; schedule and
+behavioral decisions remain owned by each scenario.

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 
 use crate::monitor::{
     ApplicationId,
-    scenario::{ScenarioExecution, ScenarioSpec},
+    scenario::{PreparationView, ScenarioExecution, ScenarioSpec},
     task::{ExecutionMetrics, SpecRevision, TaskId, TaskStatus, task::Health},
 };
 
@@ -20,6 +20,8 @@ pub struct TaskView {
     pub scenario: ScenarioSpec,
     pub limit: u64,
     pub metrics: ExecutionMetrics,
+    /// The latest preparation run, including its current stage and terminal report.
+    pub preparation: Option<PreparationView>,
     pub result: Option<ScenarioExecution>,
     pub history: Vec<HistoryEntryView>,
     pub health: Health,

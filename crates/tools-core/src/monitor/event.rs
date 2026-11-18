@@ -6,7 +6,8 @@ use tokio::time::Duration;
 use crate::monitor::{
     ApplicationId,
     scenario::{
-        Generation, PanicStage, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
+        Generation, PanicStage, PreparationEvent, ScenarioBuildError, ScenarioExecution,
+        ScenarioExecutionError,
     },
     task::{ExecutionMetrics, SpecRevision, TaskId},
 };
@@ -38,6 +39,13 @@ pub enum EventData {
     TaskCompleted,
     TaskRemoved,
 
+    /// Progress and results published immediately by scenario preparation.
+    #[non_exhaustive]
+    Preparation {
+        /// A preparation or stage boundary and its associated evidence.
+        event: Box<PreparationEvent>,
+    },
+
     #[non_exhaustive]
     ExecutionFinished {
         execution: ScenarioExecution,
@@ -52,6 +60,8 @@ pub enum EventData {
     #[non_exhaustive]
     ExecutionFailed {
         error: ScenarioExecutionError,
+        /// The complete operation report, including attempts before the failure.
+        execution: ScenarioExecution,
         retry_in: Option<Duration>,
     },
     #[non_exhaustive]
@@ -73,13 +83,43 @@ mod tests {
     use super::*;
     use crate::{
         monitor::{OutcomeStatus, ScenarioOutcome},
-        polling::{FatalError, PollErrorContext, Response},
+        polling::{AttemptConfig, AttemptOutcome, AttemptReport, PollOutcome, PollReport},
         snmp::{
-            SnmpGetSample, business_value::BusinessValue,
+            SnmpError, SnmpGetSample, business_value::BusinessValue,
             group_state_potok_ug405::GroupStatePotokUg405, oid::SnmpOid, value::SnmpValue,
         },
         stage::Stage,
     };
+
+    fn report<T>(
+        at: DateTime<Utc>,
+        elapsed: Duration,
+        outcome: PollOutcome<T>,
+        attempts: Vec<AttemptOutcome<SnmpError>>,
+    ) -> PollReport<T, SnmpError> {
+        let count = u32::try_from(attempts.len()).unwrap();
+        PollReport {
+            started_at: at - elapsed,
+            finished_at: at,
+            elapsed,
+            config: AttemptConfig::try_new(
+                elapsed,
+                u8::try_from(count - 1).unwrap(),
+                Duration::ZERO,
+            )
+            .unwrap(),
+            attempts: attempts
+                .into_iter()
+                .enumerate()
+                .map(|(index, outcome)| AttemptReport {
+                    started_after: elapsed / count * u32::try_from(index).unwrap(),
+                    elapsed: elapsed / count,
+                    outcome,
+                })
+                .collect(),
+            outcome,
+        }
+    }
 
     fn outcomes(at: DateTime<Utc>, elapsed: Duration) -> Vec<ScenarioOutcome> {
         let samples = vec![
@@ -99,36 +139,30 @@ mod tests {
             },
         ];
         vec![
-            ScenarioOutcome::SnmpGet(Response::Success {
-                timestamp: at,
-                attempts: 2,
-                errors: vec![PollErrorContext {
-                    attempt: 1,
-                    elapsed,
-                    message: "timeout\nretry".to_string(),
-                }],
+            ScenarioOutcome::SnmpGet(report(
+                at,
                 elapsed,
-                payload: samples,
-            }),
-            ScenarioOutcome::SnmpGet(Response::NoResponse {
-                timestamp: at,
-                attempts: 3,
-                errors: vec![],
+                PollOutcome::Succeeded(samples),
+                vec![AttemptOutcome::TimedOut, AttemptOutcome::Succeeded],
+            )),
+            ScenarioOutcome::SnmpGet(report(
+                at,
                 elapsed,
-            }),
-            ScenarioOutcome::SnmpSet(Response::Success {
-                timestamp: at,
-                attempts: 1,
-                errors: vec![],
+                PollOutcome::RetryLimitReached,
+                vec![AttemptOutcome::TimedOut; 3],
+            )),
+            ScenarioOutcome::SnmpSet(report(
+                at,
                 elapsed,
-                payload: (),
-            }),
-            ScenarioOutcome::SnmpSet(Response::NoResponse {
-                timestamp: at,
-                attempts: 1,
-                errors: vec![],
+                PollOutcome::Succeeded(()),
+                vec![AttemptOutcome::Succeeded],
+            )),
+            ScenarioOutcome::SnmpSet(report(
+                at,
                 elapsed,
-            }),
+                PollOutcome::RetryLimitReached,
+                vec![AttemptOutcome::TimedOut],
+            )),
         ]
     }
 
@@ -144,9 +178,23 @@ mod tests {
             EventData::TaskCompleted,
             EventData::TaskRemoved,
             EventData::ExecutionFailed {
-                error: ScenarioExecutionError::Polling(FatalError {
-                    message: "unsupported value".to_string(),
+                error: ScenarioExecutionError::Snmp(SnmpError::UnsupportedForSet {
+                    value: "unsupported value".to_string(),
                 }),
+                execution: ScenarioExecution::new(ScenarioOutcome::SnmpSet(report(
+                    at,
+                    elapsed,
+                    PollOutcome::NonRetryableFailure,
+                    vec![
+                        AttemptOutcome::TimedOut,
+                        AttemptOutcome::Failed {
+                            error: SnmpError::UnsupportedForSet {
+                                value: "unsupported value".to_string(),
+                            },
+                            retryable: false,
+                        },
+                    ],
+                ))),
                 retry_in: None,
             },
         ];
@@ -154,11 +202,7 @@ mod tests {
             let mut metrics = ExecutionMetrics::default();
             metrics.record(outcome.status(), elapsed);
             data.push(EventData::ExecutionFinished {
-                execution: ScenarioExecution {
-                    finished_at: at,
-                    elapsed,
-                    outcome,
-                },
+                execution: ScenarioExecution::new(outcome),
                 metrics,
             });
         }

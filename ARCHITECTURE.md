@@ -15,6 +15,7 @@ The description below is verified against the current working tree.
 - [Build, start, and shutdown](#build-start-and-shutdown)
 - [Orchestrator and internal state](#orchestrator-and-internal-state)
 - [Scenarios](#scenarios)
+- [Preparation stages and immediate logging](#preparation-stages-and-immediate-logging)
 - [Requests, attempts, and SNMP](#requests-attempts-and-snmp)
 - [Repeating-request schedule](#repeating-request-schedule)
 - [Limit, results, and task history](#limit-results-and-task-history)
@@ -59,10 +60,11 @@ The individual request and SNMP mechanisms are also available through
 | `ApplicationHandle` | Cloneable access to commands, snapshots, and subscriptions | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `Orchestrator` | Internal owner of task state, their lifecycle, and event ordering | [runtime/orchestrator.rs](crates/tools-core/src/monitor/runtime/orchestrator.rs) |
 | `Task` | Internal configuration, revision, results, metrics, and health of a task | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
+| `PreparationEvent`, `PreparationReport`, `PreparationView` | Live preparation stages, complete preparation evidence, and snapshot progress | [preparation.rs](crates/tools-core/src/monitor/scenario/preparation.rs) |
 | `ScenarioSpec` | Public description of the selected scenario | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
 | GET/SET execution | Request preparation, schedule, commands, and reports of a concrete scenario | [impls/repeat_snmp_get.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), [impls/repeat_snmp_set.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs) |
 | `SnmpGetSpec`, `SnmpSetSpec` | Validated SNMP-request parameters without a network client | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
-| `poll`, `AttemptConfig`, `Pollable` | The shared mechanism for attempts of one complete request | [polling](crates/tools-core/src/polling/mod.rs) |
+| `poll`, `AttemptConfig`, `Pollable`, `PollReport` | Execution of an action with attempts and a complete operation report | [polling](crates/tools-core/src/polling/mod.rs) |
 | `SnmpClient`, `Resolver` | Network operations and OID preparation with device-profile awareness | [client.rs](crates/tools-core/src/snmp/client.rs), [resolve.rs](crates/tools-core/src/snmp/resolve.rs) |
 | `MonitorSnapshot`, `MonitorSubscription`, `MonitorEvent` | Observing state and changes | [view.rs](crates/tools-core/src/monitor/task/view.rs), [subscription.rs](crates/tools-core/src/monitor/runtime/subscription.rs), [event.rs](crates/tools-core/src/monitor/event.rs) |
 
@@ -226,10 +228,62 @@ Code layout in [scenario](crates/tools-core/src/monitor/scenario/mod.rs):
 | `execution.rs` | Results, outcome statuses, generations, and panic stages |
 | `error.rs` | Configuration, build, and execution errors |
 | `runtime.rs` | Internal commands and reports, dispatch to implementations, panic isolation, and shared helpers |
+| `preparation.rs` | Public preparation stages, stage results, complete reports, events, and snapshot progress |
+| `prepare.rs` | Shared GET/SET preparation, immediate stage logging, SCN request reporting, and stage timeouts |
 | `impls/mod.rs` | Concrete scenario implementations (currently repeating SNMP GET/SET) |
 | `impls/repeat_snmp_get.rs`, `impls/repeat_snmp_set.rs` | Standalone GET and SET execution together with request adapters |
 | `schedule.rs` | Public schedule choice and the internal timer |
 | `tests.rs` | Shared network-execution tests; socket-free checks also live next to components |
+
+## Preparation stages and immediate logging
+
+Each GET/SET scenario generation prepares its resources before regular execution.
+Preparation emits `PreparationEvent::Started`, then starts and finishes individual stages,
+then emits `Finished` with a complete `PreparationReport`. The orchestrator forwards these
+through `EventData::Preparation`, retaining the normal application/task/generation/revision
+metadata and global event ordering. Progress is available before a pending network action
+returns; it is not held until scenario readiness.
+
+The stages are:
+
+1. `CreateTransport { role: Read | Write }`: GET creates a reading transport; SET creates
+   a writing transport and, when configured, a separate reading transport.
+2. `FetchScn`: when selected OIDs require SCN, read its raw varbind and validate the value.
+   Otherwise publish a `StageFinished` report with `NotRequired`, without starting an action.
+3. `ResolveOids`: apply profile metadata and construct final instances using the discovered SCN.
+
+Each stage report contains UTC start/end timestamps, monotonic offset and duration, and
+its result or typed `ScenarioBuildError`. Successful results expose transport addresses,
+SCN text, or resolved OIDs without credentials. The SCN stage also includes its
+`PollReport<SnmpVarbind, SnmpError>`: a decoding failure preserves the successful raw
+network response alongside the failed stage. A network error remains typed rather than
+being replaced by a generic client error or string-only resolution error.
+
+Preparation preserves the existing retry policy: the SCN read has zero retries and a
+transport timeout of `attempt.timeout + 1 second`. Failed preparation follows the existing
+whole-scenario restart policy. Regular-operation `retries` do not silently apply to SCN.
+The entire preparation retains its existing deadline of `2 * (attempt.timeout + 1 second)`.
+Each active stage observes that deadline and catches panics, so both failure and timeout
+produce a terminal stage report and a preparation report containing earlier stages.
+If this deadline interrupts polling before it returns, that stage's network report can
+be absent; its start, duration, and timeout are still reported.
+
+Preparation logs each stage start and result through `tracing` at the source, before
+awaiting report-channel delivery. SCN request attempts are logged when they start and
+when they complete, including timeouts and typed errors. Preparation boundaries and
+successful actions use INFO; failed stages and attempts use WARN. The orchestrator does
+not duplicate these preparation log records. Physical log persistence still follows the
+consumer's configured tracing writer; emitting a tracing record is not a disk acknowledgement.
+
+`TaskView.preparation` retains the latest run's generation, configuration revision, stages,
+last observed active stage, and terminal report. A new generation replaces that view when
+its preparation starts; earlier preparation events remain available to a configured history
+sink. Preparation is separate from regular results/history and consumes no execution limit.
+
+Successful preparation publishes `TaskStarted` after its final report. Failed preparation
+publishes `BuildFailed`; a caught preparation panic follows `ScenarioPanicked` with
+`PanicStage::Build`. An orderly terminal report is not guaranteed if the scenario itself is
+forcibly aborted during preparation; cooperative cancellation remains future work.
 
 ## Requests, attempts, and SNMP
 
@@ -258,8 +312,9 @@ Unsupported types, including the current `TimeTicks`, are rejected before start.
 
 Arbitrary numeric OIDs are available without a profile. A profile adds aliases, metadata,
 value encoding, and OID completion rules.
-The `Resolver` runs during scenario preparation: it fetches the SCN when needed and forms
-the final OIDs. A user-supplied GET name and parser take priority over the profile
+SCN discovery runs as an explicit observable preparation stage when required.
+The `Resolver` then performs local OID resolution using the supplied SCN; it no longer
+hides network requests inside OID resolution. A user-supplied GET name and parser take priority over the profile
 substitution. For SET, the values are already encoded before resolution.
 When a separate read community is present, SET uses it for OID preparation.
 
@@ -267,14 +322,40 @@ When a separate read community is present, SET uses it for OID preparation.
 disabled: the shared `poll` manages attempts of a complete request, so that independent
 retry mechanisms are not stacked.
 
-[`poll`](crates/tools-core/src/polling/poll.rs) works with a `Pollable` adapter and its
-typed result. `AttemptConfig` sets the timeout of one attempt, the retries after the first
-attempt, and the delay between them. After the first success, no further attempts run.
-Timeouts and transient errors allow a retry; a fatal error ends the complete request
-immediately.
+[`poll`](crates/tools-core/src/polling/poll.rs) works with a `Pollable` action whose
+associated `Output` and `Error` types are independent of any protocol. One attempt executes
+the whole action, which may itself perform several network requests. The adapter classifies
+its original error as `AttemptError::Retryable` or `AttemptError::NonRetryable`; polling
+keeps the typed error rather than converting it to a string.
 
-The outcome of a complete request is `Response::Success` or `Response::NoResponse`.
-The absence of a response after exhausting attempts is a normal result.
+`AttemptConfig` sets the timeout of one attempt, the retries after the first attempt, and
+the delay between attempts. The number of allowed attempts is `1 + retries`, including
+256 attempts when `retries == 255`. Success or a non-retryable error stops the operation
+immediately. An expired polling timeout is recorded as `AttemptOutcome::TimedOut`.
+There is no retry delay after the last attempt.
+
+Every normal return from `poll` produces a `PollReport<Output, Error>`, including a
+non-retryable failure. The report contains:
+
+- `started_at` and `finished_at`: UTC timestamps for correlation with other histories;
+- `elapsed`: the monotonic duration of the entire operation, including retry delays;
+- `config`: the actual timeout, retries, and retry delay used by the operation;
+- `attempts`: all attempts in chronological order, including a successful final attempt;
+- `outcome`: `Succeeded(payload)`, `RetryLimitReached`, or `NonRetryableFailure`.
+
+Each `AttemptReport` stores its monotonic `started_after` offset from the operation start,
+its duration, and `Succeeded`, `TimedOut`, or `Failed { error, retryable }`. Its one-based
+number is its position in the list plus one. Attempt duration includes adapter-side response
+processing, so it is not necessarily network RTT. Attempt and retry counts are derived
+from the list; successful data is stored only in the final operation outcome.
+The UTC clock is not used to calculate durations or offsets. Settings support serialization
+and validate a positive timeout when deserialized.
+
+Exhausting attempts is a normal negative operation result and does not recreate a scenario.
+A non-retryable error also retains its complete report, but the current GET/SET scenarios
+end and request the existing restart path. A panic or dropping the polling future does not
+return a report; cooperative cancellation and action-expiry reports are not yet implemented.
+
 `AttemptConfig::budget()` estimates the time from timeouts and delays;
 the schedule is not constrained by the condition `interval >= budget`.
 
@@ -307,17 +388,22 @@ CLI format, not a required configuration format of the library.
 ## Limit, results, and task history
 
 `limit` counts complete scenario executions. For the current GET/SET, one complete request
-with any number of internal retries consumes one unit. Success and `NoResponse` count
-equally. `limit = 0` means no limit.
+with any number of internal retries consumes one unit. Success and `RetryLimitReached`
+count equally. `limit = 0` means no limit.
 
 When the limit is reached, `ExecutionFinished` is published, then `TaskCompleted`, and the
-scenario is cancelled. Preparation errors, fatal execution errors, and panics currently do
-not create a `ScenarioExecution` and do not increment the counter.
-Accounting for fatal errors remains an open question.
+scenario is cancelled. Preparation errors and panics do not create a `ScenarioExecution`.
+Non-retryable operation failures now create and retain a `ScenarioExecution`, but preserve
+the existing accounting: they do not increment execution metrics or consume `limit`.
+Their result replaces the last result and moves the previous one into local history.
+The task's diagnostic error and restart behavior remain unchanged.
 
 `ScenarioExecution` holds the completion time, duration, and a `ScenarioOutcome`.
+Its constructor copies timing from the enclosed operation report; scenarios do not measure
+these values a second time. GET/SET outcomes hold `PollReport` with a typed `SnmpError`.
 `OutcomeStatus` separates the assessment of a result from the status of the task itself.
-The current GET/SET map `Success` to `Succeeded` and `NoResponse` to `Failed`.
+GET/SET map `Succeeded` to `Succeeded`, and both negative operation outcomes to `Failed`.
+Success after retries is still successful; the attempts preserve evidence of earlier failures.
 The `Degraded` variant exists in the contract but is not currently produced by these
 outcomes.
 
@@ -337,6 +423,11 @@ not change the task in the monitor.
 
 `MonitorEvent` holds `EventMeta` metadata and `EventData` data.
 Events report lifecycle changes, results, errors, and panics.
+`Preparation` events carry stage boundaries and the terminal preparation report as they
+occur, and are forwarded to the history sink just like other public events.
+`ExecutionFinished` carries the operation report through its execution. `ExecutionFailed`
+also carries the complete execution alongside the typed scenario error and restart delay,
+so a non-retryable failure does not discard preceding timeouts or adapter errors.
 Some events, e.g. `TaskAdded`, do not carry the whole task configuration: the full state
 is read from the snapshot when needed.
 
@@ -391,7 +482,9 @@ The launch command stays the same: `tctl poll --config path/to/poll.yaml`.
 
 The CLI opens the file before starting the monitor and appends JSONL to it: one serialized
 `MonitorEvent` per line. There is no separate record type.
-Event types and nested results support `Serialize` and `Deserialize`.
+Event types, attempt settings, typed SNMP errors, and complete nested operation reports
+support `Serialize` and `Deserialize`. This report format replaces the previous `Response`
+format; old result records are not automatically migrated when reading with the new types.
 UUIDs and OIDs are represented as strings, durations as `secs`/`nanos` objects, and enum
 values use the standard Serde representation with variant names. When reading, an OID is
 validated by the regular parser. For example:
@@ -430,8 +523,8 @@ Errors belong to their modules; the root `tools_core::Error` aggregates them.
 | Type | When used |
 |---|---|
 | `TaskError`, `ScenarioSpecError`, `SnmpQueryError`, `polling::ConfigError` | Configuration validation and assembly |
-| `ScenarioBuildError` | Execution preparation, including client and OID resolution |
-| `ScenarioExecutionError` | Fatal error of a complete request |
+| `ScenarioBuildError` | Preparation errors, preserving typed SNMP failures, timeouts, and caught panics |
+| `ScenarioExecutionError` | The original typed SNMP error that stopped attempts of a complete request |
 | `MonitorCommandError` | Command error: unknown task or closed channel |
 | `ApplicationError` | Application shutdown and background-orchestrator error |
 
@@ -439,7 +532,7 @@ Errors belong to their modules; the root `tools_core::Error` aggregates them.
 `ApplicationError::Runtime` reports a background-execution error.
 The root `tools_core::Error::MonitorCommand` aggregates `MonitorCommandError`.
 
-An unsuccessful network result `NoResponse` does not require recreating the scenario.
+An unsuccessful operation result `RetryLimitReached` does not require recreating the scenario.
 A preparation error, a fatal execution error, or a caught panic leads to `Restarting` and
 scheduling a new start. `PanicStage` distinguishes preparation, request execution, and the
 rest of the scenario logic.
@@ -501,6 +594,6 @@ such a setting to an already-registered task needs clarification.
 Primary checks: `mise run check`, `mise run test`, and `mise run clippy`.
 Because of the cross-compilation setup, the local-check commands use
 `--target x86_64-unknown-linux-gnu`.
-Scenario network tests use UDP; a separate instruction is currently in effect not to run
-them. Such tests are built via `--no-run`, while socket-free and virtual-time checks run
-separately.
+Scenario network tests use local UDP sockets and virtual Tokio time. They require an
+environment that permits binding local sockets; socket-free polling tests exercise reports
+and retry timing without network access.

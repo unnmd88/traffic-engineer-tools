@@ -1,9 +1,9 @@
 use chrono::{DateTime, Local};
 use tools_core::{
     monitor::{OutcomeStatus, ScenarioOutcome, ScenarioSpec, TaskStatus, TaskView},
-    polling::{PollErrorContext, Response},
+    polling::{AttemptOutcome, PollOutcome, PollReport},
     snmp::{
-        SnmpGetSample, BusinessValue, GroupStateDefinition, GroupStatePotokUg405, SnmpValueType,
+        BusinessValue, GroupStateDefinition, GroupStatePotokUg405, SnmpGetSample, SnmpValueType,
     },
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -68,6 +68,21 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
     if let Some(error) = &task.health.last_error {
         push_line(out, &format!("Error: {error}"), width);
     }
+    if let Some(preparation) = &task.preparation {
+        if let Some(stage) = preparation.active_stage {
+            push_line(out, &format!("Preparing: {stage:?}"), width);
+        } else if let Some(report) = &preparation.report {
+            let result = match &report.outcome {
+                Ok(()) => "ready".to_string(),
+                Err(error) => error.to_string(),
+            };
+            push_line(
+                out,
+                &format!("Preparation: {result} | {}ms", report.elapsed.as_millis()),
+                width,
+            );
+        }
+    }
     let runs = match task.limit {
         0 => task.metrics.executions.to_string(),
         limit => format!("{}/{limit}", task.metrics.executions),
@@ -121,16 +136,13 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
     match &execution.outcome {
         ScenarioOutcome::SnmpGet(response) => {
             format_response(out, response, width);
-            if let Response::Success {
-                payload: samples, ..
-            } = response
-            {
+            if let PollOutcome::Succeeded(samples) = &response.outcome {
                 format_samples(out, samples, width);
             }
         }
         ScenarioOutcome::SnmpSet(response) => {
             format_response(out, response, width);
-            if matches!(response, Response::Success { .. }) {
+            if matches!(response.outcome, PollOutcome::Succeeded(_)) {
                 push_line(out, "SET acknowledged", width);
             }
         }
@@ -138,26 +150,26 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
     }
 }
 
-fn format_response<T>(out: &mut String, response: &Response<T>, width: usize) {
-    let (attempts, errors) = match response {
-        Response::Success {
-            attempts, errors, ..
-        } => {
-            push_line(out, &format!("Reply received | Attempts: {attempts}"), width);
-            (*attempts, errors)
-        }
-        Response::NoResponse {
-            attempts, errors, ..
-        } => {
-            push_line(out, &format!("No response | Attempts: {attempts}"), width);
-            (*attempts, errors)
-        }
+fn format_response<T, E: std::fmt::Display>(
+    out: &mut String,
+    report: &PollReport<T, E>,
+    width: usize,
+) {
+    let status = match &report.outcome {
+        PollOutcome::Succeeded(_) => "Reply received",
+        PollOutcome::RetryLimitReached => "Retry limit reached",
+        PollOutcome::NonRetryableFailure => "Non-retryable failure",
     };
-    if let Some(PollErrorContext {
-        attempt, message, ..
-    }) = errors.last()
-    {
-        push_line(out, &format!("Last attempt error ({attempt}/{attempts}): {message}"), width);
+    let attempts = report.attempt_count();
+    push_line(out, &format!("{status} | Attempts: {attempts}"), width);
+    for (index, attempt) in report.attempts.iter().enumerate().rev() {
+        let message = match &attempt.outcome {
+            AttemptOutcome::Succeeded => continue,
+            AttemptOutcome::TimedOut => "Timeout".to_string(),
+            AttemptOutcome::Failed { error, .. } => error.to_string(),
+        };
+        push_line(out, &format!("Last attempt error ({}/{attempts}): {message}", index + 1), width);
+        break;
     }
 }
 

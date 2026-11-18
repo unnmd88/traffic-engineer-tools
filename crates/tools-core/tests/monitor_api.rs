@@ -99,3 +99,123 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     running.shutdown().await.unwrap();
     assert!(matches!(handle.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
 }
+
+#[tokio::test]
+async fn preparation_is_observable_before_scn_returns_and_survives_in_history() {
+    use async_snmp::{Value, message::CommunityMessage};
+    use tools_core::{
+        monitor::{
+            PreparationEvent, PreparationStage, PreparationStageOutcome, ScenarioBuildError,
+        },
+        polling::PollOutcome,
+        snmp::{RawSnmpOidItem, SnmpError, SnmpValue},
+    };
+
+    let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let request = SnmpGetSpec::from_raw(
+        "127.0.0.1".to_string(),
+        peer.local_addr().unwrap().port(),
+        "public".to_string(),
+        Some("potok_ug405".to_string()),
+        vec![RawSnmpOidItem {
+            name: None,
+            oid: "stage".to_string(),
+        }],
+    )
+    .unwrap();
+    let attempt =
+        AttemptConfig::try_new(Duration::from_secs(1), 3, Duration::from_millis(100)).unwrap();
+    let scenario = ScenarioSpec::snmp_get(
+        request,
+        PollSchedule::FixedDelay {
+            delay: Duration::from_secs(1),
+        },
+        attempt,
+    )
+    .unwrap();
+    let config = TaskConfig::try_new("prepare".to_string(), scenario, 1, 3).unwrap();
+    let (history, mut recorded) = tokio::sync::mpsc::channel(64);
+    let application = Application::new(
+        AppConfig {
+            history_sink: Some(history),
+            ..AppConfig::default()
+        },
+        vec![config],
+    );
+    let mut events = application.subscribe();
+    let running = application.spawn();
+    let handle = running.handle();
+    let mut observed = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let fetching = matches!(&event.data, EventData::Preparation { event, .. }
+            if matches!(event.as_ref(), PreparationEvent::StageStarted { stage: PreparationStage::FetchScn, .. }));
+        observed.push(serde_json::to_value(event).unwrap());
+        if fetching {
+            break;
+        }
+    }
+    let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
+    assert_eq!(view.status, TaskStatus::Starting);
+    assert_eq!(
+        view.preparation.as_ref().unwrap().active_stage,
+        Some(PreparationStage::FetchScn)
+    );
+    assert!(view.preparation.as_ref().unwrap().report.is_none());
+    assert_eq!(view.metrics.executions, 0);
+
+    let mut packet = [0; 2048];
+    let (size, source) = tokio::time::timeout(Duration::from_secs(5), peer.recv_from(&mut packet))
+        .await
+        .unwrap()
+        .unwrap();
+    let message = CommunityMessage::decode(packet[..size].to_vec().into()).unwrap();
+    let mut response = message.pdu.standard().unwrap().to_response();
+    response.varbinds[0].value = Value::Integer(42);
+    let bytes = CommunityMessage::new(message.version, message.community, response).encode();
+    peer.send_to(&bytes, source).await.unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let failed = matches!(event.data, EventData::BuildFailed { .. });
+        assert!(!matches!(event.data, EventData::TaskStarted));
+        observed.push(serde_json::to_value(event).unwrap());
+        if failed {
+            break;
+        }
+    }
+    let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
+    assert_eq!(view.status, TaskStatus::Restarting);
+    assert_eq!(view.metrics.executions, 0);
+    let preparation = view.preparation.unwrap();
+    assert_eq!(preparation.revision, view.revision);
+    assert!(preparation.active_stage.is_none());
+    let report = preparation.report.unwrap();
+    assert_eq!(report.stages.len(), 2);
+    assert!(matches!(
+        report.outcome,
+        Err(ScenarioBuildError::Snmp(SnmpError::UnexpectedValueType { .. }))
+    ));
+    assert!(matches!(report.stages[1].outcome, PreparationStageOutcome::Failed(_)));
+    let request = report.stages[1].request.as_ref().unwrap();
+    assert_eq!(request.config.retries(), 0);
+    assert_eq!(request.attempt_count(), 1);
+    assert!(
+        matches!(&request.outcome, PollOutcome::Succeeded(varbind) if matches!(varbind.value, SnmpValue::Integer(42)))
+    );
+
+    running.shutdown().await.unwrap();
+    let mut history = Vec::new();
+    while let Some(event) = recorded.recv().await {
+        let json = serde_json::to_value(event).unwrap();
+        let restored: MonitorEvent = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), json);
+        history.push(json);
+    }
+    assert_eq!(history, observed);
+}

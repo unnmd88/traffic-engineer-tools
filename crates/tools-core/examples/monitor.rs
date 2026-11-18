@@ -29,7 +29,6 @@ async fn main() -> anyhow::Result<()> {
         PollSchedule::fixed_delay(Duration::from_secs(1))?,
         AttemptConfig::try_new(Duration::from_millis(500), 2, Duration::from_millis(100))?,
     )?;
-    // `limit` counts complete executions; Success and NoResponse both count.
     let task = TaskConfig::try_new("sysDescr".to_string(), scenario, 3, 3)?;
 
     // 2. Assemble the application and subscribe BEFORE start so no event is missed.

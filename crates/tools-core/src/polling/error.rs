@@ -1,53 +1,21 @@
 use serde::{Deserialize, Serialize};
-
-use std::fmt::{self, Display, Formatter};
 use thiserror::Error;
-use tokio::time::Duration;
 
-// Ошибка одной попытки опроса: классифицирует АДАПТЕР.
+/// An adapter error together with its decision about retrying the action.
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
-pub enum AttemptError {
-    /// Сеть/таймаут/недоступно — можно повторить.
-    #[error("transient error: {0}")]
-    Transient(String),
-    /// Баг/конфиг/внутренняя — ретраи не помогут.
-    #[error("fatal error: {0}")]
-    Fatal(String),
+pub enum AttemptError<E> {
+    /// Another attempt of the action is permitted.
+    #[error("retryable error: {0}")]
+    Retryable(E),
+    /// Another attempt of the action is not permitted.
+    #[error("non-retryable error: {0}")]
+    NonRetryable(E),
 }
 
-// Фатальная ошибка итерации опроса (пробрасывается наверх).
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
-#[error("fatal poll error: {message}")]
-pub struct FatalError {
-    pub message: String,
-}
-
-// Контекст одной неудачной попытки.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PollErrorContext {
-    /// Номер попытки (1-based).
-    pub attempt: u8,
-    /// Длительность именно этой попытки (не суммарная).
-    pub elapsed: Duration,
-    pub message: String,
-}
-
-impl Display for PollErrorContext {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "attempt: {} elapsed_ms: {} message: {}",
-            self.attempt,
-            self.elapsed.as_millis(),
-            &self.message
-        )?;
-        Ok(())
-    }
-}
-
-/// Ошибка валидации параметров попытки (`AttemptConfig`).
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
+/// Invalid attempt settings.
+#[derive(Error, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConfigError {
+    /// An attempt timeout must be positive.
     #[error("attempt timeout must be greater than zero")]
     TimeoutMustBePositive,
 }
