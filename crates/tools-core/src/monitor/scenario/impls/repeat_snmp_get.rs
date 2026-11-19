@@ -12,26 +12,31 @@ use futures_util::FutureExt;
 use tokio::{sync::mpsc, time::Instant};
 
 use crate::{
-    monitor::task::TaskId,
-    polling::{AttemptError, Pollable, poll},
+    polling::{AttemptError, Pollable},
     snmp::{SnmpClient, SnmpGetItem, SnmpGetSample, business_value::BusinessValue, oid::SnmpOid},
 };
 
 use crate::monitor::scenario::{
-    Generation, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
+    ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
     SnmpGetScenarioSpec, prepare,
-    runtime::{ScenarioCommand, ScenarioReport, classify_error, panic_message},
+    runtime::{
+        Operations, ScenarioCommand, ScenarioContext, ScenarioReport, classify_error, panic_message,
+    },
     schedule::PollTimer,
 };
 
 #[expect(clippy::too_many_lines)]
 pub(in crate::monitor::scenario) async fn run(
     spec: SnmpGetScenarioSpec,
-    task_id: TaskId,
-    generation: Generation,
+    context: ScenarioContext,
     report_tx: mpsc::Sender<ScenarioReport>,
     mut cmd_rx: mpsc::Receiver<ScenarioCommand>,
 ) {
+    let ScenarioContext {
+        task_id,
+        generation,
+        revision,
+    } = context;
     let SnmpGetScenarioSpec {
         request,
         schedule,
@@ -74,6 +79,7 @@ pub(in crate::monitor::scenario) async fn run(
         return;
     }
 
+    let mut operations = Operations::new(task_id, generation, revision, report_tx.clone());
     let mut paused = false;
     loop {
         if paused {
@@ -119,13 +125,14 @@ pub(in crate::monitor::scenario) async fn run(
                 None => return,
             },
             () = timer.wait_next() => {
-                let executed = AssertUnwindSafe(poll(&attempt, &request))
+                let executed = AssertUnwindSafe(operations.poll(&attempt, &request, "Read configured SNMP OIDs"))
                     .catch_unwind()
                     .await;
                 match executed {
-                    Ok(report) => {
+                    Ok(None) => return,
+                    Ok(Some((context, report))) => {
                         let error = report.non_retryable_error().cloned();
-                        let execution = ScenarioExecution::new(ScenarioOutcome::SnmpGet(report));
+                        let execution = ScenarioExecution::new(context, ScenarioOutcome::SnmpGet(report));
                         if let Some(error) = error {
                             let _ = report_tx.send(ScenarioReport::ExecutionFailed {
                                 task_id,

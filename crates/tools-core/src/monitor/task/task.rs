@@ -92,7 +92,7 @@ pub struct Health {
 
 impl Health {
     pub fn record(&mut self, execution: &ScenarioExecution) {
-        self.last_execution_at = Some(execution.finished_at);
+        self.last_execution_at = Some(execution.finished_at());
         match execution.outcome.status() {
             OutcomeStatus::Failed => self.consecutive_failures += 1,
             OutcomeStatus::Succeeded | OutcomeStatus::Degraded => self.consecutive_failures = 0,
@@ -217,16 +217,17 @@ impl Task {
 
     pub fn apply_execution(&mut self, result: ScenarioExecution) {
         self.health.record(&result);
-        self.metrics.record(result.outcome.status(), result.elapsed);
+        self.metrics
+            .record(result.outcome.status(), result.elapsed());
         self.store_execution(result);
     }
 
     /// Stores a result without changing execution metrics or limit accounting.
     pub fn store_execution(&mut self, result: ScenarioExecution) {
-        self.updated_at = result.finished_at;
+        self.updated_at = result.finished_at();
         if let Some(prev) = self.last_result.replace(result) {
             self.history.push(HistoryEntry {
-                timestamp: prev.finished_at,
+                timestamp: prev.finished_at(),
                 result: prev,
             });
         }
@@ -290,20 +291,28 @@ mod tests {
 
     fn failed_execution(finished_at: DateTime<Utc>) -> ScenarioExecution {
         let elapsed = Duration::from_millis(300);
-        ScenarioExecution::new(ScenarioOutcome::SnmpGet(PollReport {
-            started_at: finished_at - elapsed,
-            finished_at,
-            elapsed,
-            config: AttemptConfig::try_new(Duration::from_millis(100), 2, Duration::ZERO).unwrap(),
-            attempts: (0..3)
-                .map(|index| AttemptReport {
-                    started_after: Duration::from_millis(index * 100),
-                    elapsed: Duration::from_millis(100),
-                    outcome: AttemptOutcome::TimedOut,
-                })
-                .collect(),
-            outcome: PollOutcome::RetryLimitReached,
-        }))
+        ScenarioExecution::new(
+            crate::monitor::OperationContext::new(
+                crate::monitor::OperationId::new(0),
+                crate::monitor::Generation::first(),
+                SpecRevision::new(1),
+            ),
+            ScenarioOutcome::SnmpGet(PollReport {
+                started_at: finished_at - elapsed,
+                finished_at,
+                elapsed,
+                config: AttemptConfig::try_new(Duration::from_millis(100), 2, Duration::ZERO)
+                    .unwrap(),
+                attempts: (0..3)
+                    .map(|index| AttemptReport {
+                        started_after: Duration::from_millis(index * 100),
+                        elapsed: Duration::from_millis(100),
+                        outcome: AttemptOutcome::TimedOut,
+                    })
+                    .collect(),
+                outcome: PollOutcome::RetryLimitReached,
+            }),
+        )
     }
 
     #[test]
@@ -326,7 +335,7 @@ mod tests {
         assert_eq!(task.config_updated_at(), &config_updated_at);
         assert_eq!(task.revision(), SpecRevision::new(1));
         assert_eq!(task.metrics(), ExecutionMetrics::default());
-        assert_eq!(task.last_result().unwrap().finished_at, finished_at);
+        assert_eq!(task.last_result().unwrap().finished_at(), finished_at);
     }
 
     #[test]
@@ -347,7 +356,7 @@ mod tests {
         assert_eq!(task.config_updated_at(), task.updated_at());
         assert_eq!(task.created_at(), &created_at);
         assert_eq!(task.metrics(), metrics);
-        assert_eq!(task.last_result().unwrap().finished_at, finished_at);
+        assert_eq!(task.last_result().unwrap().finished_at(), finished_at);
 
         task.update_config(config("third"));
         assert_eq!(task.config().name(), "third");

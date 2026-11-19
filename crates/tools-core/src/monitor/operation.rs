@@ -118,7 +118,7 @@ pub enum OperationStatus {
 
 /// A normal result or explicit evidence of interrupted execution.
 ///
-/// These payloads define the next event contract. Runtime publication of cancellation
+/// Normal completion reports are published by the runtime. Publication of cancellation
 /// and panic reports is introduced separately; the type alone provides no delivery guarantee.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]

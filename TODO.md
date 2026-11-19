@@ -48,9 +48,8 @@ Decisions made:
 Goal: an unknown consumer can use `tools-core` from `cargo doc` + examples alone.
 Each item is a small, checkable step, ordered by consumer impact.
 
-See [PUBLIC_API_REVIEW.md](PUBLIC_API_REVIEW.md) for the consumer-facing assessment,
-eight improvement recommendations, and a suggested first increment. Recommendations
-that require a design decision remain proposals rather than accepted API changes.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the current monitor contract. Items that require
+a design decision remain proposals rather than accepted API changes.
 
 ### Ergonomics (most visible)
 

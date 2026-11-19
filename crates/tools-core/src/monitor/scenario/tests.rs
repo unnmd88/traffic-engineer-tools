@@ -23,6 +23,7 @@ struct Session {
     commands: mpsc::Sender<ScenarioCommand>,
     reports: mpsc::Receiver<ScenarioReport>,
     preparation: Vec<PreparationEvent>,
+    operations: Vec<(crate::monitor::OperationContext, chrono::DateTime<chrono::Utc>)>,
 }
 
 impl Session {
@@ -38,7 +39,35 @@ impl Session {
                     assert_eq!(generation, Generation::first().next());
                     self.preparation.push(*event);
                 }
-                report => return Some(report),
+                ScenarioReport::OperationStarted {
+                    task_id,
+                    context,
+                    started_at,
+                    ..
+                } => {
+                    assert_eq!(task_id, TaskId(7));
+                    assert_eq!(context.generation, Generation::first().next());
+                    assert_eq!(context.revision, crate::monitor::SpecRevision::new(3));
+                    assert_eq!(
+                        context.operation_id.get(),
+                        u64::try_from(self.operations.len()).unwrap()
+                    );
+                    self.operations.push((context, started_at));
+                }
+                report => {
+                    if let ScenarioReport::Executed { execution, .. }
+                    | ScenarioReport::ExecutionFailed { execution, .. } = &report
+                    {
+                        let (context, started_at) = self.operations.last().unwrap();
+                        assert_eq!(&execution.context, context);
+                        let report_start = match &execution.outcome {
+                            ScenarioOutcome::SnmpGet(report) => report.started_at,
+                            ScenarioOutcome::SnmpSet(report) => report.started_at,
+                        };
+                        assert_eq!(report_start, *started_at);
+                    }
+                    return Some(report);
+                }
             }
         }
     }
@@ -138,8 +167,11 @@ fn spawn(scenario: ScenarioSpec) -> Session {
     let (commands, cmd_rx) = mpsc::channel(8);
     let join = tokio::spawn(run_scenario(
         scenario,
-        TaskId(7),
-        Generation::first().next(),
+        ScenarioContext {
+            task_id: TaskId(7),
+            generation: Generation::first().next(),
+            revision: crate::monitor::SpecRevision::new(3),
+        },
         report_tx,
         cmd_rx,
     ));
@@ -148,6 +180,7 @@ fn spawn(scenario: ScenarioSpec) -> Session {
         commands,
         reports,
         preparation: Vec::new(),
+        operations: Vec::new(),
     }
 }
 
@@ -252,7 +285,7 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
         else {
             panic!("expected execution before pause");
         };
-        assert!(execution.elapsed >= Duration::from_secs(1));
+        assert!(execution.elapsed() >= Duration::from_secs(1));
         assert!(matches!(
             (operation, execution.outcome),
             (
@@ -457,8 +490,8 @@ async fn fatal_protocol_error_preserves_the_complete_report_before_ending_scenar
                 (&report.attempts, report.finished_at, report.elapsed)
             }
         };
-        assert_eq!(execution.finished_at, finished_at);
-        assert_eq!(execution.elapsed, elapsed);
+        assert_eq!(execution.finished_at(), finished_at);
+        assert_eq!(execution.elapsed(), elapsed);
         assert_eq!(attempts.len(), 2);
         assert!(matches!(
             attempts[0].outcome,

@@ -121,7 +121,7 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
         OutcomeStatus::Degraded => "DEGRADED",
         OutcomeStatus::Failed => "FAILED",
     };
-    let finished_at = execution.finished_at.with_timezone(&Local);
+    let finished_at = execution.finished_at().with_timezone(&Local);
     let age_ms = (now - finished_at).num_milliseconds().max(0);
     push_line(
         out,

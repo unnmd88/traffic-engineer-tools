@@ -18,7 +18,7 @@ pub use preparation::{
 pub use schedule::PollSchedule;
 pub use spec::{ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec};
 
-pub(super) use runtime::{ScenarioCommand, ScenarioReport, run as run_scenario};
+pub(super) use runtime::{ScenarioCommand, ScenarioContext, ScenarioReport, run as run_scenario};
 
 #[cfg(test)]
 mod tests;

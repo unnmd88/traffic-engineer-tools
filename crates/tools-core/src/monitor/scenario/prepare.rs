@@ -13,7 +13,7 @@ use crate::{
     Scn,
     monitor::task::TaskId,
     polling::{
-        AttemptConfig, AttemptError, AttemptOutcome, AttemptProgress, PollOutcome, PollReport,
+        AttemptConfig, AttemptError, AttemptOutcome, PollOutcome, PollProgress, PollReport,
         Pollable, poll_observed,
     },
     snmp::{
@@ -237,9 +237,10 @@ impl Preparation {
     }
 }
 
-fn log_attempt(progress: AttemptProgress<'_, SnmpError>) {
+fn log_attempt(progress: PollProgress<'_, SnmpError>) {
     match progress {
-        AttemptProgress::Started {
+        PollProgress::Started { .. } => {}
+        PollProgress::AttemptStarted {
             number,
             started_after,
         } => tracing::info!(
@@ -247,7 +248,7 @@ fn log_attempt(progress: AttemptProgress<'_, SnmpError>) {
             started_after_ms = started_after.as_secs_f64() * 1000.0,
             "SCN request attempt started"
         ),
-        AttemptProgress::Finished { number, report } => match &report.outcome {
+        PollProgress::AttemptFinished { number, report } => match &report.outcome {
             AttemptOutcome::Succeeded => tracing::info!(
                 attempt = number,
                 elapsed_ms = report.elapsed.as_secs_f64() * 1000.0,

@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use chrono::{DateTime, Utc};
-use tokio::time::Duration;
 
 use crate::monitor::{
     ApplicationId, OperationContext, OperationReport, TaskDescription, TaskTransition,
-    scenario::{Generation, PreparationEvent, ScenarioExecution, ScenarioExecutionError},
-    task::{ExecutionMetrics, SpecRevision, TaskId},
+    scenario::{Generation, PreparationEvent},
+    task::{SpecRevision, TaskId},
 };
 use crate::polling::AttemptConfig;
 
@@ -28,7 +27,7 @@ pub struct EventMeta {
     pub revision: SpecRevision,
 }
 
-/// Public payloads during migration from lifecycle notifications to operation reporting.
+/// Task lifecycle, preparation progress, and operation evidence published by the monitor.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EventData {
@@ -38,7 +37,7 @@ pub enum EventData {
         /// The previous and current states, typed cause, and optional restart plan.
         transition: Box<TaskTransition>,
     },
-    /// The start of an entire algorithm with retries; runtime integration follows separately.
+    /// The start of an entire algorithm with its retry policy.
     #[non_exhaustive]
     OperationStarted {
         /// The run and configuration to which the operation belongs.
@@ -50,7 +49,7 @@ pub enum EventData {
         /// The policy for all attempts of this operation.
         config: AttemptConfig,
     },
-    /// A terminal operation report; runtime integration follows separately.
+    /// A terminal operation report; interrupted reports are not yet published by the runtime.
     #[non_exhaustive]
     OperationFinished {
         /// The original run and applied configuration, even if a new revision was accepted.
@@ -80,25 +79,11 @@ pub enum EventData {
         /// A preparation or stage boundary and its associated evidence.
         event: Box<PreparationEvent>,
     },
-
-    #[non_exhaustive]
-    ExecutionFinished {
-        execution: ScenarioExecution,
-        metrics: ExecutionMetrics,
-    },
-
-    #[non_exhaustive]
-    ExecutionFailed {
-        error: ScenarioExecutionError,
-        /// The complete operation report, including attempts before the failure.
-        execution: ScenarioExecution,
-        retry_in: Option<Duration>,
-    },
 }
 
 /// A public event with publication context and a typed payload.
 ///
-/// Runtime producers retain their existing event variants during the staged migration.
+/// Normal operation results are published; cancellation and panic reports remain pending.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MonitorEvent {
     /// Publication ordering, time, and task context.
@@ -123,6 +108,15 @@ mod tests {
         },
         stage::Stage,
     };
+    use tokio::time::Duration;
+
+    fn context() -> OperationContext {
+        OperationContext::new(
+            crate::monitor::OperationId::new(0),
+            Generation::first(),
+            SpecRevision::new(1),
+        )
+    }
 
     fn report<T>(
         at: DateTime<Utc>,
@@ -235,33 +229,36 @@ mod tests {
                 }),
             },
             EventData::TaskRemoved,
-            EventData::ExecutionFailed {
-                error: ScenarioExecutionError::Snmp(SnmpError::UnsupportedForSet {
-                    value: "unsupported value".to_string(),
-                }),
-                execution: ScenarioExecution::new(ScenarioOutcome::SnmpSet(report(
-                    at,
-                    elapsed,
-                    PollOutcome::NonRetryableFailure,
-                    vec![
-                        AttemptOutcome::TimedOut,
-                        AttemptOutcome::Failed {
-                            error: SnmpError::UnsupportedForSet {
-                                value: "unsupported value".to_string(),
+            EventData::OperationFinished {
+                context: context(),
+                report: Box::new(OperationReport::Completed {
+                    outcome: ScenarioOutcome::SnmpSet(report(
+                        at,
+                        elapsed,
+                        PollOutcome::NonRetryableFailure,
+                        vec![
+                            AttemptOutcome::TimedOut,
+                            AttemptOutcome::Failed {
+                                error: SnmpError::UnsupportedForSet {
+                                    value: "unsupported value".to_string(),
+                                },
+                                retryable: false,
                             },
-                            retryable: false,
-                        },
-                    ],
-                ))),
-                retry_in: None,
+                        ],
+                    )),
+                }),
             },
         ];
         for outcome in outcomes(at, elapsed) {
-            let mut metrics = ExecutionMetrics::default();
-            metrics.record(outcome.status(), elapsed);
-            data.push(EventData::ExecutionFinished {
-                execution: ScenarioExecution::new(outcome),
-                metrics,
+            data.push(EventData::OperationStarted {
+                context: context(),
+                purpose: "Read or write configured SNMP OIDs".to_string(),
+                started_at: at - elapsed,
+                config: AttemptConfig::try_new(elapsed, 1, Duration::ZERO).unwrap(),
+            });
+            data.push(EventData::OperationFinished {
+                context: context(),
+                report: Box::new(OperationReport::Completed { outcome }),
             });
         }
         for error in [

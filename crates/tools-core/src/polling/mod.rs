@@ -12,4 +12,4 @@ pub use poll::poll;
 pub use pollable::Pollable;
 pub use report::{AttemptOutcome, AttemptReport, PollOutcome, PollReport};
 
-pub(crate) use poll::{AttemptProgress, poll_observed};
+pub(crate) use poll::{PollProgress, poll_observed};

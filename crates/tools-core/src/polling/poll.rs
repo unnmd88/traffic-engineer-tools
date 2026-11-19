@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::polling::{
@@ -17,12 +17,15 @@ pub async fn poll<A: Pollable>(
     poll_observed(config, adapter, |_| {}).await
 }
 
-pub(crate) enum AttemptProgress<'a, E> {
+pub(crate) enum PollProgress<'a, E> {
     Started {
+        at: DateTime<Utc>,
+    },
+    AttemptStarted {
         number: u16,
         started_after: tokio::time::Duration,
     },
-    Finished {
+    AttemptFinished {
         number: u16,
         report: &'a AttemptReport<E>,
     },
@@ -34,10 +37,11 @@ pub(crate) async fn poll_observed<A: Pollable, F>(
     mut observe: F,
 ) -> PollReport<A::Output, A::Error>
 where
-    F: FnMut(AttemptProgress<'_, A::Error>),
+    F: FnMut(PollProgress<'_, A::Error>),
 {
     let started_at = Utc::now();
     let started = Instant::now();
+    observe(PollProgress::Started { at: started_at });
     let total_attempts = u16::from(config.retries()) + 1;
     let mut report = PollReport {
         started_at,
@@ -50,7 +54,7 @@ where
 
     for attempt in 1..=total_attempts {
         let attempt_started = Instant::now();
-        observe(AttemptProgress::Started {
+        observe(PollProgress::AttemptStarted {
             number: attempt,
             started_after: attempt_started.duration_since(started),
         });
@@ -85,7 +89,7 @@ where
             elapsed,
             outcome,
         });
-        observe(AttemptProgress::Finished {
+        observe(PollProgress::AttemptFinished {
             number: attempt,
             report: &report.attempts[report.attempts.len() - 1],
         });

@@ -2,8 +2,8 @@ use serde_json::{Value, json};
 use tools_core::{
     monitor::{
         EventData, Generation, MonitorEvent, OperationCancellationReason, OperationContext,
-        OperationId, OperationReport, OperationStatus, ScenarioExecutionError, ScenarioFailure,
-        ScenarioOutcome, SpecRevision, TaskStatus, TaskTransitionCause,
+        OperationId, OperationReport, OperationStatus, ScenarioExecution, ScenarioExecutionError,
+        ScenarioFailure, ScenarioOutcome, SpecRevision, TaskStatus, TaskTransitionCause,
     },
     polling::{AttemptOutcome, PollOutcome},
     snmp::{SnmpError, SnmpValue},
@@ -82,6 +82,33 @@ fn fixture_preserves_operation_identity_attempts_and_raw_results() {
         matches!(&samples[0].raw_value, SnmpValue::OctetString(bytes) if bytes == &[0, 128, 255])
     );
     assert!(matches!(samples[1].raw_value, SnmpValue::Counter64(u64::MAX)));
+}
+
+#[test]
+fn retained_result_keeps_operation_context_and_uses_report_timing() {
+    let event = round_trip(fixture());
+    let EventData::OperationFinished {
+        context, report, ..
+    } = event.data
+    else {
+        panic!("expected operation result");
+    };
+    let OperationReport::Completed { outcome, .. } = *report else {
+        panic!("expected normal completion");
+    };
+    let result = ScenarioExecution::new(context, outcome);
+    let record = serde_json::to_value(&result).unwrap();
+    assert_eq!(record.as_object().unwrap().len(), 2);
+    assert_eq!(record["context"]["revision"], 3);
+    assert!(record.get("finished_at").is_none());
+    assert!(record.get("elapsed").is_none());
+    let restored: ScenarioExecution = serde_json::from_value(record).unwrap();
+    assert_eq!(restored.context, context);
+    let ScenarioOutcome::SnmpGet(report) = &restored.outcome else {
+        panic!("expected GET report");
+    };
+    assert_eq!(restored.finished_at(), report.finished_at);
+    assert_eq!(restored.elapsed(), report.elapsed);
 }
 
 #[test]

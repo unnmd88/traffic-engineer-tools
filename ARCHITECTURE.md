@@ -404,7 +404,7 @@ CLI format, not a required configuration format of the library.
 with any number of internal retries consumes one unit. Success and `RetryLimitReached`
 count equally. `limit = 0` means no limit.
 
-When the limit is reached, the scenario is cancelled and `ExecutionFinished` is published
+When the limit is reached, the scenario is cancelled and `OperationFinished` is published
 before `TaskStateChanged` to `Completed` with cause `LimitReached`. Preparation errors and
 panics do not create a `ScenarioExecution`.
 Non-retryable operation failures now create and retain a `ScenarioExecution`, but preserve
@@ -412,9 +412,12 @@ the existing accounting: they do not increment execution metrics or consume `lim
 Their result replaces the last result and moves the previous one into local history.
 The task's diagnostic error and restart behavior remain unchanged.
 
-`ScenarioExecution` holds the completion time, duration, and a `ScenarioOutcome`.
-Its constructor copies timing from the enclosed operation report; scenarios do not measure
-these values a second time. GET/SET outcomes hold `PollReport` with a typed `SnmpError`.
+`ScenarioExecution` holds the original `OperationContext` and a `ScenarioOutcome`.
+Its `finished_at()` and `elapsed()` methods read timing from the enclosed operation report;
+there are no independently mutable copies of those timing fields. Results and local history
+retain their operation id, generation, and applied revision after configuration replacement,
+automatic restart, or a new explicit start. GET/SET outcomes hold `PollReport` with a typed
+`SnmpError`.
 `OutcomeStatus` separates the assessment of a result from the status of the task itself.
 GET/SET map `Succeeded` to `Succeeded`, and both negative operation outcomes to `Failed`.
 Success after retries is still successful; the attempts preserve evidence of earlier failures.
@@ -439,10 +442,11 @@ not change the task in the monitor.
 Events report lifecycle changes, results, errors, and panics.
 `Preparation` events carry stage boundaries and the terminal preparation report as they
 occur, and are forwarded to the history sink just like other public events.
-`ExecutionFinished` carries the operation report through its execution. `ExecutionFailed`
-also carries the complete execution alongside the typed scenario error and restart delay,
-so a non-retryable failure does not discard preceding timeouts or adapter errors.
-A separate `TaskStateChanged` then describes its recovery. Public lifecycle notifications
+`OperationStarted` announces one complete GET/SET algorithm before its first attempt.
+`OperationFinished` carries its complete operation report, including preceding timeouts and
+adapter errors on a non-retryable failure. A separate `TaskStateChanged` then describes
+recovery, with its typed failure and restart plan. The former `ExecutionFinished` and
+`ExecutionFailed` public variants have been removed. Public lifecycle notifications
 (`TaskStarting`, `TaskStarted`, pause/resume/stop/completion events) and separate build/panic
 notifications have been replaced by transitions with typed causes. Internal scenario reports
 remain independent of this public event contract.
@@ -472,12 +476,22 @@ The public contract includes the following transition and operation payloads:
   cancellation and panic, independently of restart policy and limit accounting.
 
 The runtime publishes `TaskStateChanged`, registration/configuration events, `Preparation`,
-and the existing `ExecutionFinished` / `ExecutionFailed` reports. It does not yet publish
-`OperationStarted` or `OperationFinished`. Operation-id allocation, result-context retention,
-and orderly interruption reporting are subsequent increments described in
-[PUBLIC_API_REVIEW.md](PUBLIC_API_REVIEW.md). Declaring interrupted report types does not
-provide a runtime start/finish delivery guarantee. Report and transition payloads are
-passive data; deserialization does not validate timing, attempt ordering, or legal transitions.
+and `OperationStarted` / `OperationFinished` for normally completed GET/SET operations,
+including exhausted attempts and non-retryable failures. Each scenario run captures its
+applied revision and allocates zero-based operation ids independently of metrics. Pause and
+resume within that run preserve numbering; a new generation starts numbering at zero.
+The internal report channel reserves capacity before polling starts. The shared polling
+observer supplies the exact same UTC start time to the start event and final report;
+there is no separate scenario-side timing measurement. The orchestrator assigns public
+sequence numbers and discards reports from retired generations as before.
+
+Cancellation and caught panics still do not publish terminal operation reports. Stop,
+configuration replacement, removal, shutdown, or panic may leave a published start without
+a finish and lose accumulated attempt evidence. Orderly interruption reporting is not yet
+implemented. Declaring interrupted report types does not provide a runtime start/finish
+delivery guarantee. A snapshot retains
+completed results, but does not yet expose the currently executing operation. Report and
+transition payloads are passive data; deserialization does not validate timing, attempt ordering, or legal transitions.
 
 Identifiers serve different purposes:
 

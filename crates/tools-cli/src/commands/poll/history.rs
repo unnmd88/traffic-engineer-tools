@@ -65,11 +65,9 @@ mod tests {
                 "revision": 1
             },
             "data": {
-                "ExecutionFailed": {
-                    "error": { "Snmp": { "InvalidOid": "first line\nsecond line" } },
-                    "execution": {
-                        "finished_at": "2026-11-07T00:00:01.200Z",
-                        "elapsed": { "secs": 1, "nanos": 200000000 },
+                "OperationFinished": {
+                    "context": { "operation_id": 0, "generation": 0, "revision": 1 },
+                    "report": { "Completed": {
                         "outcome": { "SnmpGet": {
                             "started_at": "2026-11-07T00:00:00Z",
                             "finished_at": "2026-11-07T00:00:01.200Z",
@@ -96,8 +94,7 @@ mod tests {
                             ],
                             "outcome": "NonRetryableFailure"
                         } }
-                    },
-                    "retry_in": null
+                    } }
                 }
             }
         }))

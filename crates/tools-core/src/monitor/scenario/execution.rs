@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::{
+    monitor::OperationContext,
     polling::{PollOutcome, PollReport},
     snmp::{SnmpError, SnmpGetSample},
 };
@@ -46,25 +47,35 @@ const fn response_status<T, E>(report: &PollReport<T, E>) -> OutcomeStatus {
     }
 }
 
+/// A retained normal operation result with its original execution context.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ScenarioExecution {
-    pub finished_at: DateTime<Utc>,
-    pub elapsed: Duration,
+    /// The operation and applied configuration that produced this result.
+    pub context: OperationContext,
+    /// The complete protocol-specific report, including timing and attempts.
     pub outcome: ScenarioOutcome,
 }
 
 impl ScenarioExecution {
-    /// Creates an execution whose timing is taken from its operation report.
-    pub fn new(outcome: ScenarioOutcome) -> Self {
-        let (finished_at, elapsed) = match &outcome {
-            ScenarioOutcome::SnmpGet(report) => (report.finished_at, report.elapsed),
-            ScenarioOutcome::SnmpSet(report) => (report.finished_at, report.elapsed),
-        };
-        Self {
-            finished_at,
-            elapsed,
-            outcome,
+    /// Retains an operation's original context with its complete result.
+    pub const fn new(context: OperationContext, outcome: ScenarioOutcome) -> Self {
+        Self { context, outcome }
+    }
+
+    /// Returns the completion time from the enclosed operation report.
+    pub const fn finished_at(&self) -> DateTime<Utc> {
+        match &self.outcome {
+            ScenarioOutcome::SnmpGet(report) => report.finished_at,
+            ScenarioOutcome::SnmpSet(report) => report.finished_at,
+        }
+    }
+
+    /// Returns the monotonic duration from the enclosed operation report.
+    pub const fn elapsed(&self) -> Duration {
+        match &self.outcome {
+            ScenarioOutcome::SnmpGet(report) => report.elapsed,
+            ScenarioOutcome::SnmpSet(report) => report.elapsed,
         }
     }
 }

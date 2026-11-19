@@ -44,7 +44,23 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. Read events until the task completes.
     while let Ok(event) = sub.events.recv().await {
-        println!("seq {}: {:?}", event.metadata.seq, event.data);
+        match &event.data {
+            EventData::OperationStarted {
+                context, purpose, ..
+            } => {
+                println!("operation {} started: {purpose}", context.operation_id.get());
+            }
+            EventData::OperationFinished {
+                context, report, ..
+            } => {
+                println!(
+                    "operation {} finished: {:?}",
+                    context.operation_id.get(),
+                    report.status()
+                );
+            }
+            data => println!("seq {}: {data:?}", event.metadata.seq),
+        }
         if matches!(event.data, EventData::TaskStateChanged { ref transition, .. } if transition.current == TaskStatus::Completed)
         {
             break;
@@ -55,10 +71,10 @@ async fn main() -> anyhow::Result<()> {
     let snapshot = handle.get_snapshot().await?;
     for view in &snapshot.tasks {
         println!(
-            "task '{}': status={:?}, has_result={}",
+            "task '{}': status={:?}, result_context={:?}",
             view.name,
             view.status,
-            view.result.is_some()
+            view.result.as_ref().map(|result| result.context)
         );
     }
 
