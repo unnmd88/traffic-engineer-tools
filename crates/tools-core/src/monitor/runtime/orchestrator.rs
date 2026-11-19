@@ -4,11 +4,12 @@ use chrono::Utc;
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
     task::JoinSet,
-    time::{Duration, sleep},
+    time::{Instant, sleep_until},
 };
 use tracing::Instrument;
 
 use crate::monitor::{
+    RestartPlan, ScenarioFailure, TaskCommandKind, TaskTransition, TaskTransitionCause,
     event::{EventData, EventMeta, MonitorEvent},
     runtime::{
         ApplicationId, MonitorSubscription, error::MonitorCommandError,
@@ -23,24 +24,37 @@ use crate::monitor::{
     },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TaskState {
-    Idle,
-    Starting,
-    Active,
-    Paused,
-    Restarting,
-    Completed,
-    Stopped,
-}
-
 struct TaskEntry {
     task: Task,
-    state: TaskState,
+    state: TaskStatus,
+    last_transition: Option<TaskTransition>,
     attempts: u32,
     next_generation: Generation,
     generation: Generation,
     scenario: Option<ScenarioHandle>,
+}
+
+impl TaskEntry {
+    fn transition(
+        &mut self,
+        current: TaskStatus,
+        cause: TaskTransitionCause,
+        restart: Option<RestartPlan>,
+    ) -> Option<TaskTransition> {
+        if self.state == current {
+            return None;
+        }
+        let transition = TaskTransition {
+            at: Utc::now(),
+            previous: self.state,
+            current,
+            cause,
+            restart,
+        };
+        self.state = current;
+        self.last_transition = Some(transition.clone());
+        Some(transition)
+    }
 }
 
 struct ScenarioHandle {
@@ -166,7 +180,8 @@ impl Orchestrator {
             id,
             TaskEntry {
                 task: Task::new(id, spec),
-                state: TaskState::Idle,
+                state: TaskStatus::Idle,
+                last_transition: None,
                 attempts: 0,
                 next_generation: Generation::first(),
                 generation: Generation::first(),
@@ -229,7 +244,9 @@ impl Orchestrator {
             self.emit_task_registered(id).await;
         }
         for id in initial_tasks {
-            self.start(id).await.expect("initial task is registered");
+            self.start_with_cause(id, TaskTransitionCause::InitialStart)
+                .await
+                .expect("initial task is registered");
         }
     }
 
@@ -296,10 +313,25 @@ impl Orchestrator {
                 true
             }
             Command::Shutdown { reply } => {
-                for entry in self.entries.values_mut() {
-                    if let Some(scenario) = entry.scenario.take() {
-                        scenario.abort.abort();
-                    }
+                let mut running: Vec<_> = self
+                    .entries
+                    .iter()
+                    .filter_map(|(&id, entry)| {
+                        matches!(
+                            entry.state,
+                            TaskStatus::Starting
+                                | TaskStatus::Active
+                                | TaskStatus::Paused
+                                | TaskStatus::Restarting
+                        )
+                        .then_some(id)
+                    })
+                    .collect();
+                running.sort_unstable();
+                for id in running {
+                    self.stop_with_cause(id, TaskTransitionCause::Shutdown)
+                        .await
+                        .expect("task exists until shutdown clears the registry");
                 }
                 self.entries.clear();
                 let _ = reply.send(());
@@ -316,9 +348,18 @@ impl Orchestrator {
     }
 
     async fn start(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
+        self.start_with_cause(id, TaskTransitionCause::Command(TaskCommandKind::Start))
+            .await
+    }
+
+    async fn start_with_cause(
+        &mut self,
+        id: TaskId,
+        cause: TaskTransitionCause,
+    ) -> Result<(), MonitorCommandError> {
         let should_start = match self.entries.get(&id) {
             Some(e) => {
-                matches!(e.state, TaskState::Idle | TaskState::Stopped | TaskState::Completed)
+                matches!(e.state, TaskStatus::Idle | TaskStatus::Stopped | TaskStatus::Completed)
             }
             None => return Err(MonitorCommandError::TaskNotFound(id)),
         };
@@ -330,103 +371,114 @@ impl Orchestrator {
             let entry = self.entries.get_mut(&id).expect("checked above");
             entry.task.reset_run();
             entry.attempts = 0;
-            entry.state = TaskState::Starting;
         }
         self.spawn_scenario(id);
-        self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
+        self.transition(id, TaskStatus::Starting, cause, None).await;
         Ok(())
     }
 
     async fn pause(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
-        // forward — шлём команду живому воркеру; set_state — воркера нет, пауза сразу
         let (forward, set_state) = {
             let entry = self
                 .entries
                 .get_mut(&id)
                 .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
-                TaskState::Starting | TaskState::Active => {
+                TaskStatus::Starting | TaskStatus::Active => {
                     (entry.scenario.is_some(), entry.scenario.is_none())
                 }
-                TaskState::Restarting => (false, true),
-                _ => (false, false), // Idle/Stopped/Completed/Paused — no-op
+                TaskStatus::Restarting => (false, true),
+                _ => (false, false),
             }
         };
 
-        if forward {
-            if let Some(cmd) = self
+        if forward
+            && let Some(cmd) = self
                 .entries
                 .get(&id)
                 .and_then(|e| e.scenario.as_ref())
                 .map(|scenario| scenario.cmd.clone())
-            {
-                let _ = cmd.send(ScenarioCommand::Pause).await;
-            }
+        {
+            let _ = cmd.send(ScenarioCommand::Pause).await;
         }
         if set_state {
-            if let Some(entry) = self.entries.get_mut(&id) {
-                entry.state = TaskState::Paused;
-            }
-            self.emit(id, EventData::TaskPaused).await;
+            self.transition(
+                id,
+                TaskStatus::Paused,
+                TaskTransitionCause::Command(TaskCommandKind::Pause),
+                None,
+            )
+            .await;
         }
         Ok(())
     }
 
     async fn resume(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
-        // forward — живому воркеру; spawn — воркера нет, поднимаем заново
         let (forward, spawn) = {
             let entry = self
                 .entries
                 .get_mut(&id)
                 .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
-                TaskState::Paused => (entry.scenario.is_some(), entry.scenario.is_none()),
+                TaskStatus::Paused => (entry.scenario.is_some(), entry.scenario.is_none()),
                 _ => (false, false),
             }
         };
 
-        if forward {
-            if let Some(cmd) = self
+        if forward
+            && let Some(cmd) = self
                 .entries
                 .get(&id)
                 .and_then(|e| e.scenario.as_ref())
                 .map(|scenario| scenario.cmd.clone())
-            {
-                let _ = cmd.send(ScenarioCommand::Resume).await;
-            }
+        {
+            let _ = cmd.send(ScenarioCommand::Resume).await;
         }
         if spawn {
             {
                 let entry = self.entries.get_mut(&id).expect("checked above");
                 entry.attempts = 0;
-                entry.state = TaskState::Starting;
             }
             self.spawn_scenario(id);
-            self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
+            self.transition(
+                id,
+                TaskStatus::Starting,
+                TaskTransitionCause::Command(TaskCommandKind::Resume),
+                None,
+            )
+            .await;
         }
         Ok(())
     }
 
     async fn stop(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
+        self.stop_with_cause(id, TaskTransitionCause::Command(TaskCommandKind::Stop))
+            .await
+    }
+
+    async fn stop_with_cause(
+        &mut self,
+        id: TaskId,
+        cause: TaskTransitionCause,
+    ) -> Result<(), MonitorCommandError> {
         let stopped = {
             let entry = self
                 .entries
                 .get_mut(&id)
                 .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
-                TaskState::Idle | TaskState::Stopped => false, // нечего останавливать
+                TaskStatus::Idle | TaskStatus::Stopped => false,
                 _ => {
                     if let Some(scenario) = entry.scenario.take() {
                         scenario.abort.abort();
                     }
                     entry.attempts = 0;
-                    entry.state = TaskState::Stopped;
                     true
                 }
             }
         };
         if stopped {
-            self.emit(id, EventData::TaskStopped).await;
+            self.transition(id, TaskStatus::Stopped, cause, None).await;
         }
         Ok(())
     }
@@ -442,12 +494,12 @@ impl Orchestrator {
             (
                 matches!(
                     entry.state,
-                    TaskState::Starting | TaskState::Active | TaskState::Restarting
+                    TaskStatus::Starting | TaskStatus::Active | TaskStatus::Restarting
                 ),
                 Box::new(TaskDescription::from(entry.task.config())),
             )
         };
-        let paused = matches!(self.entries.get(&id), Some(e) if e.state == TaskState::Paused);
+        let paused = matches!(self.entries.get(&id), Some(e) if e.state == TaskStatus::Paused);
 
         self.emit(id, EventData::TaskConfigurationChanged { description })
             .await;
@@ -458,16 +510,20 @@ impl Orchestrator {
                 if let Some(scenario) = entry.scenario.take() {
                     scenario.abort.abort();
                 }
-                entry.state = TaskState::Starting;
             }
             self.spawn_scenario(id);
-            self.emit(id, EventData::TaskStarting { attempt: 0 }).await;
-        } else if paused {
-            if let Some(entry) = self.entries.get_mut(&id) {
-                if let Some(scenario) = entry.scenario.take() {
-                    scenario.abort.abort();
-                }
-            }
+            self.transition(
+                id,
+                TaskStatus::Starting,
+                TaskTransitionCause::ConfigurationChanged,
+                None,
+            )
+            .await;
+        } else if paused
+            && let Some(entry) = self.entries.get_mut(&id)
+            && let Some(scenario) = entry.scenario.take()
+        {
+            scenario.abort.abort();
         }
         Ok(())
     }
@@ -493,147 +549,198 @@ impl Orchestrator {
 
     async fn on_report(&mut self, rep: ScenarioReport) {
         let (task_id, generation) = rep.key();
-        let mut completed = false;
+        let Some(entry) = self.entries.get(&task_id) else {
+            tracing::trace!(%task_id, ?generation, "report ignored for missing task");
+            return;
+        };
+        if entry.scenario.as_ref().map(|scenario| scenario.generation) != Some(generation) {
+            tracing::trace!(
+                %task_id,
+                ?generation,
+                active_generation = ?entry.scenario.as_ref().map(|scenario| scenario.generation),
+                "report ignored for inactive generation"
+            );
+            return;
+        }
 
-        let (data, respawn_after): (Option<EventData>, Option<Duration>) = {
-            let Some(entry) = self.entries.get_mut(&task_id) else {
-                tracing::trace!(%task_id, ?generation, "report ignored for missing task");
-                return;
-            };
-            if entry.scenario.as_ref().map(|scenario| scenario.generation) != Some(generation) {
-                tracing::trace!(
-                    %task_id,
-                    ?generation,
-                    active_generation = ?entry.scenario.as_ref().map(|scenario| scenario.generation),
-                    "report ignored for inactive generation"
-                );
-                return;
+        match rep {
+            ScenarioReport::Preparation { event, .. } => {
+                self.entries
+                    .get_mut(&task_id)
+                    .expect("validated task")
+                    .task
+                    .record_preparation(generation, &event);
+                self.emit(task_id, EventData::Preparation { event }).await;
             }
-
-            match rep {
-                ScenarioReport::Preparation { event, .. } => {
-                    entry.task.record_preparation(generation, &event);
-                    (Some(EventData::Preparation { event }), None)
+            ScenarioReport::Built { .. } => {
+                let entry = self.entries.get_mut(&task_id).expect("validated task");
+                entry.attempts = 0;
+                entry.task.clear_error();
+                self.transition(
+                    task_id,
+                    TaskStatus::Active,
+                    TaskTransitionCause::ScenarioReady,
+                    None,
+                )
+                .await;
+            }
+            ScenarioReport::BuildFailed { error, .. } => {
+                self.recover(task_id, ScenarioFailure::Preparation(error), None)
+                    .await;
+            }
+            ScenarioReport::BuildPanicked { reason, .. } => {
+                self.recover(
+                    task_id,
+                    ScenarioFailure::Panicked {
+                        stage: PanicStage::Build,
+                        reason,
+                    },
+                    None,
+                )
+                .await;
+            }
+            ScenarioReport::Executed { execution, .. } => {
+                let entry = self.entries.get_mut(&task_id).expect("validated task");
+                entry.task.apply_execution(execution.clone());
+                let completed = limit_reached(entry);
+                let limit = entry.task.config().limit();
+                let metrics = entry.task.metrics();
+                if completed && let Some(scenario) = entry.scenario.take() {
+                    scenario.abort.abort();
                 }
-                ScenarioReport::Built { .. } => {
-                    entry.attempts = 0;
-                    entry.task.clear_error();
-                    entry.state = TaskState::Active;
-                    (Some(EventData::TaskStarted), None)
-                }
-                ScenarioReport::BuildFailed { error, .. } => {
-                    entry.scenario = None;
-                    entry.attempts += 1;
-                    entry.state = TaskState::Restarting;
-                    let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error(error.to_string());
-                    (
-                        Some(EventData::BuildFailed {
-                            error,
-                            retry_in: Some(delay),
-                        }),
-                        Some(delay),
-                    )
-                }
-                ScenarioReport::BuildPanicked { reason, .. } => {
-                    entry.scenario = None;
-                    entry.attempts += 1;
-                    entry.state = TaskState::Restarting;
-                    let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error(format!("build: {reason}"));
-                    (
-                        Some(EventData::ScenarioPanicked {
-                            stage: PanicStage::Build,
-                            reason,
-                            retry_in: Some(delay),
-                        }),
-                        Some(delay),
-                    )
-                }
-                ScenarioReport::Executed { execution, .. } => {
-                    entry.task.apply_execution(execution.clone());
-                    if limit_reached(entry) {
-                        if let Some(scenario) = entry.scenario.take() {
-                            scenario.abort.abort();
-                        }
-                        entry.state = TaskState::Completed;
-                        completed = true;
-                    }
-                    (
-                        Some(EventData::ExecutionFinished {
-                            execution,
-                            metrics: entry.task.metrics(),
-                        }),
+                self.emit(task_id, EventData::ExecutionFinished { execution, metrics })
+                    .await;
+                if completed {
+                    self.transition(
+                        task_id,
+                        TaskStatus::Completed,
+                        TaskTransitionCause::LimitReached { limit },
                         None,
                     )
-                }
-                ScenarioReport::ExecutionFailed {
-                    error, execution, ..
-                } => {
-                    entry.task.store_execution(execution.clone());
-                    entry.scenario = None;
-                    entry.attempts += 1;
-                    entry.state = TaskState::Restarting;
-                    let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error(error.to_string());
-                    (
-                        Some(EventData::ExecutionFailed {
-                            error,
-                            execution,
-                            retry_in: Some(delay),
-                        }),
-                        Some(delay),
-                    )
-                }
-                ScenarioReport::ExecutionPanicked { reason, .. } => {
-                    entry.scenario = None;
-                    entry.attempts += 1;
-                    entry.state = TaskState::Restarting;
-                    let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error(format!("execution: {reason}"));
-                    (
-                        Some(EventData::ScenarioPanicked {
-                            stage: PanicStage::Execution,
-                            reason,
-                            retry_in: Some(delay),
-                        }),
-                        Some(delay),
-                    )
-                }
-                ScenarioReport::Panicked { reason, .. } => {
-                    entry.scenario = None;
-                    entry.attempts += 1;
-                    entry.state = TaskState::Restarting;
-                    let delay = self.policy.delay(entry.attempts);
-                    entry.task.record_error(format!("scenario: {reason}"));
-                    (
-                        Some(EventData::ScenarioPanicked {
-                            stage: PanicStage::Runtime,
-                            reason,
-                            retry_in: Some(delay),
-                        }),
-                        Some(delay),
-                    )
-                }
-                ScenarioReport::Paused { .. } => {
-                    entry.state = TaskState::Paused;
-                    (Some(EventData::TaskPaused), None)
-                }
-                ScenarioReport::Resumed { .. } => {
-                    entry.state = TaskState::Active;
-                    (Some(EventData::TaskResumed), None)
+                    .await;
                 }
             }
-        };
+            ScenarioReport::ExecutionFailed {
+                error, execution, ..
+            } => {
+                self.recover(task_id, ScenarioFailure::Execution(error), Some(execution))
+                    .await;
+            }
+            ScenarioReport::ExecutionPanicked { reason, .. } => {
+                self.recover(
+                    task_id,
+                    ScenarioFailure::Panicked {
+                        stage: PanicStage::Execution,
+                        reason,
+                    },
+                    None,
+                )
+                .await;
+            }
+            ScenarioReport::Panicked { reason, .. } => {
+                self.recover(
+                    task_id,
+                    ScenarioFailure::Panicked {
+                        stage: PanicStage::Runtime,
+                        reason,
+                    },
+                    None,
+                )
+                .await;
+            }
+            ScenarioReport::Paused { .. } => {
+                self.transition(
+                    task_id,
+                    TaskStatus::Paused,
+                    TaskTransitionCause::Command(TaskCommandKind::Pause),
+                    None,
+                )
+                .await;
+            }
+            ScenarioReport::Resumed { .. } => {
+                self.transition(
+                    task_id,
+                    TaskStatus::Active,
+                    TaskTransitionCause::Command(TaskCommandKind::Resume),
+                    None,
+                )
+                .await;
+            }
+        }
+    }
 
+    async fn recover(
+        &mut self,
+        task_id: TaskId,
+        failure: ScenarioFailure,
+        execution: Option<crate::monitor::ScenarioExecution>,
+    ) {
+        let entry = self.entries.get_mut(&task_id).expect("validated task");
+        let reason = match &failure {
+            ScenarioFailure::Preparation(error) => error.to_string(),
+            ScenarioFailure::Execution(error) => error.to_string(),
+            ScenarioFailure::Panicked { stage, reason } => {
+                let label = match stage {
+                    PanicStage::Build => "build",
+                    PanicStage::Execution => "execution",
+                    PanicStage::Runtime => "scenario",
+                };
+                format!("{label}: {reason}")
+            }
+        };
+        entry.task.record_error(reason);
+        entry.scenario = None;
+        entry.attempts += 1;
+        let delay = self.policy.delay(entry.attempts);
+        let deadline = Instant::now() + delay;
+        let plan = RestartPlan {
+            attempt: entry.attempts,
+            scheduled_at: Utc::now() + delay,
+        };
+        let generation = entry.generation;
+        let data = execution.map(|execution| {
+            let ScenarioFailure::Execution(error) = &failure else {
+                unreachable!("only an execution failure supplies an operation report");
+            };
+            entry.task.store_execution(execution.clone());
+            EventData::ExecutionFailed {
+                error: error.clone(),
+                execution,
+                retry_in: Some(delay),
+            }
+        });
         if let Some(data) = data {
             self.emit(task_id, data).await;
         }
-        if completed {
-            self.emit(task_id, EventData::TaskCompleted).await;
-        }
-        if let Some(delay) = respawn_after {
-            self.schedule_respawn(task_id, generation, delay);
+        self.transition(
+            task_id,
+            TaskStatus::Restarting,
+            TaskTransitionCause::Failure(Box::new(failure)),
+            Some(plan),
+        )
+        .await;
+        self.schedule_respawn(task_id, generation, deadline);
+    }
+
+    async fn transition(
+        &mut self,
+        task_id: TaskId,
+        current: TaskStatus,
+        cause: TaskTransitionCause,
+        restart: Option<RestartPlan>,
+    ) {
+        let transition = self
+            .entries
+            .get_mut(&task_id)
+            .and_then(|entry| entry.transition(current, cause, restart));
+        if let Some(transition) = transition {
+            self.emit(
+                task_id,
+                EventData::TaskStateChanged {
+                    transition: Box::new(transition),
+                },
+            )
+            .await;
         }
     }
 
@@ -670,12 +777,12 @@ impl Orchestrator {
         });
     }
 
-    fn schedule_respawn(&mut self, task_id: TaskId, generation: Generation, delay: Duration) {
+    fn schedule_respawn(&mut self, task_id: TaskId, generation: Generation, deadline: Instant) {
         let cmd_tx = self.cmd_tx.clone();
         let span = tracing::info_span!("restart_timer", task_id = task_id.0, ?generation);
         self.restarts.spawn(
             async move {
-                sleep(delay).await;
+                sleep_until(deadline).await;
                 let _ = cmd_tx
                     .send(Command::Respawn {
                         task_id,
@@ -690,19 +797,20 @@ impl Orchestrator {
     async fn maybe_respawn(&mut self, task_id: TaskId, generation: Generation) {
         let should = matches!(
             self.entries.get(&task_id),
-            Some(e) if e.state == TaskState::Restarting
+            Some(e) if e.state == TaskStatus::Restarting
                 && e.scenario.is_none()
                 && e.generation == generation
         );
         if should {
             let attempt = self.entries.get(&task_id).map_or(0, |e| e.attempts);
-            {
-                let entry = self.entries.get_mut(&task_id).expect("checked above");
-                entry.state = TaskState::Starting;
-            }
             self.spawn_scenario(task_id);
-            self.emit(task_id, EventData::TaskStarting { attempt })
-                .await;
+            self.transition(
+                task_id,
+                TaskStatus::Starting,
+                TaskTransitionCause::RestartDue { attempt },
+                None,
+            )
+            .await;
         } else {
             tracing::trace!(%task_id, ?generation, "restart ignored for inactive generation or state");
         }
@@ -751,16 +859,37 @@ impl Orchestrator {
     fn log_event(&self, event: &MonitorEvent) {
         let metadata = &event.metadata;
         match &event.data {
-            EventData::TaskStateChanged { transition } => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                seq = metadata.seq,
-                previous = ?transition.previous,
-                current = ?transition.current,
-                cause = ?transition.cause,
-                restart = ?transition.restart,
-                "task state changed"
-            ),
+            EventData::TaskStateChanged { transition } => match &transition.cause {
+                TaskTransitionCause::Failure(failure) => match failure.as_ref() {
+                    ScenarioFailure::Panicked { .. } => tracing::error!(
+                        application_id = %metadata.application_id,
+                        task_id = metadata.task_id.0,
+                        generation = ?metadata.generation,
+                        revision = metadata.revision.0,
+                        seq = metadata.seq,
+                        ?transition,
+                        "task state changed after a scenario panic"
+                    ),
+                    _ => tracing::warn!(
+                        application_id = %metadata.application_id,
+                        task_id = metadata.task_id.0,
+                        generation = ?metadata.generation,
+                        revision = metadata.revision.0,
+                        seq = metadata.seq,
+                        ?transition,
+                        "task state changed after a scenario failure"
+                    ),
+                },
+                _ => tracing::info!(
+                    application_id = %metadata.application_id,
+                    task_id = metadata.task_id.0,
+                    generation = ?metadata.generation,
+                    revision = metadata.revision.0,
+                    seq = metadata.seq,
+                    ?transition,
+                    "task state changed"
+                ),
+            },
             EventData::OperationStarted { context, .. } => tracing::debug!(
                 application_id = %metadata.application_id,
                 task_id = metadata.task_id.0,
@@ -781,6 +910,14 @@ impl Orchestrator {
                 "operation finished"
             ),
             EventData::Preparation { .. } => {}
+            EventData::TaskRemoved => tracing::info!(
+                application_id = %metadata.application_id,
+                task_id = metadata.task_id.0,
+                generation = ?metadata.generation,
+                revision = metadata.revision.0,
+                seq = metadata.seq,
+                "task removed"
+            ),
             EventData::TaskRegistered { description } => tracing::info!(
                 application_id = %metadata.application_id,
                 task_id = metadata.task_id.0,
@@ -799,68 +936,6 @@ impl Orchestrator {
                 task_name = description.name,
                 "task configuration updated"
             ),
-            EventData::TaskStarting { attempt } => {
-                let entry = self.entries.get(&metadata.task_id);
-                tracing::info!(
-                    application_id = %metadata.application_id,
-                    task_id = metadata.task_id.0,
-                    generation = ?metadata.generation,
-                    revision = metadata.revision.0,
-                    seq = metadata.seq,
-                    task_name = entry.map(|entry| entry.task.config().name()),
-                    device = entry.map(|entry| entry.task.config().scenario().target()),
-                    attempt,
-                    "task starting"
-                );
-            }
-            EventData::TaskStarted => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "task started"
-            ),
-            EventData::TaskPaused => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "task paused"
-            ),
-            EventData::TaskResumed => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "task resumed"
-            ),
-            EventData::TaskStopped => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "task stopped"
-            ),
-            EventData::TaskCompleted => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "task completed"
-            ),
-            EventData::TaskRemoved => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "task removed"
-            ),
             EventData::ExecutionFinished { execution, metrics } => tracing::debug!(
                 application_id = %metadata.application_id,
                 task_id = metadata.task_id.0,
@@ -871,17 +946,6 @@ impl Orchestrator {
                 elapsed_ms = execution.elapsed.as_secs_f64() * 1000.0,
                 executions = metrics.executions,
                 "execution finished"
-            ),
-            EventData::BuildFailed { error, retry_in } => tracing::warn!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                %error,
-                attempt = self.entries.get(&metadata.task_id).map(|entry| entry.attempts),
-                retry_in_ms = retry_in.map(|delay| delay.as_secs_f64() * 1000.0),
-                "scenario build failed"
             ),
             EventData::ExecutionFailed {
                 error, retry_in, ..
@@ -895,22 +959,6 @@ impl Orchestrator {
                 attempt = self.entries.get(&metadata.task_id).map(|entry| entry.attempts),
                 retry_in_ms = retry_in.map(|delay| delay.as_secs_f64() * 1000.0),
                 "scenario execution failed"
-            ),
-            EventData::ScenarioPanicked {
-                stage,
-                reason,
-                retry_in,
-            } => tracing::error!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                ?stage,
-                error = %reason,
-                attempt = self.entries.get(&metadata.task_id).map(|entry| entry.attempts),
-                retry_in_ms = retry_in.map(|delay| delay.as_secs_f64() * 1000.0),
-                "scenario panicked"
             ),
         }
     }
@@ -935,7 +983,8 @@ impl Orchestrator {
             config_updated_at: *t.config_updated_at(),
             updated_at: *t.updated_at(),
             target: config.scenario().target(),
-            status: status(entry),
+            status: entry.state,
+            last_transition: entry.last_transition.clone(),
             deep_history: config.deep_history(),
             scenario: config.scenario().clone(),
             limit: config.limit(),
@@ -955,18 +1004,6 @@ impl Orchestrator {
             next_seq: self.seq,
             tasks,
         }
-    }
-}
-
-fn status(entry: &TaskEntry) -> TaskStatus {
-    match entry.state {
-        TaskState::Idle => TaskStatus::Idle,
-        TaskState::Starting => TaskStatus::Starting,
-        TaskState::Active => TaskStatus::Active,
-        TaskState::Paused => TaskStatus::Paused,
-        TaskState::Restarting => TaskStatus::Restarting,
-        TaskState::Completed => TaskStatus::Completed,
-        TaskState::Stopped => TaskStatus::Stopped,
     }
 }
 
@@ -1127,6 +1164,7 @@ impl OrchestratorHandle {
 #[cfg(test)]
 mod tests {
     use chrono::DateTime;
+    use tokio::time::Duration;
 
     use super::*;
     use crate::{
@@ -1171,7 +1209,8 @@ mod tests {
             task_id,
             TaskEntry {
                 task,
-                state: TaskState::Active,
+                state: TaskStatus::Active,
+                last_transition: None,
                 attempts: 0,
                 next_generation: Generation::first().next(),
                 generation: Generation::first(),
@@ -1549,7 +1588,9 @@ mod tests {
         let executed = events.try_recv().unwrap();
         let completed = events.try_recv().unwrap();
         assert!(matches!(executed.data, EventData::ExecutionFinished { .. }));
-        assert!(matches!(completed.data, EventData::TaskCompleted));
+        assert!(
+            matches!(completed.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Completed)
+        );
         assert_eq!(completed.metadata.seq, executed.metadata.seq + 1);
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
@@ -1578,7 +1619,9 @@ mod tests {
         assert_eq!(snapshot.tasks[0].metrics.failed, 2);
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
         assert!(matches!(events.try_recv().unwrap().data, EventData::ExecutionFinished { .. }));
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskCompleted));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Completed)
+        );
         assert!(events.try_recv().is_err());
     }
 
@@ -1639,6 +1682,17 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         let task = &snapshot.tasks[0];
         assert_eq!(task.status, TaskStatus::Restarting);
+        let recovered = events.try_recv().unwrap();
+        let EventData::TaskStateChanged { transition } = recovered.data else {
+            panic!("expected the recovery transition after the operation report");
+        };
+        assert!(matches!(&transition.cause,
+            TaskTransitionCause::Failure(failure)
+                if matches!(failure.as_ref(), ScenarioFailure::Execution(_))));
+        assert_eq!(
+            serde_json::to_value(&transition).unwrap(),
+            serde_json::to_value(task.last_transition.as_ref().unwrap()).unwrap()
+        );
         assert_eq!(task.metrics.executions, 1);
         assert_eq!(task.history.len(), 1);
         assert_eq!(task.history[0].result.finished_at, DateTime::from_timestamp(100, 0).unwrap());
@@ -1753,15 +1807,14 @@ mod tests {
             let event = events.try_recv().unwrap();
             assert_eq!(event.metadata.task_id, task_id);
             assert_eq!(event.metadata.generation, generation);
-            let EventData::BuildFailed {
-                error: reported,
-                retry_in,
-            } = event.data
-            else {
-                panic!("expected a build failure event");
+            let EventData::TaskStateChanged { transition } = event.data else {
+                panic!("expected a recovery transition");
             };
-            assert_eq!(reported, error);
-            assert_eq!(retry_in, Some(Duration::from_secs(1)));
+            assert!(matches!(&transition.cause,
+                TaskTransitionCause::Failure(failure)
+                if matches!(failure.as_ref(), ScenarioFailure::Preparation(reported) if reported == &error)));
+            assert_eq!(transition.current, TaskStatus::Restarting);
+            assert_eq!(transition.restart.unwrap().attempt, 1);
             let snapshot = orchestrator.snapshot();
             assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
             assert_eq!(snapshot.tasks[0].health.last_error, Some(error.to_string()));
@@ -1804,11 +1857,14 @@ mod tests {
             let event = events.try_recv().unwrap();
             assert_eq!(event.metadata.task_id, task_id);
             assert_eq!(event.metadata.generation, generation);
-            assert!(matches!(
-                event.data,
-                EventData::ScenarioPanicked { stage: actual, reason, retry_in: Some(delay) }
-                    if actual == stage && reason == "panic" && delay == Duration::from_secs(1)
-            ));
+            let EventData::TaskStateChanged { transition } = event.data else {
+                panic!("expected a panic recovery transition");
+            };
+            assert!(matches!(&transition.cause,
+                TaskTransitionCause::Failure(failure)
+                if matches!(failure.as_ref(), ScenarioFailure::Panicked { stage: actual, reason }
+                    if *actual == stage && reason == "panic")));
+            assert_eq!(transition.restart.unwrap().attempt, 1);
             let snapshot = orchestrator.snapshot();
             assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
             assert_eq!(snapshot.tasks[0].metrics.executions, 0);
@@ -1831,13 +1887,17 @@ mod tests {
         orchestrator.start(task_id).await.unwrap();
         control_scenario(&mut orchestrator, task_id);
         assert!(matches!(events.try_recv().unwrap().data, EventData::ExecutionFinished { .. }));
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Stopped)
+        );
         assert!(matches!(
             events.try_recv().unwrap().data,
             EventData::TaskConfigurationChanged { .. }
         ));
         let starting = events.try_recv().unwrap();
-        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        assert!(
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+        );
         let snapshot = orchestrator.snapshot();
         let task = &snapshot.tasks[0];
         assert_eq!(task.name, "fresh");
@@ -1854,7 +1914,9 @@ mod tests {
                 generation: starting.metadata.generation,
             })
             .await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Active)
+        );
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
     }
 
@@ -1884,7 +1946,9 @@ mod tests {
             })
             .await;
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskPaused));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Paused)
+        );
 
         orchestrator.pause(task_id).await.unwrap();
         assert!(commands.try_recv().is_err());
@@ -1900,7 +1964,9 @@ mod tests {
             })
             .await;
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskResumed));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Active)
+        );
 
         orchestrator.resume(task_id).await.unwrap();
         assert!(commands.try_recv().is_err());
@@ -1908,7 +1974,9 @@ mod tests {
         orchestrator.stop(task_id).await.unwrap();
         wait_for_abort(abort).await;
         assert!(commands.recv().await.is_none());
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStopped));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Stopped)
+        );
         orchestrator
             .on_report(ScenarioReport::Executed {
                 task_id,
@@ -1952,7 +2020,9 @@ mod tests {
         let updated = events.try_recv().unwrap();
         let starting = events.try_recv().unwrap();
         assert!(matches!(updated.data, EventData::TaskConfigurationChanged { .. }));
-        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        assert!(
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+        );
         assert_eq!(updated.metadata.task_id, task_id);
         assert_eq!(updated.metadata.revision, SpecRevision::new(2));
         assert_eq!(updated.metadata.generation, previous_generation);
@@ -2007,7 +2077,9 @@ mod tests {
                 generation: starting.metadata.generation,
             })
             .await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Active)
+        );
         assert_eq!(orchestrator.snapshot().tasks[0].metrics, metrics);
     }
 
@@ -2054,7 +2126,9 @@ mod tests {
         orchestrator.resume(task_id).await.unwrap();
         control_scenario(&mut orchestrator, task_id);
         let starting = events.try_recv().unwrap();
-        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        assert!(
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+        );
         assert_eq!(starting.metadata.revision, SpecRevision::new(2));
         assert_eq!(starting.metadata.generation, previous_generation.next());
         let snapshot = orchestrator.snapshot();
@@ -2068,7 +2142,9 @@ mod tests {
                 generation: starting.metadata.generation,
             })
             .await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Active)
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2108,11 +2184,14 @@ mod tests {
             EventData::TaskConfigurationChanged { .. }
         ));
         let starting = events.try_recv().unwrap();
-        assert!(matches!(starting.data, EventData::TaskStarting { attempt: 0 }));
+        assert!(
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+        );
         let generation = starting.metadata.generation;
         assert_eq!(generation, previous_generation.next());
         fail_scenario(&mut orchestrator, task_id).await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::BuildFailed { .. }));
+        assert!(matches!(events.try_recv().unwrap().data,
+            EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Restarting));
         assert_eq!(orchestrator.entries[&task_id].attempts, 1);
 
         assert!(orchestrator.on_command(stale_restart).await);
@@ -2131,7 +2210,9 @@ mod tests {
         assert!(orchestrator.on_command(current_restart).await);
         control_scenario(&mut orchestrator, task_id);
         let restarting = events.try_recv().unwrap();
-        assert!(matches!(restarting.data, EventData::TaskStarting { attempt: 1 }));
+        assert!(
+            matches!(restarting.data, EventData::TaskStateChanged { ref transition } if matches!(transition.cause, TaskTransitionCause::RestartDue { attempt: 1 }))
+        );
         assert_eq!(restarting.metadata.generation, generation.next());
         assert_eq!(restarting.metadata.revision, SpecRevision::new(2));
         let snapshot = orchestrator.snapshot();
@@ -2145,7 +2226,9 @@ mod tests {
                 generation: restarting.metadata.generation,
             })
             .await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStarted));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Active)
+        );
         assert_eq!(orchestrator.entries[&task_id].attempts, 0);
     }
 
@@ -2170,7 +2253,9 @@ mod tests {
             .await;
         events.try_recv().unwrap();
         orchestrator.pause(task_id).await.unwrap();
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskPaused));
+        assert!(
+            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Paused)
+        );
         orchestrator.maybe_respawn(task_id, generation).await;
         assert!(events.try_recv().is_err());
         assert!(orchestrator.entries[&task_id].scenario.is_none());
@@ -2180,14 +2265,279 @@ mod tests {
         control_scenario(&mut orchestrator, task_id);
         assert!(matches!(
             events.try_recv().unwrap().data,
-            EventData::TaskStarting { attempt: 0 }
+            EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting
         ));
         assert_eq!(orchestrator.entries[&task_id].attempts, 0);
         fail_scenario(&mut orchestrator, task_id).await;
         assert_eq!(orchestrator.entries[&task_id].attempts, 1);
         assert!(matches!(
             events.try_recv().unwrap().data,
-            EventData::BuildFailed { retry_in: Some(delay), .. } if delay == Duration::from_secs(1)
+            EventData::TaskStateChanged { ref transition }
+                if transition.current == TaskStatus::Restarting
+                    && transition.restart.unwrap().attempt == 1
         ));
+    }
+
+    fn take_transition(
+        orchestrator: &Orchestrator,
+        events: &mut broadcast::Receiver<MonitorEvent>,
+        task_id: TaskId,
+    ) -> TaskTransition {
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.metadata.task_id, task_id);
+        let EventData::TaskStateChanged { transition } = event.data else {
+            panic!("expected a state transition");
+        };
+        let snapshot = orchestrator.snapshot();
+        let view = snapshot
+            .tasks
+            .iter()
+            .find(|view| view.id == task_id)
+            .unwrap();
+        assert_eq!(view.status, transition.current);
+        assert_eq!(
+            serde_json::to_value(&transition).unwrap(),
+            serde_json::to_value(view.last_transition.as_ref().unwrap()).unwrap()
+        );
+        *transition
+    }
+
+    #[tokio::test]
+    async fn transition_readiness_records_reason_and_clears_previous_health() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let entry = orchestrator.entries.get_mut(&task_id).unwrap();
+        entry.state = TaskStatus::Starting;
+        entry.attempts = 2;
+        entry.task.record_error("previous failure".to_string());
+        orchestrator
+            .on_report(ScenarioReport::Built {
+                task_id,
+                generation: Generation::first(),
+            })
+            .await;
+        let ready = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(ready.previous, TaskStatus::Starting);
+        assert_eq!(ready.current, TaskStatus::Active);
+        assert!(matches!(ready.cause, TaskTransitionCause::ScenarioReady));
+        assert!(ready.restart.is_none());
+        assert_eq!(orchestrator.entries[&task_id].attempts, 0);
+        assert!(orchestrator.snapshot().tasks[0].health.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn transition_paused_update_retains_last_change_and_ignores_retired_reports() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        orchestrator
+            .on_report(ScenarioReport::Paused {
+                task_id,
+                generation: Generation::first(),
+            })
+            .await;
+        let paused = take_transition(&orchestrator, &mut events, task_id);
+        orchestrator
+            .update(task_id, set_config("new configuration"))
+            .await
+            .unwrap();
+        let accepted = events.try_recv().unwrap();
+        assert!(matches!(accepted.data, EventData::TaskConfigurationChanged { .. }));
+        assert_eq!(accepted.metadata.revision, SpecRevision::new(2));
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Paused);
+        assert_eq!(
+            serde_json::to_value(snapshot.tasks[0].last_transition.as_ref().unwrap()).unwrap(),
+            serde_json::to_value(paused).unwrap()
+        );
+        orchestrator
+            .on_report(ScenarioReport::Built {
+                task_id,
+                generation: Generation::first(),
+            })
+            .await;
+        assert!(events.try_recv().is_err());
+        assert!(orchestrator.entries[&task_id].scenario.is_none());
+    }
+
+    #[tokio::test]
+    async fn transition_pause_resume_wait_for_acknowledgements_and_ignore_duplicates() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let generation = Generation::first();
+        let (cmd, mut commands) = mpsc::channel(8);
+        orchestrator
+            .entries
+            .get_mut(&task_id)
+            .unwrap()
+            .scenario
+            .as_mut()
+            .unwrap()
+            .cmd = cmd;
+
+        orchestrator.pause(task_id).await.unwrap();
+        assert!(matches!(commands.try_recv().unwrap(), ScenarioCommand::Pause));
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
+        assert!(events.try_recv().is_err());
+        orchestrator
+            .on_report(ScenarioReport::Paused {
+                task_id,
+                generation,
+            })
+            .await;
+        let paused = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(paused.previous, TaskStatus::Active);
+        assert!(matches!(paused.cause, TaskTransitionCause::Command(TaskCommandKind::Pause)));
+        assert!(paused.restart.is_none());
+
+        orchestrator
+            .on_report(ScenarioReport::Paused {
+                task_id,
+                generation,
+            })
+            .await;
+        orchestrator.pause(task_id).await.unwrap();
+        assert!(commands.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        assert_eq!(
+            serde_json::to_value(
+                orchestrator.snapshot().tasks[0]
+                    .last_transition
+                    .as_ref()
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(&paused).unwrap()
+        );
+
+        orchestrator.resume(task_id).await.unwrap();
+        assert!(matches!(commands.try_recv().unwrap(), ScenarioCommand::Resume));
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
+        assert!(events.try_recv().is_err());
+        orchestrator
+            .on_report(ScenarioReport::Resumed {
+                task_id,
+                generation,
+            })
+            .await;
+        let resumed = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(resumed.previous, TaskStatus::Paused);
+        assert!(matches!(resumed.cause, TaskTransitionCause::Command(TaskCommandKind::Resume)));
+        orchestrator
+            .on_report(ScenarioReport::Resumed {
+                task_id,
+                generation,
+            })
+            .await;
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn transition_recovery_plan_and_typed_error_survive_until_pause() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let error =
+            ScenarioBuildError::Snmp(SnmpError::InvalidOid("invalid definition".to_string()));
+        let before = Utc::now();
+        orchestrator
+            .on_report(ScenarioReport::BuildFailed {
+                task_id,
+                generation: Generation::first(),
+                error: error.clone(),
+            })
+            .await;
+        let recovered = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(recovered.previous, TaskStatus::Active);
+        assert!(matches!(&recovered.cause, TaskTransitionCause::Failure(failure)
+            if matches!(failure.as_ref(), ScenarioFailure::Preparation(reported) if reported == &error)));
+        let plan = recovered.restart.unwrap();
+        assert_eq!(plan.attempt, 1);
+        assert!(plan.scheduled_at >= before + Duration::from_secs(1));
+        assert!(plan.scheduled_at <= Utc::now() + Duration::from_secs(1));
+        assert_eq!(
+            orchestrator.snapshot().tasks[0]
+                .health
+                .last_error
+                .as_deref(),
+            Some(error.to_string().as_str())
+        );
+
+        orchestrator.pause(task_id).await.unwrap();
+        let paused = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(paused.previous, TaskStatus::Restarting);
+        assert!(paused.restart.is_none());
+        orchestrator
+            .maybe_respawn(task_id, Generation::first())
+            .await;
+        assert!(events.try_recv().is_err());
+        assert!(orchestrator.entries[&task_id].scenario.is_none());
+        orchestrator.stop(task_id).await.unwrap();
+        let stopped = take_transition(&orchestrator, &mut events, task_id);
+        assert!(matches!(stopped.cause, TaskTransitionCause::Command(TaskCommandKind::Stop)));
+        orchestrator.stop(task_id).await.unwrap();
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn transition_limit_follows_result_and_preserves_accounting() {
+        let (mut orchestrator, mut events, task_id) = active_task(1);
+        execute(&mut orchestrator, task_id, execution(100, false)).await;
+        let result = events.try_recv().unwrap();
+        assert!(matches!(result.data, EventData::ExecutionFinished { .. }));
+        let completed = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(completed.previous, TaskStatus::Active);
+        assert_eq!(completed.current, TaskStatus::Completed);
+        assert!(matches!(completed.cause, TaskTransitionCause::LimitReached { limit: 1 }));
+        assert!(completed.restart.is_none());
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].metrics.executions, 1);
+        assert_eq!(snapshot.tasks[0].metrics.failed, 1);
+        assert_eq!(snapshot.next_seq, result.metadata.seq + 2);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn transition_shutdown_stops_live_tasks_without_transitioning_idle_tasks() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        orchestrator.next_id = 2;
+        let idle = orchestrator.register_task(set_config("idle"));
+        assert!(orchestrator.entries[&idle].last_transition.is_none());
+        let (reply, response) = oneshot::channel();
+        assert!(!orchestrator.on_command(Command::Shutdown { reply }).await);
+        response.await.unwrap();
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.metadata.task_id, task_id);
+        let EventData::TaskStateChanged { transition } = event.data else {
+            panic!("expected the shutdown transition");
+        };
+        assert_eq!(transition.previous, TaskStatus::Active);
+        assert_eq!(transition.current, TaskStatus::Stopped);
+        assert!(matches!(transition.cause, TaskTransitionCause::Shutdown));
+        assert!(transition.restart.is_none());
+        assert!(orchestrator.entries.is_empty());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transition_restart_deadline_is_not_shifted_by_history_backpressure() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let (record_tx, mut record_rx) = mpsc::channel(1);
+        let filler = MonitorEvent {
+            metadata: orchestrator.next_meta(task_id, Generation::first(), SpecRevision::new(1)),
+            data: EventData::TaskRemoved,
+        };
+        record_tx.send(filler).await.unwrap();
+        orchestrator.record_tx = Some(record_tx);
+
+        let mut recovery = Box::pin(orchestrator.on_report(ScenarioReport::BuildFailed {
+            task_id,
+            generation: Generation::first(),
+            error: ScenarioBuildError::Timeout,
+        }));
+        assert!(futures_util::poll!(recovery.as_mut()).is_pending());
+        let event = events.try_recv().unwrap();
+        assert!(matches!(event.data, EventData::TaskStateChanged { .. }));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        record_rx.recv().await.unwrap();
+        recovery.await;
+        tokio::task::yield_now().await;
+        assert!(matches!(orchestrator.cmd_rx.try_recv().unwrap(),
+            Command::Respawn { task_id: actual, generation } if actual == task_id && generation == Generation::first()));
+        assert_eq!(record_rx.try_recv().unwrap().metadata.seq, event.metadata.seq);
     }
 }

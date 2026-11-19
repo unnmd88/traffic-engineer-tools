@@ -167,6 +167,7 @@ fn panic_during_retry_delay_does_not_invent_an_active_attempt() {
 fn transition_retains_typed_failure_and_scheduled_restart() {
     let mut record = fixture();
     record["data"] = json!({ "TaskStateChanged": { "transition": {
+        "at": "2026-11-18T09:00:01.150Z",
         "previous": "Starting",
         "current": "Restarting",
         "cause": { "Failure": { "Preparation": { "Snmp": { "UnexpectedValueType": {

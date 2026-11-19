@@ -5,10 +5,7 @@ use tokio::time::Duration;
 
 use crate::monitor::{
     ApplicationId, OperationContext, OperationReport, TaskDescription, TaskTransition,
-    scenario::{
-        Generation, PanicStage, PreparationEvent, ScenarioBuildError, ScenarioExecution,
-        ScenarioExecutionError,
-    },
+    scenario::{Generation, PreparationEvent, ScenarioExecution, ScenarioExecutionError},
     task::{ExecutionMetrics, SpecRevision, TaskId},
 };
 use crate::polling::AttemptConfig;
@@ -25,7 +22,7 @@ pub struct EventMeta {
     pub application_id: ApplicationId,
     /// The task within that monitor instance.
     pub task_id: TaskId,
-    /// The task's latest run generation; legacy task events use zero before the first run.
+    /// The task's latest run generation; task-level events use zero before the first run.
     pub generation: Generation,
     /// The task revision at publication; operation context retains its applied revision.
     pub revision: SpecRevision,
@@ -35,7 +32,7 @@ pub struct EventMeta {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EventData {
-    /// A transition payload for the next contract; not published by the runtime yet.
+    /// An actual task state change, also retained in the task snapshot.
     #[non_exhaustive]
     TaskStateChanged {
         /// The previous and current states, typed cause, and optional restart plan.
@@ -74,15 +71,7 @@ pub enum EventData {
         /// Captured description for the accepted revision, without credentials.
         description: Box<TaskDescription>,
     },
-    #[non_exhaustive]
-    TaskStarting {
-        attempt: u32,
-    },
-    TaskStarted,
-    TaskPaused,
-    TaskResumed,
-    TaskStopped,
-    TaskCompleted,
+    /// The task was removed from the monitor.
     TaskRemoved,
 
     /// Progress and results published immediately by scenario preparation.
@@ -99,21 +88,10 @@ pub enum EventData {
     },
 
     #[non_exhaustive]
-    BuildFailed {
-        error: ScenarioBuildError,
-        retry_in: Option<Duration>,
-    },
-    #[non_exhaustive]
     ExecutionFailed {
         error: ScenarioExecutionError,
         /// The complete operation report, including attempts before the failure.
         execution: ScenarioExecution,
-        retry_in: Option<Duration>,
-    },
-    #[non_exhaustive]
-    ScenarioPanicked {
-        stage: PanicStage,
-        reason: String,
         retry_in: Option<Duration>,
     },
 }
@@ -133,7 +111,11 @@ pub struct MonitorEvent {
 mod tests {
     use super::*;
     use crate::{
-        monitor::{OutcomeStatus, PollSchedule, ScenarioOutcome, ScenarioSpec, TaskConfig},
+        monitor::{
+            OutcomeStatus, PanicStage, PollSchedule, RestartPlan, ScenarioBuildError,
+            ScenarioFailure, ScenarioOutcome, ScenarioSpec, TaskConfig, TaskStatus,
+            TaskTransitionCause,
+        },
         polling::{AttemptConfig, AttemptOutcome, AttemptReport, PollOutcome, PollReport},
         snmp::{
             SnmpError, SnmpGetSample, business_value::BusinessValue,
@@ -243,12 +225,15 @@ mod tests {
             EventData::TaskConfigurationChanged {
                 description: Box::new(description),
             },
-            EventData::TaskStarting { attempt: 2 },
-            EventData::TaskStarted,
-            EventData::TaskPaused,
-            EventData::TaskResumed,
-            EventData::TaskStopped,
-            EventData::TaskCompleted,
+            EventData::TaskStateChanged {
+                transition: Box::new(TaskTransition {
+                    at,
+                    previous: TaskStatus::Starting,
+                    current: TaskStatus::Active,
+                    cause: TaskTransitionCause::ScenarioReady,
+                    restart: None,
+                }),
+            },
             EventData::TaskRemoved,
             EventData::ExecutionFailed {
                 error: ScenarioExecutionError::Snmp(SnmpError::UnsupportedForSet {
@@ -284,9 +269,19 @@ mod tests {
             ScenarioBuildError::SnmpClientCreate,
             ScenarioBuildError::Other("resolution failed".to_string()),
         ] {
-            data.push(EventData::BuildFailed {
-                error,
-                retry_in: Some(elapsed),
+            data.push(EventData::TaskStateChanged {
+                transition: Box::new(TaskTransition {
+                    at,
+                    previous: TaskStatus::Starting,
+                    current: TaskStatus::Restarting,
+                    cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Preparation(
+                        error,
+                    ))),
+                    restart: Some(RestartPlan {
+                        attempt: 1,
+                        scheduled_at: at + elapsed,
+                    }),
+                }),
             });
         }
         for stage in [
@@ -294,10 +289,20 @@ mod tests {
             PanicStage::Execution,
             PanicStage::Runtime,
         ] {
-            data.push(EventData::ScenarioPanicked {
-                stage,
-                reason: "panic".to_string(),
-                retry_in: Some(elapsed),
+            data.push(EventData::TaskStateChanged {
+                transition: Box::new(TaskTransition {
+                    at,
+                    previous: TaskStatus::Active,
+                    current: TaskStatus::Restarting,
+                    cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Panicked {
+                        stage,
+                        reason: "panic".to_string(),
+                    })),
+                    restart: Some(RestartPlan {
+                        attempt: 1,
+                        scheduled_at: at + elapsed,
+                    }),
+                }),
             });
         }
         data

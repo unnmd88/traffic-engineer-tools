@@ -182,8 +182,11 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
             .await
             .unwrap()
             .unwrap();
-        let failed = matches!(event.data, EventData::BuildFailed { .. });
-        assert!(!matches!(event.data, EventData::TaskStarted));
+        let failed = matches!(event.data, EventData::TaskStateChanged { ref transition, .. }
+            if transition.current == TaskStatus::Restarting);
+        assert!(
+            !matches!(event.data, EventData::TaskStateChanged { ref transition, .. } if transition.current == TaskStatus::Active)
+        );
         observed.push(serde_json::to_value(event).unwrap());
         if failed {
             break;
@@ -210,6 +213,9 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
     );
 
     running.shutdown().await.unwrap();
+    while let Ok(event) = events.try_recv() {
+        observed.push(serde_json::to_value(event).unwrap());
+    }
     let mut history = Vec::new();
     while let Some(event) = recorded.recv().await {
         let json = serde_json::to_value(event).unwrap();

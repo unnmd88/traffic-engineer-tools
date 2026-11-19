@@ -6,7 +6,9 @@
 use std::time::Duration;
 
 use tools_core::{
-    monitor::{AppConfig, Application, EventData, PollSchedule, ScenarioSpec, TaskConfig},
+    monitor::{
+        AppConfig, Application, EventData, PollSchedule, ScenarioSpec, TaskConfig, TaskStatus,
+    },
     polling::AttemptConfig,
     snmp::{RawSnmpOidItem, SnmpGetSpec},
 };
@@ -43,7 +45,8 @@ async fn main() -> anyhow::Result<()> {
     // 4. Read events until the task completes.
     while let Ok(event) = sub.events.recv().await {
         println!("seq {}: {:?}", event.metadata.seq, event.data);
-        if matches!(event.data, EventData::TaskCompleted) {
+        if matches!(event.data, EventData::TaskStateChanged { ref transition, .. } if transition.current == TaskStatus::Completed)
+        {
             break;
         }
     }

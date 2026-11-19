@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::monitor::{
-    ApplicationId,
+    ApplicationId, TaskTransition,
     scenario::{PreparationView, ScenarioExecution, ScenarioSpec},
     task::{ExecutionMetrics, SpecRevision, TaskId, TaskStatus, task::Health},
 };
@@ -16,6 +16,9 @@ pub struct TaskView {
     pub updated_at: DateTime<Utc>,
     pub target: String,
     pub status: TaskStatus,
+    /// The last actual state change, absent before the first transition.
+    /// Its restart plan is present only while the task is waiting for that restart.
+    pub last_transition: Option<TaskTransition>,
     pub deep_history: u8,
     pub scenario: ScenarioSpec,
     pub limit: u64,

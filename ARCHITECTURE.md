@@ -127,7 +127,8 @@ Initial events are not yet published, so an observer can be attached in advance.
 the current Tokio runtime. The orchestrator publishes the addition of the initial tasks
 and initiates their start. Returning `RunningApplication` does not mean the network
 clients are already prepared. Each task's readiness is confirmed separately via
-`TaskStarted` and the `Active` state.
+`TaskStateChanged` to `Active` with `ScenarioReady` as its cause. The initial transition
+to `Starting` uses `InitialStart`; an explicit start command uses `Command(Start)`.
 
 `RunningApplication::handle()` returns a cloneable `ApplicationHandle`.
 Handle copies manage one monitor; ownership of the execution stays with
@@ -161,6 +162,9 @@ it does not wait for the first network result.
 `RunningApplication::shutdown(self).await` requests a stop and waits for the orchestrator,
 the scenario completions and timers, and the history-forwarding handler.
 It is not a command to put the device itself into any safe state.
+Tasks in `Starting`, `Active`, `Paused`, or `Restarting` publish a transition to `Stopped`
+with cause `Shutdown` before the registry is cleared. Idle and already-terminal tasks do
+not receive an artificial state change. Interruption reports remain a subsequent increment.
 
 Dropping the owner without `shutdown`, including when a completion future is cancelled,
 requests an emergency cancellation of the orchestrator. Its `JoinSet` cancels the inner
@@ -175,9 +179,17 @@ Through an internal `OrchestratorHandle`, the public handle passes commands and 
 for replies over separate channels.
 
 `Task` holds the `TaskConfig`, revision, timestamps, the last result, local history,
-metrics, and health. The current status, execution generation, restart counter, and the
-scenario handle live in the orchestrator's record. The consumer sees a copy of these data
-in `TaskView`.
+metrics, and health. The current `TaskStatus`, last transition, execution generation,
+restart counter, and scenario handle live in the orchestrator's record. There is no second
+internal status enum. `TaskView.status` and `TaskView.last_transition` expose the status
+and the last actual change. The transition contains its UTC change time, previous/current
+states, typed cause, and optional restart plan. Publication time remains in event metadata.
+
+All runtime status mutations pass through `TaskEntry::transition`; the orchestrator publishes
+the same transition that the entry retains for snapshots. A request or report that leaves
+the status unchanged emits no state-transition event and preserves the last transition.
+An accepted update may still start another generation while the status stays `Starting`;
+its configuration event and subsequent preparation reports remain observable.
 
 Main `ApplicationHandle` commands:
 
@@ -280,9 +292,10 @@ last observed active stage, and terminal report. A new generation replaces that 
 its preparation starts; earlier preparation events remain available to a configured history
 sink. Preparation is separate from regular results/history and consumes no execution limit.
 
-Successful preparation publishes `TaskStarted` after its final report. Failed preparation
-publishes `BuildFailed`; a caught preparation panic follows `ScenarioPanicked` with
-`PanicStage::Build`. An orderly terminal report is not guaranteed if the scenario itself is
+Successful preparation publishes `TaskStateChanged` to `Active` with cause `ScenarioReady`
+after its final report. Failed preparation transitions to `Restarting` with typed cause
+`Failure(Preparation(error))`; a caught preparation panic uses `Failure(Panicked { stage:
+Build, ... })`. An orderly terminal report is not guaranteed if the scenario itself is
 forcibly aborted during preparation; cooperative cancellation remains future work.
 
 ## Requests, attempts, and SNMP
@@ -391,8 +404,9 @@ CLI format, not a required configuration format of the library.
 with any number of internal retries consumes one unit. Success and `RetryLimitReached`
 count equally. `limit = 0` means no limit.
 
-When the limit is reached, `ExecutionFinished` is published, then `TaskCompleted`, and the
-scenario is cancelled. Preparation errors and panics do not create a `ScenarioExecution`.
+When the limit is reached, the scenario is cancelled and `ExecutionFinished` is published
+before `TaskStateChanged` to `Completed` with cause `LimitReached`. Preparation errors and
+panics do not create a `ScenarioExecution`.
 Non-retryable operation failures now create and retain a `ScenarioExecution`, but preserve
 the existing accounting: they do not increment execution metrics or consume `limit`.
 Their result replaces the last result and moves the previous one into local history.
@@ -428,6 +442,10 @@ occur, and are forwarded to the history sink just like other public events.
 `ExecutionFinished` carries the operation report through its execution. `ExecutionFailed`
 also carries the complete execution alongside the typed scenario error and restart delay,
 so a non-retryable failure does not discard preceding timeouts or adapter errors.
+A separate `TaskStateChanged` then describes its recovery. Public lifecycle notifications
+(`TaskStarting`, `TaskStarted`, pause/resume/stop/completion events) and separate build/panic
+notifications have been replaced by transitions with typed causes. Internal scenario reports
+remain independent of this public event contract.
 `TaskRegistered` and `TaskConfigurationChanged` carry a captured `TaskDescription` for
 the accepted revision. It includes the task name, limit, history depth, and a typed
 `ScenarioDescription` with target, profile, configured OID definitions, encoded SET values,
@@ -436,10 +454,9 @@ description types. Descriptions are observation records, not executable configur
 input aliases are normalized, final OID instances are resolved later, and parser callbacks
 are not serialized. Capturing an accepted revision does not mean its replacement run is ready.
 
-The public-contract migration also adds payload types alongside those
-existing runtime publications:
+The public contract includes the following transition and operation payloads:
 
-- `TaskStateChanged` carries a `TaskTransition`: previous/current `TaskStatus`, a typed
+- `TaskStateChanged` carries a `TaskTransition`: UTC state-change time, previous/current `TaskStatus`, a typed
   `TaskTransitionCause`, and an optional `RestartPlan`. `ScenarioFailure` retains typed
   preparation/execution errors or a caught panic. `TaskStatus` now supports Serde.
 - `OperationStarted` carries `OperationContext`, a human-readable purpose, UTC start time,
@@ -454,12 +471,10 @@ existing runtime publications:
 - `OperationReport::status()` distinguishes normal success/degradation/failure from
   cancellation and panic, independently of restart policy and limit accounting.
 
-The state-transition and operation variants above can be serialized and consumed, but the
-runtime does not publish them yet. Registration and configuration-change producers already
-emit `TaskRegistered` and `TaskConfigurationChanged`; other producers retain their existing
-lifecycle/execution events, including `Preparation`. Centralized transitions,
-operation-id allocation, snapshot retention, and
-orderly interruption reporting are subsequent increments described in
+The runtime publishes `TaskStateChanged`, registration/configuration events, `Preparation`,
+and the existing `ExecutionFinished` / `ExecutionFailed` reports. It does not yet publish
+`OperationStarted` or `OperationFinished`. Operation-id allocation, result-context retention,
+and orderly interruption reporting are subsequent increments described in
 [PUBLIC_API_REVIEW.md](PUBLIC_API_REVIEW.md). Declaring interrupted report types does not
 provide a runtime start/finish delivery guarantee. Report and transition payloads are
 passive data; deserialization does not validate timing, attempt ordering, or legal transitions.
@@ -574,6 +589,13 @@ An unsuccessful operation result `RetryLimitReached` does not require recreating
 A preparation error, a fatal execution error, or a caught panic leads to `Restarting` and
 scheduling a new start. `PanicStage` distinguishes preparation, request execution, and the
 rest of the scenario logic.
+
+Entering `Restarting` captures `RestartPlan { attempt, scheduled_at }` in both the transition
+and snapshot. The timer uses the monotonic deadline chosen together with that UTC time;
+event-history backpressure does not restart the delay after publication. On a valid timer
+command, `Restarting` transitions to `Starting` with `RestartDue { attempt }`. Pause, stop,
+configuration replacement, and readiness transitions clear the waiting plan. Inactive
+generation/state checks still prevent stale timers and reports from restarting a task.
 
 The current `RestartPolicy::default()` increases the delay from 1 to 60 seconds.
 On a successful preparation, the restart-attempt counter is reset.

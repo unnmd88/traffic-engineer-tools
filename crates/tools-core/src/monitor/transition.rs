@@ -58,7 +58,11 @@ pub enum TaskTransitionCause {
     /// A scenario failure caused recovery or termination.
     Failure(Box<ScenarioFailure>),
     /// A scheduled restart became due.
-    RestartDue,
+    #[non_exhaustive]
+    RestartDue {
+        /// The restart-attempt number from the consumed plan.
+        attempt: u32,
+    },
     /// The monitor was shut down.
     Shutdown,
 }
@@ -75,11 +79,13 @@ pub struct RestartPlan {
 
 /// A task state change and the context needed to explain it to an observer.
 ///
-/// Publication and retention in snapshots are introduced when the orchestrator migrates
-/// to centralized transitions. These passive fields do not validate legal state transitions.
+/// The same transition is published as an event and retained in the task snapshot.
+/// These passive fields do not validate legal state transitions on deserialization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TaskTransition {
+    /// UTC time at which the state was changed, before event publication.
+    pub at: DateTime<Utc>,
     /// State immediately before the transition.
     pub previous: TaskStatus,
     /// State immediately after the transition.

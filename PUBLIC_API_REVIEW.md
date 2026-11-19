@@ -1,159 +1,185 @@
-# Monitor public events: proposal and implementation plan
+# Monitor public events: implementation plan
 
-This document proposes the next public event contract and a sequence of implementation
-increments. It describes planned behavior, not the current implementation.
-[ARCHITECTURE.md](ARCHITECTURE.md) remains the reference for implemented behavior and must
-be updated with each code change that changes the contract.
+This document tracks the agreed event-contract refactor, completed increments, and remaining
+work. [ARCHITECTURE.md](ARCHITECTURE.md) is the reference for implemented behavior.
+Update both documents when a subsequent increment changes the contract.
 
 ## Scope and terminology
 
 The monitor executes scenarios over network equipment and exposes task state and evidence
-of completed operations. A scenario owns its behavior, scheduling, branching, and decisions
-about continuing or stopping.
+of operations. A scenario owns scheduling, branching, and decisions about continuing or
+stopping. An operation is one invocation of an algorithm with its complete retry policy.
+One attempt may contain concurrent SNMP and HTTP requests, parsing, conditional branches,
+and subsequent actions. Retrying the operation invokes that algorithm again.
 
-An operation is one invocation of an algorithm with its complete retry policy. One attempt
-may contain concurrent SNMP and HTTP requests, parsing, conditional branches, and subsequent
-actions. Retrying the operation invokes that algorithm again. A single protocol request is
-only one possible operation implementation.
+Keep scenarios as ordinary Rust code and preserve `Pollable` and `poll` as the generic
+execution boundary. Universal steps, a declarative workflow engine, and an external
+scenario-plugin API are deferred until concrete scenarios demonstrate the need.
 
-Keep scenarios as ordinary Rust code and keep `Pollable` and `poll` as the existing generic
-execution boundary. A universal steps model, declarative workflow engine, and external
-scenario-plugin API are outside this change. Composite-operation implementations and their
-additional evidence types should be introduced when a concrete scenario requires them.
-
-## Proposed public contract
-
-| Event | Meaning and payload |
-|---|---|
-| `TaskRegistered` | A task was registered; includes its description at this revision |
-| `TaskConfigurationChanged` | A new configuration revision was accepted; includes its description |
-| `TaskRemoved` | A task was removed |
-| `TaskStateChanged` | Previous state, next state, typed cause, and state-specific details |
-| `OperationStarted` | An operation began; includes its identity, purpose, start time, and attempt settings |
-| `OperationFinished` | An operation terminated; includes its identity and report |
-| `Preparation` | Existing preparation progress and evidence, retained during this refactor |
-
-`Preparation` is retained to preserve live SCN discovery, OID resolution, and preparation
-reports. It does not establish a general steps abstraction.
-
-Operation outcomes and scenario recovery are independent facts. A failed operation emits
-`OperationFinished`. If the scenario must restart, a separate `TaskStateChanged` describes
-the transition and restart plan. A failure need not cause a state transition.
-
-The operation report distinguishes success, failure, cancellation, and a caught panic.
-Normal reports retain effective attempt settings, completed attempts, original typed errors,
-results, and UTC and monotonic timing. Interrupted reports explicitly identify incomplete
-execution and must not invent a normal response or a completed attempt.
-
-Protocol and scenario-specific result types belong inside reports, not in additional
-protocol-specific variants of the top-level event enum. Static enums are sufficient for
-the implemented scenarios; this proposal does not require `dyn` or untyped JSON payloads.
-
-### Identity and snapshots
-
-- `application_id` identifies a monitor instance; retain the existing public name.
-- `task_id` identifies a task within that instance.
-- `revision` identifies the accepted configuration version.
-- The existing `Generation` identifies a scenario run, including automatic restarts.
-- A new `OperationId` identifies an operation within a run. Its full identity includes the
-  monitor, task, and generation; it is not derived from metrics, which can reset.
-- `seq` orders public events within one monitor.
-- The envelope timestamp is publication time. Reports carry action timestamps.
-
-Execution events and retained results must carry the configuration revision actually used
-by their run. An accepted configuration change may precede its application to a new run.
-Run and operation context should appear only where it has meaning, rather than inventing
-an active run for a task that has not started.
-
-Snapshots expose current state, its cause and restart details, operation context, results,
-and accumulated metrics. Preserve the atomic snapshot-plus-subscription boundary and
-recovery from receiver lag. A replacement snapshot restores current state, not lost history.
-
-## Implementation sequence
-
-Implement each increment with focused tests and the corresponding architecture update.
-Intermediate states must document any guarantees that are not implemented yet.
+## Workflow and progress
 
 Start each subsequent increment only on the user's explicit command. After an increment,
 report the changes and validation results and wait for approval before committing.
 Approval to commit an increment does not authorize starting the next one.
 
-Increment 1 now provides operation identity/context, transition causes and restart plans,
-normal/interrupted report types, and the `TaskStateChanged`, `OperationStarted`, and
-`OperationFinished` payloads. Existing runtime publishers remain in place until their
-migration increments.
+| Increment | Status |
+|---|---|
+| 1. Define event payloads and operation identity | Completed |
+| 2. Publish task descriptions | Completed |
+| 3. Centralize task state transitions | Completed |
+| 4. Publish operation start/completion and retain operation context | Not started; next increment |
+| 5. Preserve reports during cancellation and caught panics | Not started; cancellation policy requires agreement |
+| 6. Apply agreed metrics and limit accounting | Not started; accounting policy requires agreement |
+| 7. Complete consumer migration and final verification | Pending; consumers and documentation are updated with each increment |
 
-Increment 2 provides serializable `TaskDescription` and `ScenarioDescription` records and
-publishes them through `TaskRegistered` and `TaskConfigurationChanged`. The previous
-`TaskAdded` and `TaskSpecUpdated` variants are removed. Both dynamic registration and
-initial-task publication use the same description-capturing path. Descriptions retain
-configured OID definitions and encoded values; transport credentials and parser callbacks
-are excluded. Each event keeps its own accepted revision through later updates and removal.
+UDP tests remain deferred at the user's request. Run explicitly selected socket-free tests
+and compilation/lint checks instead of the full test suite.
 
-Serialized `MonitorEvent` records contain `metadata` and `data`, without a format-version
-field. The user explicitly excluded history versioning and legacy compatibility from
-this refactor. Intermediate payloads may change as the migration proceeds.
+## Current and target event contract
 
-UDP tests are deferred at the user's request. During these increments, run explicitly
-selected socket-free tests and compilation/lint checks instead of the full test suite.
+| Event | Payload and current publication status |
+|---|---|
+| `TaskRegistered` | Published; description of the accepted initial revision |
+| `TaskConfigurationChanged` | Published; description of the accepted replacement revision |
+| `TaskRemoved` | Published; task removal |
+| `TaskStateChanged` | Published; UTC change time, previous/current state, typed cause, and optional restart plan |
+| `Preparation` | Published; existing preparation progress and evidence |
+| `ExecutionFinished` / `ExecutionFailed` | Published temporarily; replaced in increment 4 |
+| `OperationStarted` | Type defined; runtime publication pending in increment 4 |
+| `OperationFinished` | Type defined; normal reports published in increment 4, interrupted reports in increment 5 |
 
-### 1. Define public event types and migrate existing publishers
+Operation outcomes and scenario recovery are separate facts. Currently, a non-retryable
+execution failure publishes its complete `ExecutionFailed` report before a recovery
+`TaskStateChanged`. The target is `OperationFinished` for every terminal operation outcome,
+with a separate transition only when task state actually changes.
 
-Sources: [event types](crates/tools-core/src/monitor/event.rs),
-[public exports](crates/tools-core/src/monitor/mod.rs), and
-[scenario results](crates/tools-core/src/monitor/scenario/execution.rs).
+`OperationReport::Completed` reuses the typed `ScenarioOutcome` and its `PollReport`.
+Cancellation and panic payload types retain available timing, settings, completed attempts,
+and a separately marked interrupted attempt. Defining these types does not guarantee their
+runtime delivery. Cooperative interruption reporting is still pending.
 
-Introduce the event payloads, typed transition causes, operation identity, and terminal
-outcomes. Preserve structured preparation evidence and existing typed SNMP reports.
-Document the serialized representation before replacing the current event variants.
-Introduce payload types alongside existing publishers as needed
-so this increment remains buildable; migrate publishers and remove obsolete variants as
-the following increments land.
+Protocol and scenario-specific data belong inside reports, not in additional top-level
+protocol-specific event variants. Static enums are sufficient for the implemented scenarios.
+No `dyn` or untyped JSON payloads are required.
 
-Keep the current metrics and limit semantics until the accounting decision below is agreed.
-Do not promise cancellation reports before increment 5 implements their delivery.
+Serialized `MonitorEvent` records contain `metadata` and `data`. History versioning,
+backward compatibility, and automatic migration are excluded from this refactor by the
+user's decision. Intermediate payloads may change as the remaining increments land.
 
-Completion evidence: serialization examples and round-trip tests for the new payloads,
-including typed failures, binary values, and interrupted outcomes. Document the treatment
-of old JSONL records; do not claim automatic compatibility or migration.
+### Identity and observation
 
-### 2. Add task descriptions for registration and configuration changes
+- `application_id` identifies a monitor instance; retain its existing public name.
+- `task_id` identifies a task within that instance.
+- `revision` identifies the accepted configuration version.
+- `Generation` distinguishes scenario runs, including automatic restarts.
+- `OperationId` and `OperationContext` types exist. Runtime allocation and retention with
+  results/history remain pending in increment 4. Operation numbers must be independent of
+  resettable metrics and scoped to a task's generation.
+- `seq` orders public events within one monitor.
+- Event metadata carries publication time. `TaskTransition.at` carries actual state-change
+  time; operation reports carry action timing.
 
-Sources: [task configuration](crates/tools-core/src/monitor/task/config.rs),
-[scenario specifications](crates/tools-core/src/monitor/scenario/spec.rs), and
-[SNMP request specifications](crates/tools-core/src/snmp/request.rs).
+Preserve the atomic snapshot-plus-subscription boundary and recovery from receiver lag.
+`TaskView.last_transition` already exposes the same state-change record as the event.
+Applied configuration context for retained operation results is still pending; accepted
+configuration and the revision that produced an older result must remain distinguishable.
+A replacement snapshot restores current state, not lost operation history.
 
-Introduce serializable `TaskDescription` and scenario-specific descriptions derived from
-validated configuration. Include the task name, scenario kind, target, relevant request
-parameters, schedule, attempt settings, limit, and history depth. Exclude credentials.
+## Implementation sequence
 
-Capture the description when a revision is registered or accepted. Publish it in
-`TaskRegistered` and `TaskConfigurationChanged` so reading an exported session does not
-require querying a live monitor or guessing which configuration a revision referenced.
+### 1. Define public event types and operation identity — completed
 
-Completion evidence: descriptions correspond to their event revisions, survive task removal,
-and exclude credentials. Rapid consecutive updates remain independently interpretable.
+Sources: [events](crates/tools-core/src/monitor/event.rs),
+[operations](crates/tools-core/src/monitor/operation.rs),
+[transitions](crates/tools-core/src/monitor/transition.rs), and
+[public exports](crates/tools-core/src/monitor/mod.rs).
 
-### 3. Centralize task state transitions
+Implemented operation identity/context, typed transition causes and restart plans, terminal
+operation statuses, and normal/cancelled/panicked report payloads. Structured preparation
+and typed SNMP operation reports are preserved. Public payloads were introduced before
+the corresponding runtime producers, allowing subsequent increments to remain buildable.
+
+Validated serialization with a fixed JSON fixture, typed errors, binary values, original
+run/revision context, and explicit interrupted evidence. Event records use ordinary Serde
+serialization without a format-version field.
+
+### 2. Add task descriptions for registration and configuration changes — completed
+
+Sources: [task descriptions](crates/tools-core/src/monitor/task/description.rs),
+[scenario descriptions](crates/tools-core/src/monitor/scenario/description.rs), and
+[registration/update handlers](crates/tools-core/src/monitor/runtime/orchestrator.rs).
+
+Implemented serializable `TaskDescription` and `ScenarioDescription` records derived from
+validated configuration. They include name, scenario kind, target, profile, configured OID
+definitions, encoded SET values, schedule, attempt settings, limit, and history depth.
+Read/write communities and parser callbacks are excluded. Input aliases are normalized;
+final OID instances are resolved later during preparation. Descriptions are observation
+records, not executable configurations.
+
+The runtime publishes `TaskRegistered` and `TaskConfigurationChanged` with descriptions
+captured for their event revisions. `TaskAdded` and `TaskSpecUpdated` are removed. Initial
+and dynamic registration share the same capture/publication path.
+
+Validated consecutive updates followed by removal, revision correspondence, history-stream
+contents, IPv6 targets, encoded binary SET values, and credential exclusion.
+
+### 3. Centralize task state transitions — completed
 
 Sources: [orchestrator](crates/tools-core/src/monitor/runtime/orchestrator.rs),
-[task state](crates/tools-core/src/monitor/task/task.rs), and
+[transition payloads](crates/tools-core/src/monitor/transition.rs), and
 [snapshots](crates/tools-core/src/monitor/task/view.rs).
 
-Introduce a single internal transition path that changes state, records its cause and
-state-specific details, and prepares the corresponding public event. Cover explicit
-commands, scenario readiness, pause/resume acknowledgements, completion, preparation
-failure, execution failure, panic, and restart.
+`TaskEntry::transition` is the common mutation path. It records UTC change time,
+previous/current `TaskStatus`, typed cause, and restart plan, then retains that transition.
+`Orchestrator::transition` publishes the same record as `TaskStateChanged`. The private
+`TaskState` duplicate is removed; command/report handlers still decide whether a transition
+is appropriate.
 
-Store the current transition context in snapshots, including the scheduled restart time.
-Use typed causes rather than requiring consumers to parse error strings. Treat command
-acceptance and actual state change as distinct moments. A no-op command need not emit a
-state transition.
+Implemented transitions for initial and explicit starts, readiness, acknowledged pause and
+resume, stop, configuration replacement, limit completion, typed preparation/execution
+failures, caught panics, and scheduled restarts. `TaskView.last_transition` retains the
+published context. Duplicate/no-op transitions are silent and preserve the previous record.
 
-Completion evidence: published transitions match snapshots, include their reasons, and
-preserve the established acknowledgement semantics.
+Restart plans expose an attempt number and UTC scheduled time. The timer uses the monotonic
+deadline chosen with that plan, so waiting for event-history forwarding does not restart
+the delay. Pause/stop/replacement clear a waiting plan. Stale timer/report checks remain.
+Shutdown transitions live tasks to `Stopped` with cause `Shutdown` before clearing the
+registry; idle and already-terminal tasks do not receive artificial transitions.
 
-### 4. Add operation start/completion reporting to GET and SET
+Public lifecycle/build/panic notifications are removed. `Preparation` and regular
+`ExecutionFinished` / `ExecutionFailed` reports remain. Operation metrics, `limit` rules,
+restart backoff policy, and command acknowledgement semantics are preserved.
+
+Validation: 25 selected socket-free tests passed, including seven focused transition tests.
+They cover snapshot/event correspondence, readiness, acknowledgement timing, duplicates,
+paused updates, stale reports, typed failures/panics, completion ordering, shutdown, and
+restart deadlines under history backpressure. `mise run check`, `mise run clippy`, test
+compilation, example compilation, and formatting checks passed. Existing workspace warnings
+remain. UDP tests were compiled but not executed.
+
+### Current configuration-replacement behavior
+
+`update_task` replaces the complete `TaskConfig`, increments `revision`, updates configuration
+timestamps, resets the scenario-restart counter, and publishes `TaskConfigurationChanged`.
+This happens even for an identical configuration or a name-only change.
+
+| Current state | Effect of an accepted update |
+|---|---|
+| `Active`, `Restarting` | Abort the old scenario if present, create a new generation, transition to `Starting` with cause `ConfigurationChanged` |
+| `Starting` | Abort the old scenario, create a new generation, retain `Starting`; no duplicate state-transition event |
+| `Paused` | Abort the old scenario if present; remain paused and apply the scenario on `resume` |
+| `Idle`, `Stopped`, `Completed` | Store the new configuration without starting execution |
+
+Metrics, last result, and local history are retained. Late reports from a retired scenario
+are ignored. Successful `update_task().await` confirms processing of the update, not network
+readiness; readiness is reported separately. Configuration changes while already `Starting`
+remain visible through the configuration event and subsequent preparation reports.
+
+Current interruption uses `abort` and can lose an in-flight operation report; increment 5
+addresses this. Updating `deep_history` changes the accepted setting without resizing an
+existing history ring. That separate behavior is not fixed by this event refactor.
+
+### 4. Add operation start/completion reporting to GET and SET — next, not started
 
 Sources: [internal scenario reports](crates/tools-core/src/monitor/scenario/runtime.rs),
 [GET](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs),
@@ -161,57 +187,56 @@ Sources: [internal scenario reports](crates/tools-core/src/monitor/scenario/runt
 [operation reports](crates/tools-core/src/polling/report.rs).
 
 Allocate an `OperationId` before executing the entire retry loop. Send internal start and
-finish reports with immutable run and configuration context. The orchestrator assigns
-public event sequence numbers; scenarios do not publish directly to subscribers.
+finish reports with immutable run and applied-configuration context. The orchestrator
+continues assigning public sequence numbers; scenarios do not publish directly.
 
-Use `OperationFinished` for successful requests, exhausted attempts, and non-retryable
-failures. Handle scenario continuation or restart separately. Keep `PollReport<T, E>` as
-the normal operation evidence where possible, and avoid duplicating independently mutable
-timing fields in monitor wrappers.
+Publish `OperationStarted` and `OperationFinished` for successful requests, exhausted
+attempts, and non-retryable failures. Remove `ExecutionFinished` / `ExecutionFailed` after
+migrating producers and consumers. Keep recovery transitions separate. Reuse `PollReport`
+where possible and avoid independently mutable duplicate timing fields.
 
 Retain operation identity, generation, and applied revision with the last result and local
-history, so a configuration update cannot relabel an older result.
+history so later configuration changes cannot relabel old results. Keep current accounting
+until increment 6 is explicitly agreed. Do not promise cancellation/panic terminal delivery
+before increment 5.
 
-Completion evidence: one operation covers all retries; normal start/finish events correlate;
-non-retryable failures preserve their reports; retained results keep their original context.
+Completion evidence: one operation covers all retries; start/finish events correlate;
+non-retryable failures retain their reports; results/history keep their original context.
 
-### 5. Complete operations during orderly cancellation and caught panics
+### 5. Complete operations during orderly cancellation and caught panics — not started
 
 Sources: [polling](crates/tools-core/src/polling/poll.rs),
 [scenario runtime](crates/tools-core/src/monitor/scenario/runtime.rs), and
 [orchestrator](crates/tools-core/src/monitor/runtime/orchestrator.rs).
 
+Before implementation, agree on cancellation acknowledgement and the forced-abort fallback.
 Keep active-operation bookkeeping and completed-attempt evidence outside the future that
-may be cancelled or panic. Reuse or extend the existing internal attempt observer rather
-than introducing a steps engine. Extend the reporting path to return or assemble an
-explicit interrupted outcome.
+may be cancelled or panic. Reuse or extend the existing internal attempt observer.
 
-For stop, configuration replacement, removal, and orderly shutdown, coordinate cancellation
-and await completion. Preserve completed attempts and mark any in-progress attempt as
-interrupted. On caught panic, preserve the available evidence and panic context.
-Cancellation does not establish whether a device executed an already-sent command.
+Coordinate cancellation and await completion during stop, configuration replacement,
+removal, and orderly shutdown. Preserve completed attempts and explicitly mark an
+interrupted attempt. Caught panics must retain available evidence and panic context.
+Local cancellation does not establish whether a device executed an already-sent command.
 
-Give retiring runs an explicit terminal-report path. Their operations may be finalized
-exactly once with their original identities, without changing the state or results of a
-replacement run. Emit terminal operation events before the final stop/removal event;
-allow accepted configuration changes to precede completion of old operations.
+Give retiring runs an explicit terminal-report path: finalize their operations exactly once
+with original identities, without mutating replacement-run state or results. Publish terminal
+operation events before final stop/removal events; accepted configuration changes may precede
+completion of old operations. Clear interrupted preparation progress as well.
 
-Specify the fallback for forced abort separately. The matching start/finish guarantee
-applies to orderly execution and handled failures, not process crashes or emergency aborts.
-Clear interrupted preparation progress as part of orderly lifecycle handling as well.
+The matching start/finish guarantee applies to orderly execution and handled failures,
+not process crashes or emergency aborts.
 
-Completion evidence: cancellation during an attempt and retry delay, panic, stop, update,
-remove, and shutdown. Started operations receive one terminal event under the orderly
-contract; late or duplicate reports cannot mutate a replacement run.
+Completion evidence: cancellation during an attempt or retry delay, panic, stop, update,
+remove, and shutdown. Late/duplicate reports cannot mutate a replacement run.
 
-### 6. Apply the agreed accounting rules
+### 6. Apply agreed accounting rules — not started; decision required
 
 Sources: [task accounting](crates/tools-core/src/monitor/task/task.rs),
 [metrics](crates/tools-core/src/monitor/task/metrics.rs), and
 [limit enforcement](crates/tools-core/src/monitor/runtime/orchestrator.rs).
 
-Current behavior excludes non-retryable operation failures from execution metrics and
-`limit`, despite retaining their reports. Changing event names must not silently change it.
+Current accounting excludes non-retryable operation failures from execution metrics and
+`limit`, despite retaining their reports. Event migration must not silently change it.
 
 Proposed policy, pending agreement:
 
@@ -221,45 +246,33 @@ Proposed policy, pending agreement:
 - Track cancellation and panic separately from normally completed operations.
 - For repeating GET/SET, let `limit` count normally completed operations, including failures.
 
-Define health updates and counter resets consistently with the chosen policy. Other
-scenarios may need their own completion conditions; do not force every scenario into a
-periodic request counter.
+Define health updates and counter resets consistently. Other scenarios may need their own
+completion conditions rather than a periodic-request counter.
 
-Completion evidence: tests document success, exhausted attempts, non-retryable failure,
-cancellation, panic, explicit restart, and automatic restart. Limit-triggered termination
-publishes the operation result before task completion.
+Completion evidence: explicit rules and tests for success, exhausted attempts, non-retryable
+failure, cancellation, panic, explicit restart, and automatic restart. Limit completion
+follows publication of the final operation result.
 
-### 7. Finish consumer migration and document the contract
+### 7. Finish consumer migration and final verification — pending
 
-Update the CLI dashboard, JSONL writer expectations, public API tests, examples, and
-[ARCHITECTURE.md](ARCHITECTURE.md). Snapshots remain the primary source for dashboard state;
-operation events provide execution evidence for history and other consumers.
+CLI, examples, public API tests, and architecture are updated with each increment. Final
+verification must remove obsolete contract references and check the complete migration.
+Snapshots remain the dashboard's state source; operation events provide execution evidence.
 
-Verify example history records. Add focused tests for event order,
-revision capture, snapshot consistency, old-run completion, and interruption reporting.
-Keep tests meaningful; do not duplicate event constructors as implementation-mirroring tests.
+Verify history examples, event order, revision capture, snapshot consistency, old-run
+completion, and interruption reporting. Keep tests meaningful and obey the current UDP-test
+restriction unless the user changes it.
 
-Before completing each code increment, run the relevant tests, `mise run check`, and
-`mise run clippy`. Record existing warnings or environmental blockers explicitly. Do not
-modify the frozen `net-monitor` crate as part of this work.
-
-## Decisions to settle before their implementation increments
-
-- Accounting: whether to accept the proposed treatment of non-retryable failures,
-  cancellation, and panic in metrics and `limit`.
-- Orderly cancellation: acknowledgement semantics and the forced-abort fallback.
-
-These decisions do not prevent defining payloads, descriptions, and transition causes.
-Resolve them before dependent behavior changes rather than guessing during implementation.
+For each code increment, run relevant allowed tests, `mise run check`, and `mise run clippy`.
+Report existing warnings and environmental blockers. The frozen `net-monitor` crate is
+outside this work.
 
 ## Deferred work
 
-Do not include universal steps, a workflow engine, new composite scenarios, prepared-action
-API extraction, coordination, action expiry, or configurable recovery/history-delivery
-policies in this refactor. Existing subscription and history-delivery behavior remains in
-force unless separately agreed.
+Universal steps, new composite scenarios, prepared-action API extraction, coordination,
+action expiry, and configurable recovery/history-delivery policies are outside this refactor.
+Existing history-delivery/backpressure policy remains unless separately agreed.
 
 When a concrete composite operation is added, design its typed partial evidence then.
-The current `Pollable` return value alone cannot retain intermediate successful data after
-an outer timeout drops the attempt future. Preserving that data requires an explicit
-reporting path, not merely a new top-level event name.
+The `Pollable` return value alone cannot retain intermediate successful data after an outer
+timeout drops the attempt future. That requires an explicit reporting path.
