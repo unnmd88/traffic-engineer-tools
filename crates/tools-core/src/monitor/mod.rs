@@ -27,7 +27,7 @@ pub use scenario::{
 };
 pub use task::{
     ExecutionMetrics, Health, HistoryEntryView, MonitorSnapshot, SpecRevision, TaskConfig,
-    TaskDescription, TaskError, TaskId, TaskStatus, TaskView,
+    TaskDescription, TaskError, TaskId, TaskProgress, TaskStatus, TaskView,
 };
 pub use transition::{
     RestartPlan, ScenarioFailure, TaskCommandKind, TaskTransition, TaskTransitionCause,

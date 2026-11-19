@@ -9,7 +9,7 @@ use tokio::{
 use tracing::Instrument;
 
 use crate::monitor::{
-    OperationReport, RestartPlan, ScenarioFailure, TaskCommandKind, TaskTransition,
+    OperationReport, RestartPlan, ScenarioFailure, TaskCommandKind, TaskProgress, TaskTransition,
     TaskTransitionCause,
     event::{EventData, EventMeta, MonitorEvent},
     runtime::{
@@ -17,8 +17,8 @@ use crate::monitor::{
         restart_policy::RestartPolicy,
     },
     scenario::{
-        Generation, PanicStage, ScenarioCommand, ScenarioContext, ScenarioReport, ScenarioSpec,
-        run_scenario,
+        Generation, PanicStage, PreparationEvent, ScenarioCommand, ScenarioContext, ScenarioReport,
+        ScenarioSpec, run_scenario,
     },
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskDescription, TaskId,
@@ -29,6 +29,7 @@ use crate::monitor::{
 struct TaskEntry {
     task: Task,
     state: TaskStatus,
+    progress: Option<TaskProgress>,
     last_transition: Option<TaskTransition>,
     attempts: u32,
     next_generation: Generation,
@@ -54,6 +55,9 @@ impl TaskEntry {
             restart,
         };
         self.state = current;
+        if current != TaskStatus::Preparing {
+            self.progress = None;
+        }
         self.last_transition = Some(transition.clone());
         Some(transition)
     }
@@ -183,6 +187,7 @@ impl Orchestrator {
             TaskEntry {
                 task: Task::new(id, spec),
                 state: TaskStatus::Idle,
+                progress: None,
                 last_transition: None,
                 attempts: 0,
                 next_generation: Generation::first(),
@@ -321,7 +326,7 @@ impl Orchestrator {
                     .filter_map(|(&id, entry)| {
                         matches!(
                             entry.state,
-                            TaskStatus::Starting
+                            TaskStatus::Preparing
                                 | TaskStatus::Active
                                 | TaskStatus::Paused
                                 | TaskStatus::Restarting
@@ -375,7 +380,8 @@ impl Orchestrator {
             entry.attempts = 0;
         }
         self.spawn_scenario(id);
-        self.transition(id, TaskStatus::Starting, cause, None).await;
+        self.transition(id, TaskStatus::Preparing, cause, None)
+            .await;
         Ok(())
     }
 
@@ -386,7 +392,7 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
-                TaskStatus::Starting | TaskStatus::Active => {
+                TaskStatus::Preparing | TaskStatus::Active => {
                     (entry.scenario.is_some(), entry.scenario.is_none())
                 }
                 TaskStatus::Restarting => (false, true),
@@ -444,7 +450,7 @@ impl Orchestrator {
             self.spawn_scenario(id);
             self.transition(
                 id,
-                TaskStatus::Starting,
+                TaskStatus::Preparing,
                 TaskTransitionCause::Command(TaskCommandKind::Resume),
                 None,
             )
@@ -496,7 +502,7 @@ impl Orchestrator {
             (
                 matches!(
                     entry.state,
-                    TaskStatus::Starting | TaskStatus::Active | TaskStatus::Restarting
+                    TaskStatus::Preparing | TaskStatus::Active | TaskStatus::Restarting
                 ),
                 Box::new(TaskDescription::from(entry.task.config())),
             )
@@ -516,7 +522,7 @@ impl Orchestrator {
             self.spawn_scenario(id);
             self.transition(
                 id,
-                TaskStatus::Starting,
+                TaskStatus::Preparing,
                 TaskTransitionCause::ConfigurationChanged,
                 None,
             )
@@ -566,6 +572,15 @@ impl Orchestrator {
         }
 
         match rep {
+            ScenarioReport::Progress { progress, .. } => {
+                let entry = self.entries.get_mut(&task_id).expect("validated task");
+                if entry.state != TaskStatus::Preparing {
+                    return;
+                }
+                entry.progress = Some(progress.clone());
+                self.emit(task_id, EventData::TaskProgress { progress })
+                    .await;
+            }
             ScenarioReport::OperationStarted {
                 context,
                 purpose,
@@ -585,11 +600,11 @@ impl Orchestrator {
                 .await;
             }
             ScenarioReport::Preparation { event, .. } => {
-                self.entries
-                    .get_mut(&task_id)
-                    .expect("validated task")
-                    .task
-                    .record_preparation(generation, &event);
+                let entry = self.entries.get_mut(&task_id).expect("validated task");
+                entry.task.record_preparation(generation, &event);
+                if matches!(event.as_ref(), PreparationEvent::Finished { .. }) {
+                    entry.progress = None;
+                }
                 self.emit(task_id, EventData::Preparation { event }).await;
             }
             ScenarioReport::Built { .. } => {
@@ -776,6 +791,7 @@ impl Orchestrator {
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
         entry.generation = generation;
+        entry.progress = None;
         let scenario = entry.task.config().scenario().clone();
         let revision = entry.task.revision();
         let scenario_kind = match &scenario {
@@ -842,7 +858,7 @@ impl Orchestrator {
             self.spawn_scenario(task_id);
             self.transition(
                 task_id,
-                TaskStatus::Starting,
+                TaskStatus::Preparing,
                 TaskTransitionCause::RestartDue { attempt },
                 None,
             )
@@ -945,7 +961,7 @@ impl Orchestrator {
                 status = ?report.status(),
                 "operation finished"
             ),
-            EventData::Preparation { .. } => {}
+            EventData::Preparation { .. } | EventData::TaskProgress { .. } => {}
             EventData::TaskRemoved => tracing::info!(
                 application_id = %metadata.application_id,
                 task_id = metadata.task_id.0,
@@ -996,6 +1012,7 @@ impl Orchestrator {
             updated_at: *t.updated_at(),
             target: config.scenario().target(),
             status: entry.state,
+            progress: entry.progress.clone(),
             last_transition: entry.last_transition.clone(),
             deep_history: config.deep_history(),
             scenario: config.scenario().clone(),
@@ -1222,6 +1239,7 @@ mod tests {
             TaskEntry {
                 task,
                 state: TaskStatus::Active,
+                progress: None,
                 last_transition: None,
                 attempts: 0,
                 next_generation: Generation::first().next(),
@@ -1887,6 +1905,182 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_progress_preserves_lifecycle_and_source_time_and_clears_on_readiness() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        orchestrator
+            .transition(task_id, TaskStatus::Preparing, TaskTransitionCause::InitialStart, None)
+            .await;
+        let transition = take_transition(&orchestrator, &mut events, task_id);
+        let at = Utc::now();
+        for (index, message) in ["Loading scenario data", "Reading SCN", "Reading SCN"]
+            .into_iter()
+            .enumerate()
+        {
+            let progress = TaskProgress {
+                at: at + chrono::Duration::seconds(i64::try_from(index).unwrap()),
+                message: message.to_string(),
+            };
+            orchestrator
+                .on_report(ScenarioReport::Progress {
+                    task_id,
+                    generation: Generation::first(),
+                    progress: progress.clone(),
+                })
+                .await;
+            let snapshot = orchestrator.snapshot();
+            let task = &snapshot.tasks[0];
+            assert_eq!(task.status, TaskStatus::Preparing);
+            assert_eq!(task.progress.as_ref(), Some(&progress));
+            assert_eq!(task.metrics.executions, 0);
+            assert_eq!(
+                serde_json::to_value(task.last_transition.as_ref().unwrap()).unwrap(),
+                serde_json::to_value(&transition).unwrap()
+            );
+            let event = events.try_recv().unwrap();
+            assert_eq!(event.metadata.seq, u64::try_from(index + 1).unwrap());
+            assert_eq!(event.metadata.generation, Generation::first());
+            assert_eq!(event.metadata.revision, SpecRevision::new(1));
+            assert!(
+                matches!(event.data, EventData::TaskProgress { progress: reported } if reported == progress)
+            );
+            assert!(events.try_recv().is_err());
+        }
+        orchestrator
+            .on_report(ScenarioReport::Preparation {
+                task_id,
+                generation: Generation::first(),
+                event: Box::new(PreparationEvent::Finished {
+                    report: Box::new(crate::monitor::PreparationReport {
+                        started_at: at,
+                        finished_at: at + chrono::Duration::seconds(3),
+                        elapsed: Duration::from_secs(3),
+                        stages: vec![],
+                        outcome: Ok(()),
+                    }),
+                }),
+            })
+            .await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::Preparation { .. }));
+        assert!(orchestrator.snapshot().tasks[0].progress.is_none());
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Preparing);
+        orchestrator
+            .on_report(ScenarioReport::Built {
+                task_id,
+                generation: Generation::first(),
+            })
+            .await;
+        let ready = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(ready.current, TaskStatus::Active);
+        assert!(orchestrator.snapshot().tasks[0].progress.is_none());
+        orchestrator
+            .on_report(ScenarioReport::Progress {
+                task_id,
+                generation: Generation::first(),
+                progress: TaskProgress {
+                    at,
+                    message: "Late preparation message".to_string(),
+                },
+            })
+            .await;
+        assert!(orchestrator.snapshot().tasks[0].progress.is_none());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn configuration_replacement_clears_progress_even_while_preparing() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        orchestrator.entries.get_mut(&task_id).unwrap().state = TaskStatus::Preparing;
+        let retired = Generation::first();
+        let progress = TaskProgress {
+            at: Utc::now(),
+            message: "Old configuration".to_string(),
+        };
+        orchestrator
+            .on_report(ScenarioReport::Progress {
+                task_id,
+                generation: retired,
+                progress: progress.clone(),
+            })
+            .await;
+        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskProgress { .. }));
+        orchestrator
+            .update(task_id, set_config("replacement"))
+            .await
+            .unwrap();
+        let task = orchestrator.snapshot().tasks.remove(0);
+        assert_eq!(task.status, TaskStatus::Preparing);
+        assert!(task.progress.is_none());
+        assert!(matches!(
+            events.try_recv().unwrap().data,
+            EventData::TaskConfigurationChanged { .. }
+        ));
+        orchestrator
+            .on_report(ScenarioReport::Progress {
+                task_id,
+                generation: retired,
+                progress,
+            })
+            .await;
+        assert!(orchestrator.snapshot().tasks[0].progress.is_none());
+        assert!(events.try_recv().is_err());
+        let progress = TaskProgress {
+            at: Utc::now(),
+            message: "New configuration".to_string(),
+        };
+        orchestrator
+            .on_report(ScenarioReport::Progress {
+                task_id,
+                generation: retired.next(),
+                progress: progress.clone(),
+            })
+            .await;
+        assert_eq!(orchestrator.snapshot().tasks[0].progress.as_ref(), Some(&progress));
+        assert_eq!(events.try_recv().unwrap().metadata.revision, SpecRevision::new(2));
+    }
+
+    #[tokio::test]
+    async fn preparation_failure_and_stop_clear_current_progress() {
+        for fail in [false, true] {
+            let (mut orchestrator, mut events, task_id) = active_task(0);
+            orchestrator.entries.get_mut(&task_id).unwrap().state = TaskStatus::Preparing;
+            let progress = TaskProgress {
+                at: Utc::now(),
+                message: "Reading SCN".to_string(),
+            };
+            orchestrator
+                .on_report(ScenarioReport::Progress {
+                    task_id,
+                    generation: Generation::first(),
+                    progress,
+                })
+                .await;
+            events.try_recv().unwrap();
+            if fail {
+                orchestrator
+                    .on_report(ScenarioReport::BuildFailed {
+                        task_id,
+                        generation: Generation::first(),
+                        error: ScenarioBuildError::Timeout,
+                    })
+                    .await;
+            } else {
+                orchestrator.stop(task_id).await.unwrap();
+            }
+            let task = orchestrator.snapshot().tasks.remove(0);
+            assert!(task.progress.is_none());
+            assert_eq!(
+                task.status,
+                if fail {
+                    TaskStatus::Restarting
+                } else {
+                    TaskStatus::Stopped
+                }
+            );
+            assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { .. }));
+        }
+    }
+
+    #[tokio::test]
     async fn preparation_progress_is_published_in_order_and_retained_in_snapshots() {
         use crate::monitor::{
             PreparationEvent, PreparationReport, PreparationStage, PreparationStageData,
@@ -2082,14 +2276,14 @@ mod tests {
         ));
         let starting = events.try_recv().unwrap();
         assert!(
-            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Preparing)
         );
         let snapshot = orchestrator.snapshot();
         let task = &snapshot.tasks[0];
         assert_eq!(task.name, "fresh");
         assert_eq!(task.limit, 0);
         assert_eq!(task.target, "127.0.0.2:1161");
-        assert_eq!(task.status, TaskStatus::Starting);
+        assert_eq!(task.status, TaskStatus::Preparing);
         assert_eq!(task.metrics, ExecutionMetrics::default());
         assert!(
             matches!(&task.scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
@@ -2207,7 +2401,7 @@ mod tests {
         let starting = events.try_recv().unwrap();
         assert!(matches!(updated.data, EventData::TaskConfigurationChanged { .. }));
         assert!(
-            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Preparing)
         );
         assert_eq!(updated.metadata.task_id, task_id);
         assert_eq!(updated.metadata.revision, SpecRevision::new(2));
@@ -2242,7 +2436,7 @@ mod tests {
         }
         assert!(events.try_recv().is_err());
         let snapshot = orchestrator.snapshot();
-        assert_eq!(snapshot.tasks[0].status, TaskStatus::Starting);
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Preparing);
         assert_eq!(snapshot.tasks[0].name, "updated");
         assert_eq!(snapshot.tasks[0].metrics, metrics);
         assert_eq!(
@@ -2313,7 +2507,7 @@ mod tests {
         control_scenario(&mut orchestrator, task_id);
         let starting = events.try_recv().unwrap();
         assert!(
-            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Preparing)
         );
         assert_eq!(starting.metadata.revision, SpecRevision::new(2));
         assert_eq!(starting.metadata.generation, previous_generation.next());
@@ -2371,7 +2565,7 @@ mod tests {
         ));
         let starting = events.try_recv().unwrap();
         assert!(
-            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting)
+            matches!(starting.data, EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Preparing)
         );
         let generation = starting.metadata.generation;
         assert_eq!(generation, previous_generation.next());
@@ -2451,7 +2645,7 @@ mod tests {
         control_scenario(&mut orchestrator, task_id);
         assert!(matches!(
             events.try_recv().unwrap().data,
-            EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Starting
+            EventData::TaskStateChanged { ref transition } if transition.current == TaskStatus::Preparing
         ));
         assert_eq!(orchestrator.entries[&task_id].attempts, 0);
         fail_scenario(&mut orchestrator, task_id).await;
@@ -2492,8 +2686,12 @@ mod tests {
     async fn transition_readiness_records_reason_and_clears_previous_health() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let entry = orchestrator.entries.get_mut(&task_id).unwrap();
-        entry.state = TaskStatus::Starting;
+        entry.state = TaskStatus::Preparing;
         entry.attempts = 2;
+        entry.progress = Some(TaskProgress {
+            at: Utc::now(),
+            message: "Finishing preparation".to_string(),
+        });
         entry.task.record_error("previous failure".to_string());
         orchestrator
             .on_report(ScenarioReport::Built {
@@ -2502,12 +2700,13 @@ mod tests {
             })
             .await;
         let ready = take_transition(&orchestrator, &mut events, task_id);
-        assert_eq!(ready.previous, TaskStatus::Starting);
+        assert_eq!(ready.previous, TaskStatus::Preparing);
         assert_eq!(ready.current, TaskStatus::Active);
         assert!(matches!(ready.cause, TaskTransitionCause::ScenarioReady));
         assert!(ready.restart.is_none());
         assert_eq!(orchestrator.entries[&task_id].attempts, 0);
         assert!(orchestrator.snapshot().tasks[0].health.last_error.is_none());
+        assert!(orchestrator.snapshot().tasks[0].progress.is_none());
     }
 
     #[tokio::test]

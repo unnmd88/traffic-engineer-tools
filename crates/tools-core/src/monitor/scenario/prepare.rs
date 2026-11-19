@@ -11,7 +11,7 @@ use tracing::Instrument;
 
 use crate::{
     Scn,
-    monitor::task::TaskId,
+    monitor::{TaskProgress, task::TaskId},
     polling::{
         AttemptConfig, AttemptError, AttemptOutcome, PollOutcome, PollProgress, PollReport,
         Pollable, poll_observed,
@@ -43,6 +43,26 @@ struct Preparation {
 }
 
 impl Preparation {
+    async fn progress(&self, message: &str) {
+        let progress = TaskProgress {
+            at: Utc::now(),
+            message: message.to_string(),
+        };
+        tracing::info!(
+            task_id = %self.task_id, generation = ?self.generation,
+            at = %progress.at, message = %progress.message,
+            "scenario preparation progress"
+        );
+        let _ = self
+            .reports
+            .send(ScenarioReport::Progress {
+                task_id: self.task_id,
+                generation: self.generation,
+                progress,
+            })
+            .await;
+    }
+
     async fn start(
         task_id: TaskId,
         generation: Generation,
@@ -129,6 +149,17 @@ impl Preparation {
             started_after,
         })
         .await;
+        let message = match stage {
+            PreparationStage::CreateTransport {
+                role: TransportRole::Read,
+            } => "Creating SNMP read client",
+            PreparationStage::CreateTransport {
+                role: TransportRole::Write,
+            } => "Creating SNMP write client",
+            PreparationStage::FetchScn => "Reading SCN",
+            PreparationStage::ResolveOids => "Resolving OIDs",
+        };
+        self.progress(message).await;
         let executed = AssertUnwindSafe(
             timeout_at(self.deadline, execute)
                 .instrument(tracing::info_span!("preparation_stage", task_id = %self.task_id, generation = ?self.generation, ?stage)),
@@ -455,6 +486,10 @@ mod tests {
         ));
         assert!(futures_util::poll!(stage.as_mut()).is_pending());
         assert!(matches!(event(rx.try_recv().unwrap()), PreparationEvent::StageStarted { .. }));
+        let ScenarioReport::Progress { progress, .. } = rx.try_recv().unwrap() else {
+            panic!("expected progress before the pending action completes");
+        };
+        assert_eq!(progress.message, "Creating SNMP read client");
         let logs = std::fs::read_to_string(&path).unwrap();
         assert!(logs.contains("preparation stage started"));
         assert!(!logs.contains("preparation stage finished"));
@@ -509,7 +544,9 @@ mod tests {
         preparation.finish(result).await;
         let mut summary = None;
         while let Ok(report) = rx.try_recv() {
-            if let PreparationEvent::Finished { report } = event(report) {
+            if let ScenarioReport::Preparation { event, .. } = report
+                && let PreparationEvent::Finished { report } = *event
+            {
                 summary = Some(report);
             }
         }
@@ -557,7 +594,9 @@ mod tests {
             preparation.finish(result).await;
             let mut events = Vec::new();
             while let Ok(report) = rx.try_recv() {
-                events.push(event(report));
+                if let ScenarioReport::Preparation { event, .. } = report {
+                    events.push(*event);
+                }
             }
             assert_eq!(events.len(), 4);
             assert!(

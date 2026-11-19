@@ -10,7 +10,7 @@ use tokio::{
 
 use super::*;
 use crate::{
-    monitor::task::TaskId,
+    monitor::{TaskProgress, task::TaskId},
     polling::{AttemptConfig, AttemptOutcome, PollOutcome, PollReport},
     snmp::{
         RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec, business_value::BusinessValue,
@@ -23,6 +23,7 @@ struct Session {
     commands: mpsc::Sender<ScenarioCommand>,
     reports: mpsc::Receiver<ScenarioReport>,
     preparation: Vec<PreparationEvent>,
+    progress: Vec<TaskProgress>,
     operations: Vec<(crate::monitor::OperationContext, chrono::DateTime<chrono::Utc>)>,
 }
 
@@ -30,6 +31,15 @@ impl Session {
     async fn next_report(&mut self) -> Option<ScenarioReport> {
         loop {
             match self.reports.recv().await? {
+                ScenarioReport::Progress {
+                    task_id,
+                    generation,
+                    progress,
+                } => {
+                    assert_eq!(task_id, TaskId(7));
+                    assert_eq!(generation, Generation::first().next());
+                    self.progress.push(progress);
+                }
                 ScenarioReport::Preparation {
                     event,
                     task_id,
@@ -74,10 +84,11 @@ impl Session {
 
     fn drain_preparation(&mut self) {
         while let Ok(report) = self.reports.try_recv() {
-            let ScenarioReport::Preparation { event, .. } = report else {
-                panic!("scenario became ready before SCN was provided");
-            };
-            self.preparation.push(*event);
+            match report {
+                ScenarioReport::Preparation { event, .. } => self.preparation.push(*event),
+                ScenarioReport::Progress { progress, .. } => self.progress.push(progress),
+                _ => panic!("scenario became ready before SCN was provided"),
+            }
         }
     }
 }
@@ -180,6 +191,7 @@ fn spawn(scenario: ScenarioSpec) -> Session {
         commands,
         reports,
         preparation: Vec::new(),
+        progress: Vec::new(),
         operations: Vec::new(),
     }
 }
@@ -373,6 +385,7 @@ async fn resolves_scn_before_reporting_built() {
     let mut session = spawn(get_scenario(request(&peer, Some("potok_ug405"), "stage"), 0));
     let (message, source) = receive(&peer).await;
     session.drain_preparation();
+    assert_eq!(session.progress.last().unwrap().message, "Reading SCN");
     assert!(matches!(
         session.preparation.last(),
         Some(PreparationEvent::StageStarted {
@@ -389,6 +402,14 @@ async fn resolves_scn_before_reporting_built() {
         panic!("expected the final preparation report before readiness");
     };
     assert!(report.outcome.is_ok());
+    assert_eq!(
+        session
+            .progress
+            .iter()
+            .map(|progress| progress.message.as_str())
+            .collect::<Vec<_>>(),
+        ["Creating SNMP read client", "Reading SCN", "Resolving OIDs"]
+    );
     assert_eq!(report.stages.len(), 3);
     let scn = &report.stages[1];
     assert!(
@@ -569,6 +590,9 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         assert!(matches!(session.next_report().await, Some(ScenarioReport::Built { .. })));
 
         let built_at = Instant::now();
+        assert_eq!(session.progress.first().unwrap().message, "Creating SNMP write client");
+        assert_eq!(session.progress.last().unwrap().message, "Resolving OIDs");
+        assert_eq!(session.progress.len(), 3 + usize::from(community_r.is_some()));
         let (message, source) = receive(&peer).await;
         assert_eq!(built_at.elapsed(), Duration::from_secs(10));
         assert_eq!(message.community.as_ref(), b"private");

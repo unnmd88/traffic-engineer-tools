@@ -5,7 +5,7 @@ use futures_util::FutureExt;
 use tokio::{sync::mpsc, time::Duration};
 
 use crate::{
-    monitor::{OperationContext, OperationId, SpecRevision, task::TaskId},
+    monitor::{OperationContext, OperationId, SpecRevision, TaskProgress, task::TaskId},
     polling::{AttemptConfig, AttemptError, PollProgress, PollReport, Pollable, poll_observed},
     snmp::{SnmpClient, SnmpClientConfig, SnmpError, community::Community},
 };
@@ -58,6 +58,11 @@ pub(in crate::monitor) enum ScenarioCommand {
 
 #[derive(Debug)]
 pub(in crate::monitor) enum ScenarioReport {
+    Progress {
+        task_id: TaskId,
+        generation: Generation,
+        progress: TaskProgress,
+    },
     OperationStarted {
         task_id: TaskId,
         context: OperationContext,
@@ -121,7 +126,12 @@ impl ScenarioReport {
             Self::OperationStarted {
                 task_id, context, ..
             } => (*task_id, context.generation),
-            Self::Preparation {
+            Self::Progress {
+                task_id,
+                generation,
+                ..
+            }
+            | Self::Preparation {
                 task_id,
                 generation,
                 ..

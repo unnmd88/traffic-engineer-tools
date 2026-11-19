@@ -60,6 +60,7 @@ The individual request and SNMP mechanisms are also available through
 | `ApplicationHandle` | Cloneable access to commands, snapshots, and subscriptions | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `Orchestrator` | Internal owner of task state, their lifecycle, and event ordering | [runtime/orchestrator.rs](crates/tools-core/src/monitor/runtime/orchestrator.rs) |
 | `Task` | Internal configuration, revision, results, metrics, and health of a task | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
+| `TaskProgress` | Scenario-authored preparation activity text and its source timestamp | [task/view.rs](crates/tools-core/src/monitor/task/view.rs) |
 | `PreparationEvent`, `PreparationReport`, `PreparationView` | Live preparation stages, complete preparation evidence, and snapshot progress | [preparation.rs](crates/tools-core/src/monitor/scenario/preparation.rs) |
 | `ScenarioSpec` | Public description of the selected scenario | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
 | GET/SET execution | Request preparation, schedule, commands, and reports of a concrete scenario | [impls/repeat_snmp_get.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), [impls/repeat_snmp_set.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs) |
@@ -128,7 +129,7 @@ the current Tokio runtime. The orchestrator publishes the addition of the initia
 and initiates their start. Returning `RunningApplication` does not mean the network
 clients are already prepared. Each task's readiness is confirmed separately via
 `TaskStateChanged` to `Active` with `ScenarioReady` as its cause. The initial transition
-to `Starting` uses `InitialStart`; an explicit start command uses `Command(Start)`.
+to `Preparing` uses `InitialStart`; an explicit start command uses `Command(Start)`.
 
 `RunningApplication::handle()` returns a cloneable `ApplicationHandle`.
 Handle copies manage one monitor; ownership of the execution stays with
@@ -162,7 +163,7 @@ it does not wait for the first network result.
 `RunningApplication::shutdown(self).await` requests a stop and waits for the orchestrator,
 the scenario completions and timers, and the history-forwarding handler.
 It is not a command to put the device itself into any safe state.
-Tasks in `Starting`, `Active`, `Paused`, or `Restarting` publish a transition to `Stopped`
+Tasks in `Preparing`, `Active`, `Paused`, or `Restarting` publish a transition to `Stopped`
 with cause `Shutdown` before the registry is cleared. Idle and already-terminal tasks do
 not receive an artificial state change. Interruption reports remain a subsequent increment.
 
@@ -179,16 +180,22 @@ Through an internal `OrchestratorHandle`, the public handle passes commands and 
 for replies over separate channels.
 
 `Task` holds the `TaskConfig`, revision, timestamps, the last result, local history,
-metrics, and health. The current `TaskStatus`, last transition, execution generation,
-restart counter, and scenario handle live in the orchestrator's record. There is no second
+metrics, and health. The current `TaskStatus`, latest text progress, last transition,
+execution generation, restart counter, and scenario handle live in the orchestrator's record. There is no second
 internal status enum. `TaskView.status` and `TaskView.last_transition` expose the status
 and the last actual change. The transition contains its UTC change time, previous/current
 states, typed cause, and optional restart plan. Publication time remains in event metadata.
 
+`TaskStatus` has seven states: `Idle`, `Preparing`, `Active`, `Paused`, `Stopped`,
+`Completed`, and `Restarting`. `Preparing` replaces the former `Starting` name, including
+its serialized representation. Preparation activities are not additional lifecycle states.
+`Active` includes waiting for the next scheduled operation; a failed request does not by
+itself imply that the task has stopped or requires a restart.
+
 All runtime status mutations pass through `TaskEntry::transition`; the orchestrator publishes
 the same transition that the entry retains for snapshots. A request or report that leaves
 the status unchanged emits no state-transition event and preserves the last transition.
-An accepted update may still start another generation while the status stays `Starting`;
+An accepted update may still start another generation while the status stays `Preparing`;
 its configuration event and subsequent preparation reports remain observable.
 
 Main `ApplicationHandle` commands:
@@ -250,6 +257,28 @@ Code layout in [scenario](crates/tools-core/src/monitor/scenario/mod.rs):
 ## Preparation stages and immediate logging
 
 Each GET/SET scenario generation prepares its resources before regular execution.
+For consumers displaying current activity, a scenario explicitly sends a text message
+through the internal `ScenarioReport::Progress`. The orchestrator retains it as
+`TaskView.progress: Option<TaskProgress>` and publishes `EventData::TaskProgress` with the
+same source UTC timestamp and message. A progress message does not change `TaskStatus`,
+`last_transition`, execution metrics, or limit accounting. Every accepted message produces
+an event, even if its text repeats; polling a snapshot or a timer does not emit progress.
+
+The message is authored by the scenario, not interpreted by the orchestrator. It is for
+human display and must not be parsed as a stable stage identifier. SNMP preparation reports
+"Creating SNMP read client" or "Creating SNMP write client", "Reading SCN" when discovery
+is required, and "Resolving OIDs" before their corresponding actions execute. Other
+scenarios can supply their own messages without extending a common stage enum.
+Both CLI views display this text as `Activity`.
+
+Only reports from the live generation of a task in `Preparing` can update text progress.
+A new scenario generation clears the preceding message, including configuration replacement
+while the status remains `Preparing`. Finishing preparation or leaving `Preparing` clears
+the current message, including failure, stop, and shutdown. Earlier messages remain in
+the event stream and configured history output. The latest message is in snapshots so a
+new subscriber can display the current activity without reconstructing preceding events.
+
+Detailed preparation reports are retained separately for diagnostics and post-analysis.
 Preparation emits `PreparationEvent::Started`, then starts and finishes individual stages,
 then emits `Finished` with a complete `PreparationReport`. The orchestrator forwards these
 through `EventData::Preparation`, retaining the normal application/task/generation/revision
@@ -286,6 +315,8 @@ when they complete, including timeouts and typed errors. Preparation boundaries 
 successful actions use INFO; failed stages and attempts use WARN. The orchestrator does
 not duplicate these preparation log records. Physical log persistence still follows the
 consumer's configured tracing writer; emitting a tracing record is not a disk acknowledgement.
+Text progress is likewise logged at its source before report-channel delivery; the
+orchestrator does not log a duplicate message when publishing `TaskProgress`.
 
 `TaskView.preparation` retains the latest run's generation, configuration revision, stages,
 last observed active stage, and terminal report. A new generation replaces that view when
@@ -440,6 +471,9 @@ not change the task in the monitor.
 
 `MonitorEvent` holds `EventMeta` metadata and `EventData` data.
 Events report lifecycle changes, results, errors, and panics.
+`TaskProgress` carries a scenario's human-readable preparation message and its source
+timestamp, independently of lifecycle transitions. It is forwarded to the same history
+sink as all other public events; detailed preparation and error reports remain structured.
 `Preparation` events carry stage boundaries and the terminal preparation report as they
 occur, and are forwarded to the history sink just like other public events.
 `OperationStarted` announces one complete GET/SET algorithm before its first attempt.
@@ -607,7 +641,7 @@ rest of the scenario logic.
 Entering `Restarting` captures `RestartPlan { attempt, scheduled_at }` in both the transition
 and snapshot. The timer uses the monotonic deadline chosen together with that UTC time;
 event-history backpressure does not restart the delay after publication. On a valid timer
-command, `Restarting` transitions to `Starting` with `RestartDue { attempt }`. Pause, stop,
+command, `Restarting` transitions to `Preparing` with `RestartDue { attempt }`. Pause, stop,
 configuration replacement, and readiness transitions clear the waiting plan. Inactive
 generation/state checks still prevent stale timers and reports from restarting a task.
 

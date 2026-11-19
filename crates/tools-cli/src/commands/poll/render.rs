@@ -69,6 +69,9 @@ fn format_results(view: &TaskView) -> String {
         Some(err) => out.push_str(&format!("Status: {} ({err})\n", view.status)),
         None => out.push_str(&format!("Status: {}\n", view.status)),
     }
+    if let Some(progress) = &view.progress {
+        out.push_str(&format!("Activity: {}\n", progress.message));
+    }
     out.push_str(&format!(
         "Executions: {} (success: {} degraded: {} failed: {})  |  Duration: {}\n",
         view.metrics.executions,
@@ -94,9 +97,6 @@ fn format_results(view: &TaskView) -> String {
                 stage.stage,
                 stage.elapsed.as_millis()
             ));
-        }
-        if let Some(stage) = preparation.active_stage {
-            out.push_str(&format!("  {stage:?}: in progress\n"));
         }
     }
     out.push_str(&format_response(view));

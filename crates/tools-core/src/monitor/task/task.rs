@@ -10,14 +10,22 @@ use crate::monitor::{
     task::{ExecutionMetrics, TaskConfig},
 };
 
+/// The task lifecycle, independent of operation results and scenario progress messages.
 #[derive(Clone, Debug, Copy, Display, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
+    /// Registered without an active scenario.
     Idle,
-    Starting,
+    /// Preparing a scenario before its regular operations can start.
+    Preparing,
+    /// Executing a scenario, including waits for its next scheduled operation.
     Active,
+    /// Execution is paused.
     Paused,
+    /// Execution was stopped.
     Stopped,
+    /// The execution limit or a scenario completion condition was reached.
     Completed,
+    /// Waiting to prepare a new scenario after a failure.
     Restarting,
 }
 

@@ -53,6 +53,7 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
         assert_eq!(task_id, application.task_ids()[index]);
         assert_eq!(revision, SpecRevision::new(1));
         assert_eq!(view.status, TaskStatus::Idle);
+        assert!(view.progress.is_none());
         assert_eq!(view.created_at, view.config_updated_at);
         assert_eq!(view.created_at, view.updated_at);
         assert_eq!(metrics.executions, 0);
@@ -104,9 +105,7 @@ async fn handle_updates_configuration_and_publishes_public_events() {
 async fn preparation_is_observable_before_scn_returns_and_survives_in_history() {
     use async_snmp::{Value, message::CommunityMessage};
     use tools_core::{
-        monitor::{
-            PreparationEvent, PreparationStage, PreparationStageOutcome, ScenarioBuildError,
-        },
+        monitor::{PreparationStage, PreparationStageOutcome, ScenarioBuildError},
         polling::PollOutcome,
         snmp::{RawSnmpOidItem, SnmpError, SnmpValue},
     };
@@ -151,15 +150,21 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
             .await
             .unwrap()
             .unwrap();
-        let fetching = matches!(&event.data, EventData::Preparation { event, .. }
-            if matches!(event.as_ref(), PreparationEvent::StageStarted { stage: PreparationStage::FetchScn, .. }));
+        let fetching = matches!(&event.data, EventData::TaskProgress { progress, .. }
+            if progress.message == "Reading SCN");
         observed.push(serde_json::to_value(event).unwrap());
         if fetching {
             break;
         }
     }
     let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
-    assert_eq!(view.status, TaskStatus::Starting);
+    assert_eq!(view.status, TaskStatus::Preparing);
+    let progress = view.progress.as_ref().unwrap();
+    assert_eq!(progress.message, "Reading SCN");
+    assert_eq!(
+        observed.last().unwrap()["data"]["TaskProgress"]["progress"],
+        serde_json::to_value(progress).unwrap()
+    );
     assert_eq!(
         view.preparation.as_ref().unwrap().active_stage,
         Some(PreparationStage::FetchScn)
@@ -194,6 +199,7 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
     }
     let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
     assert_eq!(view.status, TaskStatus::Restarting);
+    assert!(view.progress.is_none());
     assert_eq!(view.metrics.executions, 0);
     let preparation = view.preparation.unwrap();
     assert_eq!(preparation.revision, view.revision);

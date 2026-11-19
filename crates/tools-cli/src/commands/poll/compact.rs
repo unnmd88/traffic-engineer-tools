@@ -65,23 +65,20 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
     );
     let profile = profile.map_or_else(|| "none".to_string(), |profile| profile.to_string());
     push_line(out, &format!("State: {} | Profile: {profile}", task.status), width);
+    if let Some(progress) = &task.progress {
+        push_line(out, &format!("Activity: {}", progress.message), width);
+    }
     if let Some(error) = &task.health.last_error {
         push_line(out, &format!("Error: {error}"), width);
     }
-    if let Some(preparation) = &task.preparation {
-        if let Some(stage) = preparation.active_stage {
-            push_line(out, &format!("Preparing: {stage:?}"), width);
-        } else if let Some(report) = &preparation.report {
-            let result = match &report.outcome {
-                Ok(()) => "ready".to_string(),
-                Err(error) => error.to_string(),
-            };
-            push_line(
-                out,
-                &format!("Preparation: {result} | {}ms", report.elapsed.as_millis()),
-                width,
-            );
-        }
+    if let Some(preparation) = &task.preparation
+        && let Some(report) = &preparation.report
+    {
+        let result = match &report.outcome {
+            Ok(()) => "ready".to_string(),
+            Err(error) => error.to_string(),
+        };
+        push_line(out, &format!("Preparation: {result} | {}ms", report.elapsed.as_millis()), width);
     }
     let runs = match task.limit {
         0 => task.metrics.executions.to_string(),

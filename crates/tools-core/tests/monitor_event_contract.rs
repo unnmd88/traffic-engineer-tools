@@ -195,7 +195,7 @@ fn transition_retains_typed_failure_and_scheduled_restart() {
     let mut record = fixture();
     record["data"] = json!({ "TaskStateChanged": { "transition": {
         "at": "2026-11-18T09:00:01.150Z",
-        "previous": "Starting",
+        "previous": "Preparing",
         "current": "Restarting",
         "cause": { "Failure": { "Preparation": { "Snmp": { "UnexpectedValueType": {
             "expected": "OctetString", "actual": "Integer"
@@ -206,7 +206,7 @@ fn transition_retains_typed_failure_and_scheduled_restart() {
     let EventData::TaskStateChanged { transition, .. } = event.data else {
         panic!("expected a state transition");
     };
-    assert_eq!(transition.previous, TaskStatus::Starting);
+    assert_eq!(transition.previous, TaskStatus::Preparing);
     assert_eq!(transition.current, TaskStatus::Restarting);
     assert!(matches!(
         transition.cause,

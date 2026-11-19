@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
 use crate::monitor::{
-    ApplicationId, OperationContext, OperationReport, TaskDescription, TaskTransition,
+    ApplicationId, OperationContext, OperationReport, TaskDescription, TaskProgress,
+    TaskTransition,
     scenario::{Generation, PreparationEvent},
     task::{SpecRevision, TaskId},
 };
@@ -36,6 +37,12 @@ pub enum EventData {
     TaskStateChanged {
         /// The previous and current states, typed cause, and optional restart plan.
         transition: Box<TaskTransition>,
+    },
+    /// An explicit preparation message from a scenario; the task status does not change.
+    #[non_exhaustive]
+    TaskProgress {
+        /// The activity and its source timestamp, also retained in the task snapshot.
+        progress: TaskProgress,
     },
     /// The start of an entire algorithm with its retry policy.
     #[non_exhaustive]
@@ -213,6 +220,12 @@ mod tests {
         .unwrap();
         let description = TaskDescription::from(&config);
         let mut data = vec![
+            EventData::TaskProgress {
+                progress: TaskProgress {
+                    at,
+                    message: "Reading SCN\nwaiting for \"response\"".to_string(),
+                },
+            },
             EventData::TaskRegistered {
                 description: Box::new(description.clone()),
             },
@@ -222,7 +235,7 @@ mod tests {
             EventData::TaskStateChanged {
                 transition: Box::new(TaskTransition {
                     at,
-                    previous: TaskStatus::Starting,
+                    previous: TaskStatus::Preparing,
                     current: TaskStatus::Active,
                     cause: TaskTransitionCause::ScenarioReady,
                     restart: None,
@@ -269,7 +282,7 @@ mod tests {
             data.push(EventData::TaskStateChanged {
                 transition: Box::new(TaskTransition {
                     at,
-                    previous: TaskStatus::Starting,
+                    previous: TaskStatus::Preparing,
                     current: TaskStatus::Restarting,
                     cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Preparation(
                         error,
