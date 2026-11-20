@@ -6,7 +6,7 @@ use super::TaskConfig;
 
 /// A task configuration captured for observation, excluding network credentials.
 ///
-/// Event metadata supplies the task identity and accepted configuration revision.
+/// Event metadata or the enclosing snapshot supplies the task identity and revision.
 /// Later configuration changes do not mutate an already-captured description.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]

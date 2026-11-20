@@ -1,6 +1,6 @@
 use chrono::{DateTime, Local};
 use tools_core::{
-    monitor::{OperationStatus, ScenarioOutcome, ScenarioSpec, TaskStatus, TaskView},
+    monitor::{OperationStatus, ScenarioDescription, ScenarioOutcome, TaskSnapshot, TaskStatus},
     polling::{AttemptOutcome, PollDetails, PollOutcome},
     snmp::{
         BusinessValue, GroupStateDefinition, GroupStatePotokUg405, SnmpGetSample, SnmpValueType,
@@ -11,7 +11,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const GROUP_CELL_WIDTH: usize = 18;
 
 pub fn format_snapshot(
-    tasks: &[TaskView],
+    tasks: &[TaskSnapshot],
     started_at: DateTime<Local>,
     now: DateTime<Local>,
     width: usize,
@@ -53,14 +53,20 @@ pub fn format_snapshot(
     out
 }
 
-fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: usize) {
-    let (scenario, profile) = match &task.scenario {
-        ScenarioSpec::SnmpGet(spec) => ("SNMP GET", spec.request().profile()),
-        ScenarioSpec::SnmpSet(spec) => ("SNMP SET", spec.request().profile()),
+fn format_task(out: &mut String, task: &TaskSnapshot, now: DateTime<Local>, width: usize) {
+    let description = &task.configuration.description;
+    let (scenario, target, profile) = match &description.scenario {
+        ScenarioDescription::SnmpGet {
+            target, profile, ..
+        } => ("SNMP GET", target.to_string(), *profile),
+        ScenarioDescription::SnmpSet {
+            target, profile, ..
+        } => ("SNMP SET", target.to_string(), *profile),
+        _ => ("Scenario", "-".to_string(), None),
     };
     push_line(
         out,
-        &format!("[{}] {} | {} | {scenario}", task.id, task.name, task.target),
+        &format!("[{}] {} | {target} | {scenario}", task.id, description.name),
         width,
     );
     let profile = profile.map_or_else(|| "none".to_string(), |profile| profile.to_string());
@@ -71,7 +77,7 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
     if let Some(error) = &task.health.last_error {
         push_line(out, &format!("Error: {error}"), width);
     }
-    let runs = match task.limit {
+    let runs = match description.limit {
         0 => task.metrics.executions.to_string(),
         limit => format!("{}/{limit}", task.metrics.executions),
     };

@@ -1,7 +1,9 @@
 use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
-    monitor::{PollSchedule, ScenarioExecution, ScenarioOutcome, ScenarioSpec, TaskView},
+    monitor::{
+        PollSchedule, ScenarioDescription, ScenarioExecution, ScenarioOutcome, TaskSnapshot,
+    },
     polling::{AttemptOutcome, PollDetails, PollOutcome},
     snmp::SnmpGetSample,
 };
@@ -9,12 +11,12 @@ use tools_core::{
 pub const LINE_DOUBLE_LN: &str =
     "════════════════════════════════════════════════════════════════════════════════\n";
 
-pub fn format_snapshot(tasks: &[TaskView]) -> String {
+pub fn format_snapshot(tasks: &[TaskSnapshot]) -> String {
     let mut out = String::new();
 
     for (i, view) in tasks.iter().enumerate() {
         if i > 0 {
-            out.push('\n'); // граница между задачами
+            out.push('\n');
         }
         out.push_str(&format_task(view));
     }
@@ -22,44 +24,61 @@ pub fn format_snapshot(tasks: &[TaskView]) -> String {
     out
 }
 
-fn format_task(view: &TaskView) -> String {
+fn format_task(view: &TaskSnapshot) -> String {
     let mut out = format_card(view);
     out.push_str("\n\n");
     out.push_str(&format_results(view));
     out
 }
 
-fn format_card(view: &TaskView) -> String {
+fn format_card(view: &TaskSnapshot) -> String {
     let mut lines: Vec<String> = Vec::new();
-
-    lines.push(labeled("Name", &view.name));
-    lines.push(labeled("Target", &view.target));
-    lines.push(labeled("Revision", &view.revision.to_string()));
-
-    let (schedule, attempt) = match &view.scenario {
-        ScenarioSpec::SnmpGet(spec) => (spec.schedule(), spec.attempt()),
-        ScenarioSpec::SnmpSet(spec) => (spec.schedule(), spec.attempt()),
+    let configuration = &view.configuration;
+    let description = &configuration.description;
+    let settings = match &description.scenario {
+        ScenarioDescription::SnmpGet {
+            target,
+            schedule,
+            attempt,
+            ..
+        }
+        | ScenarioDescription::SnmpSet {
+            target,
+            schedule,
+            attempt,
+            ..
+        } => Some((target, schedule, attempt)),
+        _ => None,
     };
-    let cadence = match schedule {
-        PollSchedule::FixedRate { period } => format!("Period: {period:?} (fixed rate)"),
-        PollSchedule::FixedDelay { delay } => format!("Delay: {delay:?} (fixed delay)"),
-    };
-    let timings = format!(
-        "{cadence} retries: {} timeout: {:?} retry_delay: {:?}",
-        attempt.retries(),
-        attempt.timeout(),
-        attempt.retry_delay()
-    );
 
-    lines.push(timings);
+    lines.push(labeled("Name", &description.name));
+    if let Some((target, _, _)) = settings {
+        lines.push(labeled("Target", &target.to_string()));
+    }
+    lines.push(labeled("Revision", &configuration.revision.to_string()));
+
+    if let Some((_, schedule, attempt)) = settings {
+        let cadence = match schedule {
+            PollSchedule::FixedRate { period } => format!("Period: {period:?} (fixed rate)"),
+            PollSchedule::FixedDelay { delay } => format!("Delay: {delay:?} (fixed delay)"),
+        };
+        let timings = format!(
+            "{cadence} retries: {} timeout: {:?} retry_delay: {:?}",
+            attempt.retries(),
+            attempt.timeout(),
+            attempt.retry_delay()
+        );
+
+        lines.push(timings);
+    }
     lines.push(labeled("Limit", &format_limit(view)));
 
-    push_query(&mut lines, &view.scenario);
+    push_query(&mut lines, &description.scenario);
 
     bordered(&lines)
 }
 
-fn format_results(view: &TaskView) -> String {
+fn format_results(view: &TaskSnapshot) -> String {
     let mut out = String::new();
 
     match &view.health.last_error {
@@ -88,7 +107,7 @@ fn format_results(view: &TaskView) -> String {
     out
 }
 
-fn format_response(view: &TaskView) -> String {
+fn format_response(view: &TaskSnapshot) -> String {
     match view.result.as_ref() {
         Some(execution) => match execution.report.detail() {
             Some(ScenarioOutcome::SnmpGet(report)) => {
@@ -134,7 +153,7 @@ fn format_report<T, E: std::fmt::Display>(
     out
 }
 
-fn format_history(view: &TaskView) -> String {
+fn format_history(view: &TaskSnapshot) -> String {
     let mut out = format!("History: {}\n", view.history.len());
     for h in &view.history {
         let kind = format_execution_summary(&h.result);
@@ -167,24 +186,23 @@ fn format_response_summary<T, E>(
     format!("{status}(attempts: {}, {}ms)", report.attempt_count(), elapsed.as_millis())
 }
 
-fn push_query(lines: &mut Vec<String>, scenario: &ScenarioSpec) {
+fn push_query(lines: &mut Vec<String>, scenario: &ScenarioDescription) {
     match scenario {
-        ScenarioSpec::SnmpGet(spec) => {
-            let request = spec.request();
+        ScenarioDescription::SnmpGet { oids, .. } => {
             lines.push("Oids to request:".to_string());
-            for item in request.oids() {
+            for item in oids {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{}", item.oid));
             }
         }
-        ScenarioSpec::SnmpSet(spec) => {
-            let request = spec.request();
+        ScenarioDescription::SnmpSet { sets, .. } => {
             lines.push("Oids to set:".to_string());
-            for item in request.sets() {
+            for item in sets {
                 let name = item.name.as_deref().unwrap_or("-");
                 lines.push(format!("  {name:<16}{:<32} = {}", item.oid, item.value));
             }
         }
+        _ => {}
     }
 }
 
@@ -238,14 +256,14 @@ fn bordered(lines: &[String]) -> String {
     out
 }
 
-fn format_limit(view: &TaskView) -> String {
-    match view.limit {
+fn format_limit(view: &TaskSnapshot) -> String {
+    match view.configuration.description.limit {
         0 => "no limit".to_string(),
         n => format!("{n} ({} left)", n.saturating_sub(view.metrics.executions)),
     }
 }
 
-fn execution_duration(view: &TaskView) -> String {
+fn execution_duration(view: &TaskSnapshot) -> String {
     if let (Some(min), Some(max)) = (view.metrics.min_duration, view.metrics.max_duration) {
         format!(
             "{}ms (min: {}ms max: {}ms)",

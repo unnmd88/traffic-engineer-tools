@@ -1,6 +1,6 @@
 use tokio::sync::broadcast;
 
-use crate::monitor::{event::MonitorEvent, task::MonitorSnapshot};
+use crate::monitor::{event::MonitorEvent, snapshot::MonitorSnapshot};
 
 #[derive(Debug)]
 pub struct MonitorSubscription {

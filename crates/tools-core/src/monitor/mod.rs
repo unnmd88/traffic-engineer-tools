@@ -3,8 +3,8 @@ mod event;
 mod operation;
 mod runtime;
 mod scenario;
+mod snapshot;
 mod task;
-mod transition;
 
 pub use crate::snmp::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpQueryError, SnmpSetSpec};
 pub use coordination::{CoordinationError, Cycle, Epoch, Phase, PhaseSetResult, PhaseState};
@@ -22,10 +22,9 @@ pub use scenario::{
     ScenarioExecution, ScenarioExecutionError, ScenarioOutcome, ScenarioSpec, ScenarioSpecError,
     SnmpGetItemDescription, SnmpGetScenarioSpec, SnmpSetItemDescription, SnmpSetScenarioSpec,
 };
+pub use snapshot::MonitorSnapshot;
 pub use task::{
-    ExecutionMetrics, Health, HistoryEntryView, MonitorSnapshot, SpecRevision, TaskConfig,
-    TaskDescription, TaskError, TaskId, TaskProgress, TaskStatus, TaskView,
-};
-pub use transition::{
-    RestartPlan, ScenarioFailure, TaskCommandKind, TaskTransition, TaskTransitionCause,
+    ExecutionMetrics, Health, HistoryEntryView, RestartPlan, ScenarioFailure, SpecRevision,
+    TaskCommandKind, TaskConfig, TaskConfigurationSnapshot, TaskDescription, TaskError, TaskId,
+    TaskProgress, TaskSnapshot, TaskStatus, TaskTransition, TaskTransitionCause,
 };

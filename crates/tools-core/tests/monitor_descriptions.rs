@@ -4,11 +4,12 @@ use serde_json::{Value, json};
 use tools_core::{
     monitor::{
         AppConfig, Application, EventData, PollSchedule, ScenarioDescription, ScenarioSpec,
-        SpecRevision, TaskConfig, TaskDescription,
+        SpecRevision, TaskConfig, TaskConfigurationSnapshot, TaskDescription,
     },
     polling::AttemptConfig,
     snmp::{
-        RawSnmpOidItem, SnmpGetSpec, SnmpOid, SnmpProfile, SnmpSetItem, SnmpSetSpec, SnmpValue,
+        BusinessValue, RawSnmpOidItem, SnmpGetItem, SnmpGetSpec, SnmpOid, SnmpProfile, SnmpSetItem,
+        SnmpSetSpec, SnmpValue,
     },
 };
 
@@ -150,8 +151,10 @@ async fn queued_descriptions_keep_each_revision_after_consecutive_updates_and_re
         .collect();
 
     let id = handle.add_task(configs[0].clone()).await.unwrap();
+    let mut snapshots = vec![handle.get_snapshot().await.unwrap().tasks.remove(0)];
     for config in &configs[1..] {
         handle.update_task(id, config.clone()).await.unwrap();
+        snapshots.push(handle.get_snapshot().await.unwrap().tasks.remove(0));
     }
     handle.remove_task(id).await.unwrap();
     assert!(handle.get_snapshot().await.unwrap().tasks.is_empty());
@@ -171,6 +174,15 @@ async fn queued_descriptions_keep_each_revision_after_consecutive_updates_and_re
             _ => panic!("unexpected configuration event"),
         };
         assert_eq!(serde_json::to_value(description).unwrap(), *expected);
+        let snapshot = &snapshots[index];
+        assert_eq!(snapshot.id, id);
+        assert_eq!(snapshot.configuration.revision, event.metadata.revision);
+        assert_eq!(serde_json::to_value(&snapshot.configuration.description).unwrap(), *expected);
+        let configuration = serde_json::to_value(&snapshot.configuration).unwrap();
+        assert_no_credentials(&configuration);
+        let restored: TaskConfigurationSnapshot =
+            serde_json::from_value(configuration.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), configuration);
         let json = serde_json::to_value(&event).unwrap();
         assert_no_credentials(&json);
         observed.push(json);
@@ -186,4 +198,57 @@ async fn queued_descriptions_keep_each_revision_after_consecutive_updates_and_re
         saved.push(serde_json::to_value(event).unwrap());
     }
     assert_eq!(saved, observed);
+}
+
+#[test]
+fn task_snapshot_describes_custom_requests_and_owns_its_configuration() {
+    let request = SnmpGetSpec::new(
+        "[2001:db8::7]:1161".parse().unwrap(),
+        GET_COMMUNITY.parse().unwrap(),
+        None,
+        vec![SnmpGetItem {
+            name: Some("custom".to_string()),
+            oid: SnmpOid::parse("1.3.6.1.4.1.999.123.0").unwrap(),
+            parser: Some(|_| Ok(BusinessValue::Text("parsed".to_string()))),
+        }],
+    );
+    let config = TaskConfig::try_new(
+        "custom GET".to_string(),
+        ScenarioSpec::snmp_get(
+            request,
+            PollSchedule::fixed_delay(Duration::from_secs(2)).unwrap(),
+            AttemptConfig::try_new(Duration::from_secs(1), 0, Duration::ZERO).unwrap(),
+        )
+        .unwrap(),
+        10,
+        4,
+    )
+    .unwrap();
+    let application = Application::new(AppConfig::default(), vec![config]);
+    let mut snapshot = application
+        .subscribe_with_snapshot()
+        .snapshot
+        .tasks
+        .remove(0);
+    let record = serde_json::to_value(&snapshot.configuration).unwrap();
+    assert_no_credentials(&record);
+    assert!(!record.to_string().contains("parser"));
+    assert!(!format!("{snapshot:?}").contains(GET_COMMUNITY));
+    let ScenarioDescription::SnmpGet { target, oids, .. } =
+        &mut snapshot.configuration.description.scenario
+    else {
+        panic!("expected custom GET description");
+    };
+    assert_eq!(*target, "[2001:db8::7]:1161".parse().unwrap());
+    assert_eq!(oids[0].name.as_deref(), Some("custom"));
+    assert_eq!(oids[0].oid.to_string(), "1.3.6.1.4.1.999.123.0");
+    oids.clear();
+    snapshot.configuration.description.name = "local edit".to_string();
+
+    let fresh = application
+        .subscribe_with_snapshot()
+        .snapshot
+        .tasks
+        .remove(0);
+    assert_eq!(serde_json::to_value(fresh.configuration).unwrap(), record);
 }

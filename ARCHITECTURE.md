@@ -60,13 +60,15 @@ The individual request and SNMP mechanisms are also available through
 | `ApplicationHandle` | Cloneable access to commands, snapshots, and subscriptions | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `Orchestrator` | Internal owner of task state, their lifecycle, and event ordering | [runtime/orchestrator.rs](crates/tools-core/src/monitor/runtime/orchestrator.rs) |
 | `Task` | Internal configuration, revision, results, metrics, and health of a task | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
-| `TaskProgress` | Scenario-authored preparation activity text and its source timestamp | [task/view.rs](crates/tools-core/src/monitor/task/view.rs) |
+| `TaskProgress` | Scenario-authored preparation activity text and its source timestamp | [task/progress.rs](crates/tools-core/src/monitor/task/progress.rs) |
+| `TaskTransition` | Task lifecycle changes, their causes, and restart plans, shared by events and task snapshots | [task/transition.rs](crates/tools-core/src/monitor/task/transition.rs) |
 | `ScenarioSpec` | Public description of the selected scenario | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
 | GET/SET execution | Request preparation, schedule, commands, and reports of a concrete scenario | [impls/repeat_snmp_get.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), [impls/repeat_snmp_set.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs) |
 | `SnmpGetSpec`, `SnmpSetSpec` | Validated SNMP-request parameters without a network client | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
 | `poll`, `AttemptConfig`, `Pollable`, `PollReport` | Execution of an action with attempts and a complete operation report | [polling](crates/tools-core/src/polling/mod.rs) |
 | `SnmpClient`, `Resolver` | Network operations and OID preparation with device-profile awareness | [client.rs](crates/tools-core/src/snmp/client.rs), [resolve.rs](crates/tools-core/src/snmp/resolve.rs) |
-| `MonitorSnapshot`, `MonitorSubscription`, `MonitorEvent` | Observing state and changes | [view.rs](crates/tools-core/src/monitor/task/view.rs), [subscription.rs](crates/tools-core/src/monitor/runtime/subscription.rs), [event.rs](crates/tools-core/src/monitor/event.rs) |
+| `TaskSnapshot`, `TaskConfigurationSnapshot`, `HistoryEntryView` | Owned observations of a task, its accepted configuration, and retained results | [task/snapshot.rs](crates/tools-core/src/monitor/task/snapshot.rs) |
+| `MonitorSnapshot`, `MonitorSubscription`, `MonitorEvent` | Observing state and changes | [snapshot.rs](crates/tools-core/src/monitor/snapshot.rs), [subscription.rs](crates/tools-core/src/monitor/runtime/subscription.rs), [event.rs](crates/tools-core/src/monitor/event.rs) |
 
 A simplified diagram of a running monitor:
 
@@ -181,7 +183,7 @@ for replies over separate channels.
 `Task` holds the `TaskConfig`, revision, timestamps, the last result, local history,
 metrics, and health. The current `TaskStatus`, latest text progress, last transition,
 execution generation, restart counter, and scenario handle live in the orchestrator's record. There is no second
-internal status enum. `TaskView.status` and `TaskView.last_transition` expose the status
+internal status enum. `TaskSnapshot.status` and `TaskSnapshot.last_transition` expose the status
 and the last actual change. The transition contains its UTC change time, previous/current
 states, typed cause, and optional restart plan. Publication time remains in event metadata.
 
@@ -219,15 +221,17 @@ one starts with a new generation. Metrics and accumulated results are preserved.
 For a paused task, applying a new scenario is deferred until `resume`.
 An explicit new `start_task` resets metrics and health while keeping results and history.
 
-Timestamps have different meanings: `created_at` is task creation, `config_updated_at` is
-a configuration change, and `updated_at` is the last accounted activity of the task,
+Timestamps have different meanings: `TaskSnapshot.created_at` is task creation,
+`configuration.accepted_at` is acceptance of the current configuration revision, and
+`updated_at` is the last accounted activity of the task,
 including an execution result or a new start. It is not a universal timestamp of every
 status change.
 
 ## Scenarios
 
-`ScenarioSpec` is a description of behavior that can be cloned, passed into `TaskConfig`,
-and shown in a snapshot. It holds no network client and exposes no public start method.
+`ScenarioSpec` is an executable configuration of behavior that can be cloned and passed
+into `TaskConfig`. It holds no network client and exposes no public start method.
+Snapshots expose its observation-only `ScenarioDescription` through `TaskDescription`.
 
 Two variants are currently available: repeating `SnmpGet` and `SnmpSet`.
 It is an enum with implementations inside the core; there is no API yet for plugging in an
@@ -260,7 +264,7 @@ interpret that work or define a shared list of preparation stages.
 A scenario sends `ScenarioReport::Progress` with a `TaskProgress` containing its source UTC
 timestamp and a human-readable message. The orchestrator publishes every accepted message
 as `EventData::Preparation(progress)`, including repeated text, and retains the latest
-message in `TaskView.progress`. Consumers must not parse messages as stable identifiers.
+message in `TaskSnapshot.progress`. Consumers must not parse messages as stable identifiers.
 Both CLI views display the latest message as `Activity`.
 
 Only messages from the live generation while the task is `Preparing` are accepted. A new
@@ -429,10 +433,22 @@ This results history differs from the `history_sink` event output.
 ## Events, snapshots, and subscriptions
 
 `MonitorSnapshot` is a snapshot of the state of all tasks. It holds `application_id`,
-`next_seq`, and a list of `TaskView` ordered by ids. Mutating a received `TaskView` does
+`next_seq`, and a list of `TaskSnapshot` ordered by ids. Mutating a received `TaskSnapshot` does
 not change the task in the monitor.
 
+`TaskSnapshot.configuration` is a `TaskConfigurationSnapshot` with the accepted revision,
+its UTC acceptance time, and a `TaskDescription`. The description captures the task name,
+scenario parameters, operation limit, and configured history depth without transport
+credentials or parser callbacks. Snapshots and configuration events use the same description
+types. The snapshot contains no executable `ScenarioSpec`; consumers format the typed target
+address and other presentation values from `ScenarioDescription`. Accepted configuration
+does not establish execution readiness, and retained results keep their original context.
+
 `MonitorEvent` holds `EventMeta` metadata and `EventData` data.
+The `event` module owns the publication envelope and operation notification payloads
+(`OperationStarted` and `OperationFinished`). The `task` module owns transitions and
+progress, which are shared by events and task snapshots. Operation context and reports belong
+to `operation`; the monitor-wide `MonitorSnapshot` belongs to `snapshot`.
 Events report lifecycle changes, results, errors, and panics.
 `Preparation` carries a scenario's human-readable preparation message and its source
 timestamp, independently of lifecycle transitions. It is forwarded to the same history

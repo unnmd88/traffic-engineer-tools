@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     for view in &snapshot.tasks {
         println!(
             "task '{}': status={:?}, result_context={:?}",
-            view.name,
+            view.configuration.description.name,
             view.status,
             view.result.as_ref().map(|result| result.context)
         );

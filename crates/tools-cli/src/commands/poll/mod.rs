@@ -4,6 +4,9 @@ mod dashboard;
 mod history;
 mod render;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 
 use tokio::sync::mpsc;

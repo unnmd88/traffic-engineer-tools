@@ -17,7 +17,8 @@ use crate::monitor::{
         orchestrator::{Orchestrator, OrchestratorHandle},
         restart_policy::RestartPolicy,
     },
-    task::{MonitorSnapshot, TaskConfig, TaskId},
+    snapshot::MonitorSnapshot,
+    task::{TaskConfig, TaskId},
 };
 
 #[derive(Clone, Copy, Debug, Display, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -237,8 +238,20 @@ mod tests {
         assert_eq!(subscription.snapshot.application_id, *application.id());
         assert_eq!(subscription.snapshot.next_seq, 0);
         assert_eq!(subscription.snapshot.tasks.len(), 2);
-        assert_eq!(subscription.snapshot.tasks[0].name, "first");
-        assert_eq!(subscription.snapshot.tasks[1].name, "second");
+        assert_eq!(
+            subscription.snapshot.tasks[0]
+                .configuration
+                .description
+                .name,
+            "first"
+        );
+        assert_eq!(
+            subscription.snapshot.tasks[1]
+                .configuration
+                .description
+                .name,
+            "second"
+        );
         let ids: Vec<_> = subscription
             .snapshot
             .tasks

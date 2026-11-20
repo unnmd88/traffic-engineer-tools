@@ -5,8 +5,9 @@ use tools_core::{
         AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId, EventData,
         EventMeta, ExecutionMetrics, Generation, Health, HistoryEntryView, MonitorCommandError,
         MonitorEvent, MonitorSnapshot, MonitorSubscription, PollSchedule, RestartPolicy,
-        RunningApplication, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec, SnmpSetScenarioSpec,
-        SnmpSetSpec, SpecRevision, TaskConfig, TaskId, TaskStatus, TaskView,
+        RunningApplication, ScenarioDescription, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec,
+        SnmpSetScenarioSpec, SnmpSetSpec, SpecRevision, TaskConfig, TaskConfigurationSnapshot,
+        TaskId, TaskSnapshot, TaskStatus,
     },
     polling::AttemptConfig,
 };
@@ -44,9 +45,10 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
     assert_eq!(snapshot.tasks.len(), 2);
 
     for (index, view) in snapshot.tasks.iter().enumerate() {
-        let view: &TaskView = view;
+        let view: &TaskSnapshot = view;
+        let configuration: &TaskConfigurationSnapshot = &view.configuration;
         let task_id: TaskId = view.id;
-        let revision: SpecRevision = view.revision;
+        let revision: SpecRevision = configuration.revision;
         let metrics: ExecutionMetrics = view.metrics;
         let health: &Health = &view.health;
         let history: &[HistoryEntryView] = &view.history;
@@ -54,14 +56,20 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
         assert_eq!(revision, SpecRevision::new(1));
         assert_eq!(view.status, TaskStatus::Idle);
         assert!(view.progress.is_none());
-        assert_eq!(view.created_at, view.config_updated_at);
+        assert_eq!(view.created_at, configuration.accepted_at);
         assert_eq!(view.created_at, view.updated_at);
         assert_eq!(metrics.executions, 0);
         assert!(health.last_error.is_none());
         assert!(history.is_empty());
     }
-    assert!(matches!(snapshot.tasks[0].scenario, ScenarioSpec::SnmpGet(_)));
-    assert!(matches!(snapshot.tasks[1].scenario, ScenarioSpec::SnmpSet(_)));
+    assert!(matches!(
+        snapshot.tasks[0].configuration.description.scenario,
+        ScenarioDescription::SnmpGet { .. }
+    ));
+    assert!(matches!(
+        snapshot.tasks[1].configuration.description.scenario,
+        ScenarioDescription::SnmpSet { .. }
+    ));
 }
 
 #[tokio::test]
@@ -84,13 +92,16 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     let updated = handle.get_snapshot().await.unwrap().tasks.remove(0);
     let event = subscription.events.recv().await.unwrap();
     assert!(matches!(event.data, EventData::TaskConfigurationChanged(_)));
-    assert_eq!(event.metadata.revision, initial.revision.next());
-    assert_eq!(updated.revision, event.metadata.revision);
-    assert_eq!(updated.name, "updated");
-    assert!(matches!(updated.scenario, ScenarioSpec::SnmpSet(_)));
+    assert_eq!(event.metadata.revision, initial.configuration.revision.next());
+    assert_eq!(updated.configuration.revision, event.metadata.revision);
+    assert_eq!(updated.configuration.description.name, "updated");
+    assert!(matches!(
+        updated.configuration.description.scenario,
+        ScenarioDescription::SnmpSet { .. }
+    ));
     assert_eq!(updated.created_at, initial.created_at);
-    assert!(updated.config_updated_at >= initial.config_updated_at);
-    assert_eq!(updated.updated_at, updated.config_updated_at);
+    assert!(updated.configuration.accepted_at >= initial.configuration.accepted_at);
+    assert_eq!(updated.updated_at, updated.configuration.accepted_at);
 
     handle.remove_task(id).await.unwrap();
     let error: MonitorCommandError = handle.remove_task(id).await.unwrap_err();

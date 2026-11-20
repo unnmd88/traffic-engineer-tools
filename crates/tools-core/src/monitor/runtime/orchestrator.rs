@@ -20,9 +20,10 @@ use crate::monitor::{
         Generation, PanicStage, ScenarioCommand, ScenarioContext, ScenarioReport, ScenarioSpec,
         run_scenario,
     },
+    snapshot::MonitorSnapshot,
     task::{
-        HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskDescription, TaskId,
-        TaskStatus, TaskView,
+        HistoryEntryView, SpecRevision, Task, TaskConfig, TaskConfigurationSnapshot,
+        TaskDescription, TaskId, TaskSnapshot, TaskStatus,
     },
 };
 
@@ -972,7 +973,7 @@ impl Orchestrator {
         }
     }
 
-    fn view(&self, entry: &TaskEntry) -> TaskView {
+    fn task_snapshot(&self, entry: &TaskEntry) -> TaskSnapshot {
         let t = &entry.task;
         let config = t.config();
         let history = t
@@ -984,20 +985,18 @@ impl Orchestrator {
             })
             .collect();
 
-        TaskView {
+        TaskSnapshot {
             id: t.id(),
-            name: config.name().to_string(),
-            revision: t.revision(),
             created_at: *t.created_at(),
-            config_updated_at: *t.config_updated_at(),
+            configuration: TaskConfigurationSnapshot {
+                revision: t.revision(),
+                accepted_at: *t.config_updated_at(),
+                description: TaskDescription::from(config),
+            },
             updated_at: *t.updated_at(),
-            target: config.scenario().target(),
             status: entry.state,
             progress: entry.progress.clone(),
             last_transition: entry.last_transition.clone(),
-            deep_history: config.deep_history(),
-            scenario: config.scenario().clone(),
-            limit: config.limit(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
             history,
@@ -1006,7 +1005,11 @@ impl Orchestrator {
     }
 
     pub(super) fn snapshot(&self) -> MonitorSnapshot {
-        let mut tasks: Vec<TaskView> = self.entries.values().map(|e| self.view(e)).collect();
+        let mut tasks: Vec<TaskSnapshot> = self
+            .entries
+            .values()
+            .map(|entry| self.task_snapshot(entry))
+            .collect();
         tasks.sort_by_key(|v| v.id);
         MonitorSnapshot {
             application_id: self.application_id,
@@ -1503,8 +1506,8 @@ mod tests {
         let snapshot = handle.get_snapshot().await.unwrap();
         assert_eq!(snapshot.application_id, subscription.snapshot.application_id);
         assert_eq!(snapshot.next_seq, 1026);
-        assert_eq!(snapshot.tasks[0].name, "updated");
-        assert_eq!(snapshot.tasks[0].revision, SpecRevision::new(1026));
+        assert_eq!(snapshot.tasks[0].configuration.description.name, "updated");
+        assert_eq!(snapshot.tasks[0].configuration.revision, SpecRevision::new(1026));
         while let Ok(event) = subscription.events.try_recv() {
             assert!(event.metadata.seq < snapshot.next_seq);
         }
@@ -1788,7 +1791,7 @@ mod tests {
         assert_eq!(completed.metadata.seq, executed.metadata.seq + 1);
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
-        assert_eq!(snapshot.tasks[0].limit, 1);
+        assert_eq!(snapshot.tasks[0].configuration.description.limit, 1);
         assert_eq!(snapshot.tasks[0].metrics.executions, 1);
         assert!(snapshot.tasks[0].result.is_some());
         assert!(orchestrator.entries[&task_id].scenario.is_none());
@@ -2166,14 +2169,14 @@ mod tests {
         );
         let snapshot = orchestrator.snapshot();
         let task = &snapshot.tasks[0];
-        assert_eq!(task.name, "fresh");
-        assert_eq!(task.limit, 0);
-        assert_eq!(task.target, "127.0.0.2:1161");
+        assert_eq!(task.configuration.description.name, "fresh");
+        assert_eq!(task.configuration.description.limit, 0);
         assert_eq!(task.status, TaskStatus::Preparing);
         assert_eq!(task.metrics, ExecutionMetrics::default());
-        assert!(
-            matches!(&task.scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
-        );
+        assert!(matches!(&task.configuration.description.scenario,
+                crate::monitor::ScenarioDescription::SnmpSet { target, schedule, .. }
+                    if *target == "127.0.0.2:1161".parse().unwrap()
+                        && schedule.duration() == Duration::from_secs(2)));
         orchestrator
             .on_report(ScenarioReport::Built {
                 task_id,
@@ -2323,7 +2326,7 @@ mod tests {
         assert!(events.try_recv().is_err());
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Preparing);
-        assert_eq!(snapshot.tasks[0].name, "updated");
+        assert_eq!(snapshot.tasks[0].configuration.description.name, "updated");
         assert_eq!(snapshot.tasks[0].metrics, metrics);
         assert_eq!(
             snapshot.tasks[0]
@@ -2334,9 +2337,9 @@ mod tests {
                 .timestamp(),
             100
         );
-        assert!(
-            matches!(&snapshot.tasks[0].scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
-        );
+        assert!(matches!(&snapshot.tasks[0].configuration.description.scenario,
+                crate::monitor::ScenarioDescription::SnmpSet { schedule, .. }
+                    if schedule.duration() == Duration::from_secs(2)));
         orchestrator
             .on_report(ScenarioReport::Built {
                 task_id,
@@ -2398,10 +2401,10 @@ mod tests {
         assert_eq!(starting.metadata.revision, SpecRevision::new(2));
         assert_eq!(starting.metadata.generation, previous_generation.next());
         let snapshot = orchestrator.snapshot();
-        assert_eq!(snapshot.tasks[0].name, "updated while paused");
-        assert!(
-            matches!(&snapshot.tasks[0].scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
-        );
+        assert_eq!(snapshot.tasks[0].configuration.description.name, "updated while paused");
+        assert!(matches!(&snapshot.tasks[0].configuration.description.scenario,
+                crate::monitor::ScenarioDescription::SnmpSet { schedule, .. }
+                    if schedule.duration() == Duration::from_secs(2)));
         orchestrator
             .on_report(ScenarioReport::Built {
                 task_id,
@@ -2482,10 +2485,10 @@ mod tests {
         assert_eq!(restarting.metadata.generation, generation.next());
         assert_eq!(restarting.metadata.revision, SpecRevision::new(2));
         let snapshot = orchestrator.snapshot();
-        assert_eq!(snapshot.tasks[0].name, "latest");
-        assert!(
-            matches!(&snapshot.tasks[0].scenario, ScenarioSpec::SnmpSet(spec) if spec.schedule().duration() == Duration::from_secs(2))
-        );
+        assert_eq!(snapshot.tasks[0].configuration.description.name, "latest");
+        assert!(matches!(&snapshot.tasks[0].configuration.description.scenario,
+                crate::monitor::ScenarioDescription::SnmpSet { schedule, .. }
+                    if schedule.duration() == Duration::from_secs(2)));
         orchestrator
             .on_report(ScenarioReport::Built {
                 task_id,

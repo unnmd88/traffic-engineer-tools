@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::monitor::{PanicStage, ScenarioBuildError, ScenarioExecutionError, TaskStatus};
+use crate::monitor::{PanicStage, ScenarioBuildError, ScenarioExecutionError};
+
+use super::TaskStatus;
 
 /// A user command whose application caused a task state transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
