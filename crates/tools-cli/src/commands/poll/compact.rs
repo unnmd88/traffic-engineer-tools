@@ -71,15 +71,6 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
     if let Some(error) = &task.health.last_error {
         push_line(out, &format!("Error: {error}"), width);
     }
-    if let Some(preparation) = &task.preparation
-        && let Some(report) = &preparation.report
-    {
-        let result = match &report.outcome {
-            Ok(()) => "ready".to_string(),
-            Err(error) => error.to_string(),
-        };
-        push_line(out, &format!("Preparation: {result} | {}ms", report.elapsed.as_millis()), width);
-    }
     let runs = match task.limit {
         0 => task.metrics.executions.to_string(),
         limit => format!("{}/{limit}", task.metrics.executions),

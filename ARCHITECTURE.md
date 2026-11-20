@@ -15,7 +15,7 @@ The description below is verified against the current working tree.
 - [Build, start, and shutdown](#build-start-and-shutdown)
 - [Orchestrator and internal state](#orchestrator-and-internal-state)
 - [Scenarios](#scenarios)
-- [Preparation stages and immediate logging](#preparation-stages-and-immediate-logging)
+- [Preparation messages and immediate logging](#preparation-messages-and-immediate-logging)
 - [Requests, attempts, and SNMP](#requests-attempts-and-snmp)
 - [Repeating-request schedule](#repeating-request-schedule)
 - [Limit, results, and task history](#limit-results-and-task-history)
@@ -61,7 +61,6 @@ The individual request and SNMP mechanisms are also available through
 | `Orchestrator` | Internal owner of task state, their lifecycle, and event ordering | [runtime/orchestrator.rs](crates/tools-core/src/monitor/runtime/orchestrator.rs) |
 | `Task` | Internal configuration, revision, results, metrics, and health of a task | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
 | `TaskProgress` | Scenario-authored preparation activity text and its source timestamp | [task/view.rs](crates/tools-core/src/monitor/task/view.rs) |
-| `PreparationEvent`, `PreparationReport`, `PreparationView` | Live preparation stages, complete preparation evidence, and snapshot progress | [preparation.rs](crates/tools-core/src/monitor/scenario/preparation.rs) |
 | `ScenarioSpec` | Public description of the selected scenario | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
 | GET/SET execution | Request preparation, schedule, commands, and reports of a concrete scenario | [impls/repeat_snmp_get.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), [impls/repeat_snmp_set.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs) |
 | `SnmpGetSpec`, `SnmpSetSpec` | Validated SNMP-request parameters without a network client | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
@@ -247,87 +246,46 @@ Code layout in [scenario](crates/tools-core/src/monitor/scenario/mod.rs):
 | `execution.rs` | Results, outcome statuses, generations, and panic stages |
 | `error.rs` | Configuration, build, and execution errors |
 | `runtime.rs` | Internal commands and reports, dispatch to implementations, panic isolation, and shared helpers |
-| `preparation.rs` | Public preparation stages, stage results, complete reports, events, and snapshot progress |
-| `prepare.rs` | Shared GET/SET preparation, immediate stage logging, SCN request reporting, and stage timeouts |
+| `prepare.rs` | Shared GET/SET preparation, immediate activity logging, SCN polling, and a preparation deadline |
 | `impls/mod.rs` | Concrete scenario implementations (currently repeating SNMP GET/SET) |
 | `impls/repeat_snmp_get.rs`, `impls/repeat_snmp_set.rs` | Standalone GET and SET execution together with request adapters |
 | `schedule.rs` | Public schedule choice and the internal timer |
 | `tests.rs` | Shared network-execution tests; socket-free checks also live next to components |
 
-## Preparation stages and immediate logging
+## Preparation messages and immediate logging
 
-Each GET/SET scenario generation prepares its resources before regular execution.
-For consumers displaying current activity, a scenario explicitly sends a text message
-through the internal `ScenarioReport::Progress`. The orchestrator retains it as
-`TaskView.progress: Option<TaskProgress>` and publishes `EventData::TaskProgress` with the
-same source UTC timestamp and message. A progress message does not change `TaskStatus`,
-`last_transition`, execution metrics, or limit accounting. Every accepted message produces
-an event, even if its text repeats; polling a snapshot or a timer does not emit progress.
+Preparation is any work a scenario needs before regular execution. The monitor does not
+interpret that work or define a shared list of preparation stages.
 
-The message is authored by the scenario, not interpreted by the orchestrator. It is for
-human display and must not be parsed as a stable stage identifier. SNMP preparation reports
-"Creating SNMP read client" or "Creating SNMP write client", "Reading SCN" when discovery
-is required, and "Resolving OIDs" before their corresponding actions execute. Other
-scenarios can supply their own messages without extending a common stage enum.
-Both CLI views display this text as `Activity`.
+A scenario sends `ScenarioReport::Progress` with a `TaskProgress` containing its source UTC
+timestamp and a human-readable message. The orchestrator publishes every accepted message
+as `EventData::Preparation { progress }`, including repeated text, and retains the latest
+message in `TaskView.progress`. Consumers must not parse messages as stable identifiers.
+Both CLI views display the latest message as `Activity`.
 
-Only reports from the live generation of a task in `Preparing` can update text progress.
-A new scenario generation clears the preceding message, including configuration replacement
-while the status remains `Preparing`. Finishing preparation or leaving `Preparing` clears
-the current message, including failure, stop, and shutdown. Earlier messages remain in
-the event stream and configured history output. The latest message is in snapshots so a
-new subscriber can display the current activity without reconstructing preceding events.
+Only messages from the live generation while the task is `Preparing` are accepted. A new
+generation clears the previous activity. Leaving `Preparing` clears it on readiness,
+failure, stop, or shutdown. Messages retain normal application/task/generation/revision
+metadata and global ordering, and remain available through the event stream and configured
+history sink. They do not change lifecycle state, execution metrics, or limit accounting.
+There is no separate stage event stream or structured preparation report in task snapshots.
 
-Detailed preparation reports are retained separately for diagnostics and post-analysis.
-Preparation emits `PreparationEvent::Started`, then starts and finishes individual stages,
-then emits `Finished` with a complete `PreparationReport`. The orchestrator forwards these
-through `EventData::Preparation`, retaining the normal application/task/generation/revision
-metadata and global event ordering. Progress is available before a pending network action
-returns; it is not held until scenario readiness.
+GET/SET preparation reports "Creating SNMP read client" or "Creating SNMP write client",
+"Reading SCN: selected OIDs require a site identifier" when discovery is required, and
+"Resolving OIDs" before executing those actions. Messages are delivered before pending network work completes. Each message is
+logged at its source before awaiting report-channel delivery. Action completion, typed
+errors, and SCN request attempts are logged through `tracing`; the orchestrator does not
+duplicate these records. Physical persistence follows the configured tracing writer.
 
-The stages are:
+The SCN read retains zero retries and a transport timeout of `attempt.timeout + 1 second`.
+The shared preparation deadline remains `2 * (attempt.timeout + 1 second)`. Actions observe
+that deadline and catch panics. Typed failures remain available through `BuildFailed` and
+lifecycle transition causes; messages do not control readiness or recovery.
 
-1. `CreateTransport { role: Read | Write }`: GET creates a reading transport; SET creates
-   a writing transport and, when configured, a separate reading transport.
-2. `FetchScn`: when selected OIDs require SCN, read its raw varbind and validate the value.
-   Otherwise publish a `StageFinished` report with `NotRequired`, without starting an action.
-3. `ResolveOids`: apply profile metadata and construct final instances using the discovered SCN.
-
-Each stage report contains UTC start/end timestamps, monotonic offset and duration, and
-its result or typed `ScenarioBuildError`. Successful results expose transport addresses,
-SCN text, or resolved OIDs without credentials. The SCN stage also includes its
-`PollReport<SnmpVarbind, SnmpError>`: a decoding failure preserves the successful raw
-network response alongside the failed stage. A network error remains typed rather than
-being replaced by a generic client error or string-only resolution error.
-
-Preparation preserves the existing retry policy: the SCN read has zero retries and a
-transport timeout of `attempt.timeout + 1 second`. Failed preparation follows the existing
-whole-scenario restart policy. Regular-operation `retries` do not silently apply to SCN.
-The entire preparation retains its existing deadline of `2 * (attempt.timeout + 1 second)`.
-Each active stage observes that deadline and catches panics, so both failure and timeout
-produce a terminal stage report and a preparation report containing earlier stages.
-If this deadline interrupts polling before it returns, that stage's network report can
-be absent; its start, duration, and timeout are still reported.
-
-Preparation logs each stage start and result through `tracing` at the source, before
-awaiting report-channel delivery. SCN request attempts are logged when they start and
-when they complete, including timeouts and typed errors. Preparation boundaries and
-successful actions use INFO; failed stages and attempts use WARN. The orchestrator does
-not duplicate these preparation log records. Physical log persistence still follows the
-consumer's configured tracing writer; emitting a tracing record is not a disk acknowledgement.
-Text progress is likewise logged at its source before report-channel delivery; the
-orchestrator does not log a duplicate message when publishing `TaskProgress`.
-
-`TaskView.preparation` retains the latest run's generation, configuration revision, stages,
-last observed active stage, and terminal report. A new generation replaces that view when
-its preparation starts; earlier preparation events remain available to a configured history
-sink. Preparation is separate from regular results/history and consumes no execution limit.
-
-Successful preparation publishes `TaskStateChanged` to `Active` with cause `ScenarioReady`
-after its final report. Failed preparation transitions to `Restarting` with typed cause
-`Failure(Preparation(error))`; a caught preparation panic uses `Failure(Panicked { stage:
-Build, ... })`. An orderly terminal report is not guaranteed if the scenario itself is
-forcibly aborted during preparation; cooperative cancellation remains future work.
+After preparation, `Built` transitions the task to `Active` with cause `ScenarioReady`.
+`BuildFailed` triggers recovery with `Failure(Preparation(error))`; `BuildPanicked` uses
+`Failure(Panicked { stage: Build, ... })`. Forced abort can interrupt preparation without
+an additional message.
 
 ## Requests, attempts, and SNMP
 
@@ -356,7 +314,7 @@ Unsupported types, including the current `TimeTicks`, are rejected before start.
 
 Arbitrary numeric OIDs are available without a profile. A profile adds aliases, metadata,
 value encoding, and OID completion rules.
-SCN discovery runs as an explicit observable preparation stage when required.
+SCN discovery publishes a preparation message before polling when required.
 The `Resolver` then performs local OID resolution using the supplied SCN; it no longer
 hides network requests inside OID resolution. A user-supplied GET name and parser take priority over the profile
 substitution. For SET, the values are already encoded before resolution.
@@ -471,11 +429,9 @@ not change the task in the monitor.
 
 `MonitorEvent` holds `EventMeta` metadata and `EventData` data.
 Events report lifecycle changes, results, errors, and panics.
-`TaskProgress` carries a scenario's human-readable preparation message and its source
+`Preparation` carries a scenario's human-readable preparation message and its source
 timestamp, independently of lifecycle transitions. It is forwarded to the same history
-sink as all other public events; detailed preparation and error reports remain structured.
-`Preparation` events carry stage boundaries and the terminal preparation report as they
-occur, and are forwarded to the history sink just like other public events.
+sink as all other public events; readiness and failures remain typed.
 `OperationStarted` announces one complete GET/SET algorithm before its first attempt.
 `OperationFinished` carries its complete operation report, including preceding timeouts and
 adapter errors on a non-retryable failure. A separate `TaskStateChanged` then describes

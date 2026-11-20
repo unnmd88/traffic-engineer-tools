@@ -2,7 +2,6 @@ mod description;
 mod error;
 mod execution;
 mod impls;
-mod preparation;
 mod prepare;
 mod runtime;
 mod schedule;
@@ -11,10 +10,6 @@ mod spec;
 pub use description::{ScenarioDescription, SnmpGetItemDescription, SnmpSetItemDescription};
 pub use error::{ScenarioBuildError, ScenarioExecutionError, ScenarioSpecError};
 pub use execution::{Generation, OutcomeStatus, PanicStage, ScenarioExecution, ScenarioOutcome};
-pub use preparation::{
-    PreparationEvent, PreparationReport, PreparationStage, PreparationStageData,
-    PreparationStageOutcome, PreparationStageReport, PreparationView, TransportRole,
-};
 pub use schedule::PollSchedule;
 pub use spec::{ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec};
 

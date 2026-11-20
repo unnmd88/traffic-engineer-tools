@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::monitor::{
     ApplicationId, OperationContext, OperationReport, TaskDescription, TaskProgress,
     TaskTransition,
-    scenario::{Generation, PreparationEvent},
+    scenario::Generation,
     task::{SpecRevision, TaskId},
 };
 use crate::polling::AttemptConfig;
@@ -40,7 +40,7 @@ pub enum EventData {
     },
     /// An explicit preparation message from a scenario; the task status does not change.
     #[non_exhaustive]
-    TaskProgress {
+    Preparation {
         /// The activity and its source timestamp, also retained in the task snapshot.
         progress: TaskProgress,
     },
@@ -79,13 +79,6 @@ pub enum EventData {
     },
     /// The task was removed from the monitor.
     TaskRemoved,
-
-    /// Progress and results published immediately by scenario preparation.
-    #[non_exhaustive]
-    Preparation {
-        /// A preparation or stage boundary and its associated evidence.
-        event: Box<PreparationEvent>,
-    },
 }
 
 /// A public event with publication context and a typed payload.
@@ -220,7 +213,7 @@ mod tests {
         .unwrap();
         let description = TaskDescription::from(&config);
         let mut data = vec![
-            EventData::TaskProgress {
+            EventData::Preparation {
                 progress: TaskProgress {
                     at,
                     message: "Reading SCN\nwaiting for \"response\"".to_string(),

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::monitor::{
     ApplicationId, TaskTransition,
-    scenario::{PreparationView, ScenarioExecution, ScenarioSpec},
+    scenario::{ScenarioExecution, ScenarioSpec},
     task::{ExecutionMetrics, SpecRevision, TaskId, TaskStatus, task::Health},
 };
 
@@ -37,8 +37,6 @@ pub struct TaskView {
     pub scenario: ScenarioSpec,
     pub limit: u64,
     pub metrics: ExecutionMetrics,
-    /// Detailed evidence from the latest preparation run; use `progress` for current activity.
-    pub preparation: Option<PreparationView>,
     pub result: Option<ScenarioExecution>,
     pub history: Vec<HistoryEntryView>,
     pub health: Health,

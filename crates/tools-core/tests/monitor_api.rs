@@ -105,9 +105,8 @@ async fn handle_updates_configuration_and_publishes_public_events() {
 async fn preparation_is_observable_before_scn_returns_and_survives_in_history() {
     use async_snmp::{Value, message::CommunityMessage};
     use tools_core::{
-        monitor::{PreparationStage, PreparationStageOutcome, ScenarioBuildError},
-        polling::PollOutcome,
-        snmp::{RawSnmpOidItem, SnmpError, SnmpValue},
+        monitor::{ScenarioBuildError, ScenarioFailure, TaskTransitionCause},
+        snmp::{RawSnmpOidItem, SnmpError},
     };
 
     let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -150,8 +149,8 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
             .await
             .unwrap()
             .unwrap();
-        let fetching = matches!(&event.data, EventData::TaskProgress { progress, .. }
-            if progress.message == "Reading SCN");
+        let fetching = matches!(&event.data, EventData::Preparation { progress, .. }
+            if progress.message == "Reading SCN: selected OIDs require a site identifier");
         observed.push(serde_json::to_value(event).unwrap());
         if fetching {
             break;
@@ -160,16 +159,11 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
     let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
     assert_eq!(view.status, TaskStatus::Preparing);
     let progress = view.progress.as_ref().unwrap();
-    assert_eq!(progress.message, "Reading SCN");
+    assert_eq!(progress.message, "Reading SCN: selected OIDs require a site identifier");
     assert_eq!(
-        observed.last().unwrap()["data"]["TaskProgress"]["progress"],
+        observed.last().unwrap()["data"]["Preparation"]["progress"],
         serde_json::to_value(progress).unwrap()
     );
-    assert_eq!(
-        view.preparation.as_ref().unwrap().active_stage,
-        Some(PreparationStage::FetchScn)
-    );
-    assert!(view.preparation.as_ref().unwrap().report.is_none());
     assert_eq!(view.metrics.executions, 0);
 
     let mut packet = [0; 2048];
@@ -201,22 +195,13 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
     assert_eq!(view.status, TaskStatus::Restarting);
     assert!(view.progress.is_none());
     assert_eq!(view.metrics.executions, 0);
-    let preparation = view.preparation.unwrap();
-    assert_eq!(preparation.revision, view.revision);
-    assert!(preparation.active_stage.is_none());
-    let report = preparation.report.unwrap();
-    assert_eq!(report.stages.len(), 2);
     assert!(matches!(
-        report.outcome,
-        Err(ScenarioBuildError::Snmp(SnmpError::UnexpectedValueType { .. }))
+        &view.last_transition.as_ref().unwrap().cause,
+        TaskTransitionCause::Failure(failure)
+            if matches!(failure.as_ref(), ScenarioFailure::Preparation(
+                ScenarioBuildError::Snmp(SnmpError::UnexpectedValueType { .. })
+            ))
     ));
-    assert!(matches!(report.stages[1].outcome, PreparationStageOutcome::Failed(_)));
-    let request = report.stages[1].request.as_ref().unwrap();
-    assert_eq!(request.config.retries(), 0);
-    assert_eq!(request.attempt_count(), 1);
-    assert!(
-        matches!(&request.outcome, PollOutcome::Succeeded(varbind) if matches!(varbind.value, SnmpValue::Integer(42)))
-    );
 
     running.shutdown().await.unwrap();
     while let Ok(event) = events.try_recv() {

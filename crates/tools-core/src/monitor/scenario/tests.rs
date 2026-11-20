@@ -22,7 +22,6 @@ struct Session {
     join: JoinHandle<()>,
     commands: mpsc::Sender<ScenarioCommand>,
     reports: mpsc::Receiver<ScenarioReport>,
-    preparation: Vec<PreparationEvent>,
     progress: Vec<TaskProgress>,
     operations: Vec<(crate::monitor::OperationContext, chrono::DateTime<chrono::Utc>)>,
 }
@@ -39,15 +38,6 @@ impl Session {
                     assert_eq!(task_id, TaskId(7));
                     assert_eq!(generation, Generation::first().next());
                     self.progress.push(progress);
-                }
-                ScenarioReport::Preparation {
-                    event,
-                    task_id,
-                    generation,
-                } => {
-                    assert_eq!(task_id, TaskId(7));
-                    assert_eq!(generation, Generation::first().next());
-                    self.preparation.push(*event);
                 }
                 ScenarioReport::OperationStarted {
                     task_id,
@@ -85,7 +75,6 @@ impl Session {
     fn drain_preparation(&mut self) {
         while let Ok(report) = self.reports.try_recv() {
             match report {
-                ScenarioReport::Preparation { event, .. } => self.preparation.push(*event),
                 ScenarioReport::Progress { progress, .. } => self.progress.push(progress),
                 _ => panic!("scenario became ready before SCN was provided"),
             }
@@ -190,7 +179,6 @@ fn spawn(scenario: ScenarioSpec) -> Session {
         join,
         commands,
         reports,
-        preparation: Vec::new(),
         progress: Vec::new(),
         operations: Vec::new(),
     }
@@ -385,46 +373,27 @@ async fn resolves_scn_before_reporting_built() {
     let mut session = spawn(get_scenario(request(&peer, Some("potok_ug405"), "stage"), 0));
     let (message, source) = receive(&peer).await;
     session.drain_preparation();
-    assert_eq!(session.progress.last().unwrap().message, "Reading SCN");
-    assert!(matches!(
-        session.preparation.last(),
-        Some(PreparationEvent::StageStarted {
-            stage: PreparationStage::FetchScn,
-            ..
-        })
-    ));
+    assert_eq!(
+        session.progress.last().unwrap().message,
+        "Reading SCN: selected OIDs require a site identifier"
+    );
     let mut response = message.pdu.standard().unwrap().to_response();
     assert_eq!(response.varbinds[0].oid.to_string(), "1.3.6.1.4.1.13267.3.2.5.1.1.2.0");
     response.varbinds[0].value = Value::OctetString(b"CO1".as_slice().into());
     reply(&peer, message, source, response).await;
     assert!(matches!(session.next_report().await, Some(ScenarioReport::Built { .. })));
-    let Some(PreparationEvent::Finished { report }) = session.preparation.last() else {
-        panic!("expected the final preparation report before readiness");
-    };
-    assert!(report.outcome.is_ok());
     assert_eq!(
         session
             .progress
             .iter()
             .map(|progress| progress.message.as_str())
             .collect::<Vec<_>>(),
-        ["Creating SNMP read client", "Reading SCN", "Resolving OIDs"]
+        [
+            "Creating SNMP read client",
+            "Reading SCN: selected OIDs require a site identifier",
+            "Resolving OIDs"
+        ]
     );
-    assert_eq!(report.stages.len(), 3);
-    let scn = &report.stages[1];
-    assert!(
-        matches!(&scn.outcome, PreparationStageOutcome::Succeeded(PreparationStageData::ScnFetched { scn }) if scn == "CO1")
-    );
-    let request = scn.request.as_ref().unwrap();
-    assert_eq!(request.attempt_count(), 1);
-    assert_eq!(request.config.retries(), 0);
-    assert!(
-        matches!(&request.outcome, PollOutcome::Succeeded(varbind) if matches!(&varbind.value, SnmpValue::OctetString(bytes) if bytes == b"CO1"))
-    );
-    let json = serde_json::to_value(report).unwrap();
-    let restored: PreparationReport = serde_json::from_value(json.clone()).unwrap();
-    assert_eq!(serde_json::to_value(restored).unwrap(), json);
-
     let (message, source) = receive(&peer).await;
     let mut response = message.pdu.standard().unwrap().to_response();
     assert_eq!(
@@ -468,14 +437,10 @@ async fn failed_scn_resolution_ends_scenario_without_built() {
                 ..
             })
         ));
-        let Some(PreparationEvent::Finished { report }) = session.preparation.last() else {
-            panic!("missing preparation failure report");
-        };
-        assert!(report.outcome.is_err());
-        assert_eq!(report.stages.len(), 2);
-        assert_eq!(report.stages[1].stage, PreparationStage::FetchScn);
-        assert!(matches!(&report.stages[1].request.as_ref().unwrap().outcome,
-            PollOutcome::Succeeded(varbind) if matches!(varbind.value, SnmpValue::Integer(42))));
+        assert_eq!(
+            session.progress.last().unwrap().message,
+            "Reading SCN: selected OIDs require a site identifier"
+        );
         assert!(session.next_report().await.is_none());
         session.join.await.unwrap();
     }
@@ -569,16 +534,15 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         let mut session = spawn(scenario);
         let (message, source) = receive(&peer).await;
         session.drain_preparation();
-        assert!(matches!(
-            session.preparation.last(),
-            Some(PreparationEvent::StageStarted {
-                stage: PreparationStage::FetchScn,
-                ..
-            })
-        ));
-        let read_transports = session.preparation.iter().filter(|event| matches!(event,
-            PreparationEvent::StageFinished { report } if report.stage == PreparationStage::CreateTransport { role: TransportRole::Read }
-        )).count();
+        assert_eq!(
+            session.progress.last().unwrap().message,
+            "Reading SCN: selected OIDs require a site identifier"
+        );
+        let read_transports = session
+            .progress
+            .iter()
+            .filter(|progress| progress.message == "Creating SNMP read client")
+            .count();
         assert_eq!(read_transports, usize::from(community_r.is_some()));
         assert_eq!(message.community.as_ref(), community_r.unwrap_or("private").as_bytes());
         let mut response = message.pdu.standard().unwrap().to_response();

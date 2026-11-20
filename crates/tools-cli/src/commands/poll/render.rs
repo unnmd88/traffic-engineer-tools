@@ -1,10 +1,7 @@
 use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
-    monitor::{
-        PollSchedule, PreparationStageOutcome, ScenarioExecution, ScenarioOutcome, ScenarioSpec,
-        TaskView,
-    },
+    monitor::{PollSchedule, ScenarioExecution, ScenarioOutcome, ScenarioSpec, TaskView},
     polling::{AttemptOutcome, PollOutcome, PollReport},
     snmp::SnmpGetSample,
 };
@@ -81,24 +78,6 @@ fn format_results(view: &TaskView) -> String {
         execution_duration(view),
     ));
     out.push('\n');
-    if let Some(preparation) = &view.preparation {
-        out.push_str(&format!(
-            "Preparation (generation {:?}, revision {}):\n",
-            preparation.generation, preparation.revision
-        ));
-        for stage in &preparation.stages {
-            let outcome = match &stage.outcome {
-                PreparationStageOutcome::Succeeded(data) => format!("{data:?}"),
-                PreparationStageOutcome::Failed(error) => error.to_string(),
-                PreparationStageOutcome::NotRequired => "not required".to_string(),
-            };
-            out.push_str(&format!(
-                "  {:?}: {}ms, {outcome}\n",
-                stage.stage,
-                stage.elapsed.as_millis()
-            ));
-        }
-    }
     out.push_str(&format_response(view));
 
     if !view.history.is_empty() {

@@ -17,8 +17,8 @@ use crate::monitor::{
         restart_policy::RestartPolicy,
     },
     scenario::{
-        Generation, PanicStage, PreparationEvent, ScenarioCommand, ScenarioContext, ScenarioReport,
-        ScenarioSpec, run_scenario,
+        Generation, PanicStage, ScenarioCommand, ScenarioContext, ScenarioReport, ScenarioSpec,
+        run_scenario,
     },
     task::{
         HistoryEntryView, MonitorSnapshot, SpecRevision, Task, TaskConfig, TaskDescription, TaskId,
@@ -578,7 +578,7 @@ impl Orchestrator {
                     return;
                 }
                 entry.progress = Some(progress.clone());
-                self.emit(task_id, EventData::TaskProgress { progress })
+                self.emit(task_id, EventData::Preparation { progress })
                     .await;
             }
             ScenarioReport::OperationStarted {
@@ -598,14 +598,6 @@ impl Orchestrator {
                     },
                 )
                 .await;
-            }
-            ScenarioReport::Preparation { event, .. } => {
-                let entry = self.entries.get_mut(&task_id).expect("validated task");
-                entry.task.record_preparation(generation, &event);
-                if matches!(event.as_ref(), PreparationEvent::Finished { .. }) {
-                    entry.progress = None;
-                }
-                self.emit(task_id, EventData::Preparation { event }).await;
             }
             ScenarioReport::Built { .. } => {
                 let entry = self.entries.get_mut(&task_id).expect("validated task");
@@ -961,7 +953,7 @@ impl Orchestrator {
                 status = ?report.status(),
                 "operation finished"
             ),
-            EventData::Preparation { .. } | EventData::TaskProgress { .. } => {}
+            EventData::Preparation { .. } => {}
             EventData::TaskRemoved => tracing::info!(
                 application_id = %metadata.application_id,
                 task_id = metadata.task_id.0,
@@ -1019,7 +1011,6 @@ impl Orchestrator {
             limit: config.limit(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
-            preparation: t.preparation().cloned(),
             history,
             health: t.health().clone(),
         }
@@ -1941,28 +1932,10 @@ mod tests {
             assert_eq!(event.metadata.generation, Generation::first());
             assert_eq!(event.metadata.revision, SpecRevision::new(1));
             assert!(
-                matches!(event.data, EventData::TaskProgress { progress: reported } if reported == progress)
+                matches!(event.data, EventData::Preparation { progress: reported } if reported == progress)
             );
             assert!(events.try_recv().is_err());
         }
-        orchestrator
-            .on_report(ScenarioReport::Preparation {
-                task_id,
-                generation: Generation::first(),
-                event: Box::new(PreparationEvent::Finished {
-                    report: Box::new(crate::monitor::PreparationReport {
-                        started_at: at,
-                        finished_at: at + chrono::Duration::seconds(3),
-                        elapsed: Duration::from_secs(3),
-                        stages: vec![],
-                        outcome: Ok(()),
-                    }),
-                }),
-            })
-            .await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::Preparation { .. }));
-        assert!(orchestrator.snapshot().tasks[0].progress.is_none());
-        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Preparing);
         orchestrator
             .on_report(ScenarioReport::Built {
                 task_id,
@@ -2002,7 +1975,7 @@ mod tests {
                 progress: progress.clone(),
             })
             .await;
-        assert!(matches!(events.try_recv().unwrap().data, EventData::TaskProgress { .. }));
+        assert!(matches!(events.try_recv().unwrap().data, EventData::Preparation { .. }));
         orchestrator
             .update(task_id, set_config("replacement"))
             .await
@@ -2078,93 +2051,6 @@ mod tests {
             );
             assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged { .. }));
         }
-    }
-
-    #[tokio::test]
-    async fn preparation_progress_is_published_in_order_and_retained_in_snapshots() {
-        use crate::monitor::{
-            PreparationEvent, PreparationReport, PreparationStage, PreparationStageData,
-            PreparationStageOutcome, PreparationStageReport, TransportRole,
-        };
-        let (mut orchestrator, mut events, task_id) = active_task(0);
-        let generation = Generation::first();
-        let at = Utc::now();
-        let stage = PreparationStage::CreateTransport {
-            role: TransportRole::Read,
-        };
-        for event in [
-            PreparationEvent::Started { at },
-            PreparationEvent::StageStarted {
-                stage,
-                at,
-                started_after: Duration::ZERO,
-            },
-        ] {
-            orchestrator
-                .on_report(ScenarioReport::Preparation {
-                    task_id,
-                    generation,
-                    event: Box::new(event),
-                })
-                .await;
-        }
-        let snapshot = orchestrator.snapshot();
-        let view = snapshot.tasks[0].preparation.as_ref().unwrap();
-        assert_eq!(view.active_stage, Some(stage));
-        assert_eq!(view.generation, generation);
-        assert_eq!(view.revision, SpecRevision::new(1));
-        assert!(view.report.is_none());
-        let report = PreparationStageReport {
-            stage,
-            started_at: at,
-            finished_at: at,
-            started_after: Duration::ZERO,
-            elapsed: Duration::ZERO,
-            outcome: PreparationStageOutcome::Succeeded(PreparationStageData::TransportCreated {
-                target: "127.0.0.1:161".parse().unwrap(),
-            }),
-            request: None,
-        };
-        for event in [
-            PreparationEvent::StageFinished {
-                report: Box::new(report.clone()),
-            },
-            PreparationEvent::Finished {
-                report: Box::new(PreparationReport {
-                    started_at: at,
-                    finished_at: at,
-                    elapsed: Duration::ZERO,
-                    stages: vec![report],
-                    outcome: Ok(()),
-                }),
-            },
-        ] {
-            orchestrator
-                .on_report(ScenarioReport::Preparation {
-                    task_id,
-                    generation,
-                    event: Box::new(event),
-                })
-                .await;
-        }
-        for seq in 0..4 {
-            let event = events.try_recv().unwrap();
-            assert_eq!(event.metadata.seq, seq);
-            assert_eq!(event.metadata.generation, generation);
-            assert_eq!(event.metadata.revision, SpecRevision::new(1));
-            assert!(matches!(event.data, EventData::Preparation { .. }));
-            let json = serde_json::to_value(event).unwrap();
-            let restored: MonitorEvent = serde_json::from_value(json.clone()).unwrap();
-            assert_eq!(serde_json::to_value(restored).unwrap(), json);
-        }
-        let snapshot = orchestrator.snapshot();
-        let task = &snapshot.tasks[0];
-        let view = task.preparation.as_ref().unwrap();
-        assert!(view.active_stage.is_none());
-        assert_eq!(view.stages.len(), 1);
-        assert!(view.report.as_ref().unwrap().outcome.is_ok());
-        assert_eq!(task.metrics.executions, 0);
-        assert!(task.result.is_none());
     }
 
     #[tokio::test]

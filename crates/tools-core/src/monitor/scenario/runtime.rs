@@ -11,8 +11,7 @@ use crate::{
 };
 
 use super::{
-    Generation, PreparationEvent, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError,
-    ScenarioSpec,
+    Generation, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioSpec,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -70,11 +69,6 @@ pub(in crate::monitor) enum ScenarioReport {
         started_at: DateTime<Utc>,
         config: AttemptConfig,
     },
-    Preparation {
-        task_id: TaskId,
-        generation: Generation,
-        event: Box<PreparationEvent>,
-    },
     Built {
         task_id: TaskId,
         generation: Generation,
@@ -127,11 +121,6 @@ impl ScenarioReport {
                 task_id, context, ..
             } => (*task_id, context.generation),
             Self::Progress {
-                task_id,
-                generation,
-                ..
-            }
-            | Self::Preparation {
                 task_id,
                 generation,
                 ..

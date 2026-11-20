@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
 
 use crate::monitor::{
-    scenario::{Generation, OutcomeStatus, PreparationEvent, PreparationView, ScenarioExecution},
+    scenario::{OutcomeStatus, ScenarioExecution},
     task::{ExecutionMetrics, TaskConfig},
 };
 
@@ -124,7 +124,6 @@ pub(in crate::monitor) struct Task {
     revision: SpecRevision,
     config_updated_at: DateTime<Utc>,
     last_result: Option<ScenarioExecution>,
-    preparation: Option<PreparationView>,
     history: History,
     metrics: ExecutionMetrics,
     health: Health,
@@ -142,7 +141,6 @@ impl Task {
             revision: SpecRevision::new(1),
             config_updated_at: dt,
             last_result: None,
-            preparation: None,
             metrics: ExecutionMetrics::default(),
             health: Health::default(),
             history: History::new(deep_history),
@@ -169,38 +167,6 @@ impl Task {
 
     pub fn last_result(&self) -> Option<&ScenarioExecution> {
         self.last_result.as_ref()
-    }
-
-    pub fn preparation(&self) -> Option<&PreparationView> {
-        self.preparation.as_ref()
-    }
-
-    pub fn record_preparation(&mut self, generation: Generation, event: &PreparationEvent) {
-        if let PreparationEvent::Started { at } = event {
-            self.preparation = Some(PreparationView {
-                generation,
-                revision: self.revision,
-                started_at: *at,
-                active_stage: None,
-                stages: Vec::new(),
-                report: None,
-            });
-        }
-        let Some(view) = self.preparation.as_mut() else {
-            return;
-        };
-        match event {
-            PreparationEvent::Started { .. } => {}
-            PreparationEvent::StageStarted { stage, .. } => view.active_stage = Some(*stage),
-            PreparationEvent::StageFinished { report } => {
-                view.active_stage = None;
-                view.stages.push((**report).clone());
-            }
-            PreparationEvent::Finished { report } => {
-                view.active_stage = None;
-                view.report = Some((**report).clone());
-            }
-        }
     }
 
     pub fn metrics(&self) -> ExecutionMetrics {

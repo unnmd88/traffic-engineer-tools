@@ -18,12 +18,9 @@ pub use runtime::{
     MonitorCommandError, MonitorSubscription, RestartPolicy, RunningApplication,
 };
 pub use scenario::{
-    Generation, OutcomeStatus, PanicStage, PollSchedule, PreparationEvent, PreparationReport,
-    PreparationStage, PreparationStageData, PreparationStageOutcome, PreparationStageReport,
-    PreparationView, ScenarioBuildError, ScenarioDescription, ScenarioExecution,
-    ScenarioExecutionError, ScenarioOutcome, ScenarioSpec, ScenarioSpecError,
+    Generation, OutcomeStatus, PanicStage, PollSchedule, ScenarioBuildError, ScenarioDescription,
+    ScenarioExecution, ScenarioExecutionError, ScenarioOutcome, ScenarioSpec, ScenarioSpecError,
     SnmpGetItemDescription, SnmpGetScenarioSpec, SnmpSetItemDescription, SnmpSetScenarioSpec,
-    TransportRole,
 };
 pub use task::{
     ExecutionMetrics, Health, HistoryEntryView, MonitorSnapshot, SpecRevision, TaskConfig,
