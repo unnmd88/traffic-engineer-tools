@@ -8,10 +8,10 @@ mod transition;
 
 pub use crate::snmp::{RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpQueryError, SnmpSetSpec};
 pub use coordination::{CoordinationError, Cycle, Epoch, Phase, PhaseSetResult, PhaseState};
-pub use event::{EventData, EventMeta, MonitorEvent};
+pub use event::{EventData, EventMeta, MonitorEvent, OperationFinished, OperationStarted};
 pub use operation::{
-    InterruptedAttempt, InterruptedOperationReport, OperationCancellationReason, OperationContext,
-    OperationId, OperationReport, OperationStatus,
+    InterruptedAttempt, InterruptedOperationReport, OperationCancellationReason,
+    OperationCompletion, OperationContext, OperationId, OperationReport, OperationStatus,
 };
 pub use runtime::{
     AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId,

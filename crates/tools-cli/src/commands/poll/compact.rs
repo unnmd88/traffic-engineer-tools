@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local};
 use tools_core::{
-    monitor::{OutcomeStatus, ScenarioOutcome, ScenarioSpec, TaskStatus, TaskView},
-    polling::{AttemptOutcome, PollOutcome, PollReport},
+    monitor::{OperationStatus, ScenarioOutcome, ScenarioSpec, TaskStatus, TaskView},
+    polling::{AttemptOutcome, PollDetails, PollOutcome},
     snmp::{
         BusinessValue, GroupStateDefinition, GroupStatePotokUg405, SnmpGetSample, SnmpValueType,
     },
@@ -104,10 +104,13 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
         push_line(out, "Last result: No data", width);
         return;
     };
-    let status = match execution.outcome.status() {
-        OutcomeStatus::Succeeded => "OK",
-        OutcomeStatus::Degraded => "DEGRADED",
-        OutcomeStatus::Failed => "FAILED",
+    let status = match execution.report.status() {
+        OperationStatus::Succeeded => "OK",
+        OperationStatus::Degraded => "DEGRADED",
+        OperationStatus::Failed => "FAILED",
+        OperationStatus::Cancelled => "CANCELLED",
+        OperationStatus::Panicked => "PANICKED",
+        _ => "UNKNOWN",
     };
     let finished_at = execution.finished_at().with_timezone(&Local);
     let age_ms = (now - finished_at).num_milliseconds().max(0);
@@ -121,14 +124,14 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
         ),
         width,
     );
-    match &execution.outcome {
-        ScenarioOutcome::SnmpGet(response) => {
+    match execution.report.detail() {
+        Some(ScenarioOutcome::SnmpGet(response)) => {
             format_response(out, response, width);
             if let PollOutcome::Succeeded(samples) = &response.outcome {
                 format_samples(out, samples, width);
             }
         }
-        ScenarioOutcome::SnmpSet(response) => {
+        Some(ScenarioOutcome::SnmpSet(response)) => {
             format_response(out, response, width);
             if matches!(response.outcome, PollOutcome::Succeeded(_)) {
                 push_line(out, "SET acknowledged", width);
@@ -140,7 +143,7 @@ fn format_task(out: &mut String, task: &TaskView, now: DateTime<Local>, width: u
 
 fn format_response<T, E: std::fmt::Display>(
     out: &mut String,
-    report: &PollReport<T, E>,
+    report: &PollDetails<T, E>,
     width: usize,
 ) {
     let status = match &report.outcome {

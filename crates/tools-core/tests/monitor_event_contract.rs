@@ -1,8 +1,9 @@
 use serde_json::{Value, json};
+use tools_core::monitor::{OperationFinished, OperationStarted};
 use tools_core::{
     monitor::{
-        EventData, Generation, MonitorEvent, OperationCancellationReason, OperationContext,
-        OperationId, OperationReport, OperationStatus, ScenarioExecution, ScenarioExecutionError,
+        EventData, Generation, MonitorEvent, OperationCancellationReason, OperationCompletion,
+        OperationContext, OperationId, OperationStatus, ScenarioExecution, ScenarioExecutionError,
         ScenarioFailure, ScenarioOutcome, SpecRevision, TaskStatus, TaskTransitionCause,
     },
     polling::{AttemptOutcome, PollOutcome},
@@ -50,9 +51,9 @@ fn interrupted_report() -> Value {
 #[test]
 fn fixture_preserves_operation_identity_attempts_and_raw_results() {
     let event = round_trip(fixture());
-    let EventData::OperationFinished {
+    let EventData::OperationFinished(OperationFinished {
         context, report, ..
-    } = event.data
+    }) = event.data
     else {
         panic!("expected operation completion");
     };
@@ -66,12 +67,14 @@ fn fixture_preserves_operation_identity_attempts_and_raw_results() {
     );
     assert_eq!(context.operation_id.get(), 11);
     assert_eq!(report.status(), OperationStatus::Succeeded);
-    let OperationReport::Completed {
-        outcome: ScenarioOutcome::SnmpGet(report),
-        ..
-    } = *report
-    else {
-        panic!("expected a normal GET report");
+    assert_eq!(report.elapsed, std::time::Duration::from_millis(1150));
+    assert_eq!(report.started_at.to_rfc3339(), "2026-11-18T09:00:00+00:00");
+    assert_eq!(report.finished_at.to_rfc3339(), "2026-11-18T09:00:01.150+00:00");
+    let OperationCompletion::Returned { detail } = report.completion else {
+        panic!("expected normal completion");
+    };
+    let ScenarioOutcome::SnmpGet(report) = *detail else {
+        panic!("expected GET details");
     };
     assert_eq!(report.attempt_count(), 2);
     assert_eq!(report.attempts[0].outcome, AttemptOutcome::TimedOut);
@@ -87,16 +90,13 @@ fn fixture_preserves_operation_identity_attempts_and_raw_results() {
 #[test]
 fn retained_result_keeps_operation_context_and_uses_report_timing() {
     let event = round_trip(fixture());
-    let EventData::OperationFinished {
+    let EventData::OperationFinished(OperationFinished {
         context, report, ..
-    } = event.data
+    }) = event.data
     else {
         panic!("expected operation result");
     };
-    let OperationReport::Completed { outcome, .. } = *report else {
-        panic!("expected normal completion");
-    };
-    let result = ScenarioExecution::new(context, outcome);
+    let result = ScenarioExecution::new(context, *report);
     let record = serde_json::to_value(&result).unwrap();
     assert_eq!(record.as_object().unwrap().len(), 2);
     assert_eq!(record["context"]["revision"], 3);
@@ -104,34 +104,30 @@ fn retained_result_keeps_operation_context_and_uses_report_timing() {
     assert!(record.get("elapsed").is_none());
     let restored: ScenarioExecution = serde_json::from_value(record).unwrap();
     assert_eq!(restored.context, context);
-    let ScenarioOutcome::SnmpGet(report) = &restored.outcome else {
-        panic!("expected GET report");
-    };
-    assert_eq!(restored.finished_at(), report.finished_at);
-    assert_eq!(restored.elapsed(), report.elapsed);
+    assert_eq!(restored.finished_at(), restored.report.finished_at);
+    assert_eq!(restored.elapsed(), restored.report.elapsed);
+    assert!(matches!(restored.report.detail(), Some(ScenarioOutcome::SnmpGet(_))));
 }
 
 #[test]
 fn normal_failure_remains_an_operation_result_with_its_original_error() {
     let mut record = fixture();
-    let report =
-        &mut record["data"]["OperationFinished"]["report"]["Completed"]["outcome"]["SnmpGet"];
+    let report = &mut record["data"]["report"]["completion"]["detail"]["report"];
     report["outcome"] = json!("NonRetryableFailure");
     report["attempts"][1]["outcome"] = json!({ "Failed": {
         "error": { "InvalidOid": "invalid request" },
         "retryable": false
     } });
     let event = round_trip(record);
-    let EventData::OperationFinished { report, .. } = event.data else {
+    let EventData::OperationFinished(OperationFinished { report, .. }) = event.data else {
         panic!("expected operation completion");
     };
     assert_eq!(report.status(), OperationStatus::Failed);
-    let OperationReport::Completed {
-        outcome: ScenarioOutcome::SnmpGet(report),
-        ..
-    } = *report
-    else {
+    let OperationCompletion::Returned { detail } = report.completion else {
         panic!("expected a normal failure report");
+    };
+    let ScenarioOutcome::SnmpGet(report) = *detail else {
+        panic!("expected GET details");
     };
     assert_eq!(report.attempt_count(), 2);
     assert!(matches!(report.non_retryable_error(),
@@ -142,20 +138,39 @@ fn normal_failure_remains_an_operation_result_with_its_original_error() {
 fn cancelled_report_keeps_original_run_and_distinguishes_the_interrupted_attempt() {
     let mut record = fixture();
     record["metadata"]["revision"] = json!(4);
-    record["data"]["OperationFinished"]["report"] = json!({ "Cancelled": {
-        "reason": "ConfigurationChanged",
-        "report": interrupted_report()
-    } });
+    let mut report = interrupted_report();
+    let started_at = report
+        .as_object_mut()
+        .unwrap()
+        .remove("started_at")
+        .unwrap();
+    let finished_at = report
+        .as_object_mut()
+        .unwrap()
+        .remove("finished_at")
+        .unwrap();
+    let elapsed = report.as_object_mut().unwrap().remove("elapsed").unwrap();
+    record["data"]["report"] = json!({
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "elapsed": elapsed,
+        "completion": { "type": "cancelled", "reason": "ConfigurationChanged", "evidence": report }
+    });
     let event = round_trip(record);
-    let EventData::OperationFinished {
+    let EventData::OperationFinished(OperationFinished {
         context, report, ..
-    } = event.data
+    }) = event.data
     else {
         panic!("expected operation completion");
     };
     assert_eq!(context.revision, SpecRevision::new(3));
     assert_eq!(report.status(), OperationStatus::Cancelled);
-    let OperationReport::Cancelled { reason, report, .. } = *report else {
+    let OperationCompletion::Cancelled {
+        reason,
+        evidence: report,
+        ..
+    } = report.completion
+    else {
         panic!("expected cancellation evidence");
     };
     assert_eq!(reason, OperationCancellationReason::ConfigurationChanged);
@@ -173,19 +188,37 @@ fn panic_during_retry_delay_does_not_invent_an_active_attempt() {
     progress["interrupted_attempt"] = Value::Null;
     progress["finished_at"] = json!("2026-11-18T09:00:00.950Z");
     progress["elapsed"] = json!({ "secs": 0, "nanos": 950000000 });
-    record["data"]["OperationFinished"]["report"] = json!({ "Panicked": {
-        "reason": "unexpected state\nwhile waiting",
-        "report": progress
-    } });
+    let started_at = progress
+        .as_object_mut()
+        .unwrap()
+        .remove("started_at")
+        .unwrap();
+    let finished_at = progress
+        .as_object_mut()
+        .unwrap()
+        .remove("finished_at")
+        .unwrap();
+    let elapsed = progress.as_object_mut().unwrap().remove("elapsed").unwrap();
+    record["data"]["report"] = json!({
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "elapsed": elapsed,
+        "completion": { "type": "panicked", "reason": "unexpected state\nwhile waiting", "evidence": progress }
+    });
     let event = round_trip(record);
-    let EventData::OperationFinished { report, .. } = event.data else {
+    let EventData::OperationFinished(OperationFinished { report, .. }) = event.data else {
         panic!("expected operation completion");
     };
     assert_eq!(report.status(), OperationStatus::Panicked);
-    let OperationReport::Panicked { reason, report, .. } = *report else {
+    let OperationCompletion::Panicked {
+        reason,
+        evidence: report,
+        ..
+    } = report.completion
+    else {
         panic!("expected panic evidence");
     };
-    assert_eq!(reason, "unexpected state\nwhile waiting");
+    assert_eq!(reason.as_ref(), "unexpected state\nwhile waiting");
     assert_eq!(report.attempts.len(), 1);
     assert!(report.interrupted_attempt.is_none());
 }
@@ -193,7 +226,7 @@ fn panic_during_retry_delay_does_not_invent_an_active_attempt() {
 #[test]
 fn transition_retains_typed_failure_and_scheduled_restart() {
     let mut record = fixture();
-    record["data"] = json!({ "TaskStateChanged": { "transition": {
+    record["data"] = json!({ "type": "task_state_changed",
         "at": "2026-11-18T09:00:01.150Z",
         "previous": "Preparing",
         "current": "Restarting",
@@ -201,9 +234,9 @@ fn transition_retains_typed_failure_and_scheduled_restart() {
             "expected": "OctetString", "actual": "Integer"
         } } } } },
         "restart": { "attempt": 2, "scheduled_at": "2026-11-18T09:00:03Z" }
-    } } });
+    });
     let event = round_trip(record);
-    let EventData::TaskStateChanged { transition, .. } = event.data else {
+    let EventData::TaskStateChanged(transition) = event.data else {
         panic!("expected a state transition");
     };
     assert_eq!(transition.previous, TaskStatus::Preparing);
@@ -218,23 +251,21 @@ fn transition_retains_typed_failure_and_scheduled_restart() {
 #[test]
 fn operation_start_preserves_its_budget_without_creating_a_result() {
     let mut record = fixture();
-    let context = record["data"]["OperationFinished"]["context"].clone();
-    let config =
-        record["data"]["OperationFinished"]["report"]["Completed"]["outcome"]["SnmpGet"]["config"]
-            .clone();
-    record["data"] = json!({ "OperationStarted": {
+    let context = record["data"]["context"].clone();
+    let config = record["data"]["report"]["completion"]["detail"]["report"]["config"].clone();
+    record["data"] = json!({ "type": "operation_started",
         "context": context,
         "purpose": "Read controller state",
         "started_at": "2026-11-18T09:00:00Z",
         "config": config
-    } });
+    });
     let event = round_trip(record);
-    let EventData::OperationStarted {
-        config, purpose, ..
-    } = event.data
-    else {
+    let EventData::OperationStarted(operation) = event.data else {
         panic!("expected operation start");
     };
+    let OperationStarted {
+        config, purpose, ..
+    } = *operation;
     assert_eq!(config.retries(), 1);
     assert_eq!(purpose, "Read controller state");
 }
@@ -246,4 +277,12 @@ fn serialized_event_contains_only_metadata_and_data() {
     assert_eq!(record.as_object().unwrap().len(), 2);
     assert!(record.get("metadata").is_some());
     assert!(record.get("data").is_some());
+    assert_eq!(record["data"]["type"], "operation_finished");
+    assert_eq!(record["data"]["report"]["completion"]["type"], "returned");
+    let detail = &record["data"]["report"]["completion"]["detail"];
+    assert_eq!(detail["type"], "snmp_get");
+    for field in ["started_at", "finished_at", "elapsed"] {
+        assert!(detail["report"].get(field).is_none());
+        assert!(record["data"]["report"].get(field).is_some());
+    }
 }

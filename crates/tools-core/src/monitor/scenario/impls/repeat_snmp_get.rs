@@ -16,6 +16,7 @@ use crate::{
     snmp::{SnmpClient, SnmpGetItem, SnmpGetSample, business_value::BusinessValue, oid::SnmpOid},
 };
 
+use crate::monitor::OperationReport;
 use crate::monitor::scenario::{
     ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
     SnmpGetScenarioSpec, prepare,
@@ -132,7 +133,7 @@ pub(in crate::monitor::scenario) async fn run(
                     Ok(None) => return,
                     Ok(Some((context, report))) => {
                         let error = report.non_retryable_error().cloned();
-                        let execution = ScenarioExecution::new(context, ScenarioOutcome::SnmpGet(report));
+                        let execution = ScenarioExecution::new(context, OperationReport::from_poll(report, ScenarioOutcome::SnmpGet));
                         if let Some(error) = error {
                             let _ = report_tx.send(ScenarioReport::ExecutionFailed {
                                 task_id,

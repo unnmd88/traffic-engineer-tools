@@ -45,23 +45,25 @@ async fn main() -> anyhow::Result<()> {
     // 4. Read events until the task completes.
     while let Ok(event) = sub.events.recv().await {
         match &event.data {
-            EventData::OperationStarted {
-                context, purpose, ..
-            } => {
-                println!("operation {} started: {purpose}", context.operation_id.get());
-            }
-            EventData::OperationFinished {
-                context, report, ..
-            } => {
+            EventData::OperationStarted(operation) => {
                 println!(
-                    "operation {} finished: {:?}",
-                    context.operation_id.get(),
-                    report.status()
+                    "operation {} started: {}",
+                    operation.context.operation_id.get(),
+                    operation.purpose
+                );
+            }
+            EventData::OperationFinished(operation) => {
+                println!(
+                    "operation {} finished: {:?}, {} ms, at {}",
+                    operation.context.operation_id.get(),
+                    operation.report.status(),
+                    operation.report.elapsed.as_millis(),
+                    operation.report.finished_at,
                 );
             }
             data => println!("seq {}: {data:?}", event.metadata.seq),
         }
-        if matches!(event.data, EventData::TaskStateChanged { ref transition, .. } if transition.current == TaskStatus::Completed)
+        if matches!(event.data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Completed)
         {
             break;
         }

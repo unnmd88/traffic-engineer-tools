@@ -28,55 +28,47 @@ pub struct EventMeta {
     pub revision: SpecRevision,
 }
 
-/// Task lifecycle, preparation progress, and operation evidence published by the monitor.
+/// The start of an operation, before its first attempt.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
+pub struct OperationStarted {
+    /// The run and configuration applied to this operation.
+    pub context: OperationContext,
+    /// A human-readable explanation, without credentials.
+    pub purpose: String,
+    /// Source UTC start time, distinct from publication time.
+    pub started_at: DateTime<Utc>,
+    /// The policy used by this polling operation.
+    pub config: AttemptConfig,
+}
+
+/// The terminal report of an operation with its original execution context.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct OperationFinished {
+    /// The operation's original run and applied configuration revision.
+    pub context: OperationContext,
+    /// Common timing and the scenario-specific completion evidence.
+    pub report: Box<OperationReport>,
+}
+
+/// Task lifecycle, preparation activity, and operation evidence.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
     /// An actual task state change, also retained in the task snapshot.
-    #[non_exhaustive]
-    TaskStateChanged {
-        /// The previous and current states, typed cause, and optional restart plan.
-        transition: Box<TaskTransition>,
-    },
-    /// An explicit preparation message from a scenario; the task status does not change.
-    #[non_exhaustive]
-    Preparation {
-        /// The activity and its source timestamp, also retained in the task snapshot.
-        progress: TaskProgress,
-    },
-    /// The start of an entire algorithm with its retry policy.
-    #[non_exhaustive]
-    OperationStarted {
-        /// The run and configuration to which the operation belongs.
-        context: OperationContext,
-        /// A human-readable explanation of the algorithm being executed, without credentials.
-        purpose: String,
-        /// UTC operation start time, distinct from envelope publication time.
-        started_at: DateTime<Utc>,
-        /// The policy for all attempts of this operation.
-        config: AttemptConfig,
-    },
-    /// A terminal operation report; interrupted reports are not yet published by the runtime.
-    #[non_exhaustive]
-    OperationFinished {
-        /// The original run and applied configuration, even if a new revision was accepted.
-        context: OperationContext,
-        /// Normal results or explicit evidence of interruption.
-        report: Box<OperationReport>,
-    },
-
+    TaskStateChanged(Box<TaskTransition>),
+    /// Scenario-authored activity; its text is not a stable machine identifier.
+    Preparation(TaskProgress),
+    /// An operation is starting with its captured context and policy.
+    OperationStarted(Box<OperationStarted>),
+    /// An operation terminated; runtime interruption reporting remains future work.
+    OperationFinished(OperationFinished),
     /// A newly registered task and its accepted configuration description.
-    #[non_exhaustive]
-    TaskRegistered {
-        /// Captured description for the revision in event metadata, without credentials.
-        description: Box<TaskDescription>,
-    },
-    /// An accepted configuration revision, before any replacement run becomes ready.
-    #[non_exhaustive]
-    TaskConfigurationChanged {
-        /// Captured description for the accepted revision, without credentials.
-        description: Box<TaskDescription>,
-    },
+    TaskRegistered(Box<TaskDescription>),
+    /// An accepted configuration revision, before replacement execution is ready.
+    TaskConfigurationChanged(Box<TaskDescription>),
     /// The task was removed from the monitor.
     TaskRemoved,
 }
@@ -148,7 +140,7 @@ mod tests {
         }
     }
 
-    fn outcomes(at: DateTime<Utc>, elapsed: Duration) -> Vec<ScenarioOutcome> {
+    fn outcomes(at: DateTime<Utc>, elapsed: Duration) -> Vec<OperationReport> {
         let samples = vec![
             SnmpGetSample {
                 oid_name: Some("stage".to_string()),
@@ -166,30 +158,32 @@ mod tests {
             },
         ];
         vec![
-            ScenarioOutcome::SnmpGet(report(
-                at,
-                elapsed,
-                PollOutcome::Succeeded(samples),
-                vec![AttemptOutcome::TimedOut, AttemptOutcome::Succeeded],
-            )),
-            ScenarioOutcome::SnmpGet(report(
-                at,
-                elapsed,
-                PollOutcome::RetryLimitReached,
-                vec![AttemptOutcome::TimedOut; 3],
-            )),
-            ScenarioOutcome::SnmpSet(report(
-                at,
-                elapsed,
-                PollOutcome::Succeeded(()),
-                vec![AttemptOutcome::Succeeded],
-            )),
-            ScenarioOutcome::SnmpSet(report(
-                at,
-                elapsed,
-                PollOutcome::RetryLimitReached,
-                vec![AttemptOutcome::TimedOut],
-            )),
+            OperationReport::from_poll(
+                report(
+                    at,
+                    elapsed,
+                    PollOutcome::Succeeded(samples),
+                    vec![AttemptOutcome::TimedOut, AttemptOutcome::Succeeded],
+                ),
+                ScenarioOutcome::SnmpGet,
+            ),
+            OperationReport::from_poll(
+                report(
+                    at,
+                    elapsed,
+                    PollOutcome::RetryLimitReached,
+                    vec![AttemptOutcome::TimedOut; 3],
+                ),
+                ScenarioOutcome::SnmpGet,
+            ),
+            OperationReport::from_poll(
+                report(at, elapsed, PollOutcome::Succeeded(()), vec![AttemptOutcome::Succeeded]),
+                ScenarioOutcome::SnmpSet,
+            ),
+            OperationReport::from_poll(
+                report(at, elapsed, PollOutcome::RetryLimitReached, vec![AttemptOutcome::TimedOut]),
+                ScenarioOutcome::SnmpSet,
+            ),
         ]
     }
 
@@ -213,32 +207,24 @@ mod tests {
         .unwrap();
         let description = TaskDescription::from(&config);
         let mut data = vec![
-            EventData::Preparation {
-                progress: TaskProgress {
-                    at,
-                    message: "Reading SCN\nwaiting for \"response\"".to_string(),
-                },
-            },
-            EventData::TaskRegistered {
-                description: Box::new(description.clone()),
-            },
-            EventData::TaskConfigurationChanged {
-                description: Box::new(description),
-            },
-            EventData::TaskStateChanged {
-                transition: Box::new(TaskTransition {
-                    at,
-                    previous: TaskStatus::Preparing,
-                    current: TaskStatus::Active,
-                    cause: TaskTransitionCause::ScenarioReady,
-                    restart: None,
-                }),
-            },
+            EventData::Preparation(TaskProgress {
+                at,
+                message: "Reading SCN\nwaiting for \"response\"".to_string(),
+            }),
+            EventData::TaskRegistered(Box::new(description.clone())),
+            EventData::TaskConfigurationChanged(Box::new(description)),
+            EventData::TaskStateChanged(Box::new(TaskTransition {
+                at,
+                previous: TaskStatus::Preparing,
+                current: TaskStatus::Active,
+                cause: TaskTransitionCause::ScenarioReady,
+                restart: None,
+            })),
             EventData::TaskRemoved,
-            EventData::OperationFinished {
+            EventData::OperationFinished(OperationFinished {
                 context: context(),
-                report: Box::new(OperationReport::Completed {
-                    outcome: ScenarioOutcome::SnmpSet(report(
+                report: Box::new(OperationReport::from_poll(
+                    report(
                         at,
                         elapsed,
                         PollOutcome::NonRetryableFailure,
@@ -251,62 +237,57 @@ mod tests {
                                 retryable: false,
                             },
                         ],
-                    )),
-                }),
-            },
+                    ),
+                    ScenarioOutcome::SnmpSet,
+                )),
+            }),
         ];
         for outcome in outcomes(at, elapsed) {
-            data.push(EventData::OperationStarted {
+            data.push(EventData::OperationStarted(Box::new(OperationStarted {
                 context: context(),
                 purpose: "Read or write configured SNMP OIDs".to_string(),
                 started_at: at - elapsed,
                 config: AttemptConfig::try_new(elapsed, 1, Duration::ZERO).unwrap(),
-            });
-            data.push(EventData::OperationFinished {
+            })));
+            data.push(EventData::OperationFinished(OperationFinished {
                 context: context(),
-                report: Box::new(OperationReport::Completed { outcome }),
-            });
+                report: Box::new(outcome),
+            }));
         }
         for error in [
             ScenarioBuildError::Timeout,
             ScenarioBuildError::SnmpClientCreate,
             ScenarioBuildError::Other("resolution failed".to_string()),
         ] {
-            data.push(EventData::TaskStateChanged {
-                transition: Box::new(TaskTransition {
-                    at,
-                    previous: TaskStatus::Preparing,
-                    current: TaskStatus::Restarting,
-                    cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Preparation(
-                        error,
-                    ))),
-                    restart: Some(RestartPlan {
-                        attempt: 1,
-                        scheduled_at: at + elapsed,
-                    }),
+            data.push(EventData::TaskStateChanged(Box::new(TaskTransition {
+                at,
+                previous: TaskStatus::Preparing,
+                current: TaskStatus::Restarting,
+                cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Preparation(error))),
+                restart: Some(RestartPlan {
+                    attempt: 1,
+                    scheduled_at: at + elapsed,
                 }),
-            });
+            })));
         }
         for stage in [
             PanicStage::Build,
             PanicStage::Execution,
             PanicStage::Runtime,
         ] {
-            data.push(EventData::TaskStateChanged {
-                transition: Box::new(TaskTransition {
-                    at,
-                    previous: TaskStatus::Active,
-                    current: TaskStatus::Restarting,
-                    cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Panicked {
-                        stage,
-                        reason: "panic".to_string(),
-                    })),
-                    restart: Some(RestartPlan {
-                        attempt: 1,
-                        scheduled_at: at + elapsed,
-                    }),
+            data.push(EventData::TaskStateChanged(Box::new(TaskTransition {
+                at,
+                previous: TaskStatus::Active,
+                current: TaskStatus::Restarting,
+                cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Panicked {
+                    stage,
+                    reason: "panic".to_string(),
+                })),
+                restart: Some(RestartPlan {
+                    attempt: 1,
+                    scheduled_at: at + elapsed,
                 }),
-            });
+            })));
         }
         data
     }

@@ -259,7 +259,7 @@ interpret that work or define a shared list of preparation stages.
 
 A scenario sends `ScenarioReport::Progress` with a `TaskProgress` containing its source UTC
 timestamp and a human-readable message. The orchestrator publishes every accepted message
-as `EventData::Preparation { progress }`, including repeated text, and retains the latest
+as `EventData::Preparation(progress)`, including repeated text, and retains the latest
 message in `TaskView.progress`. Consumers must not parse messages as stable identifiers.
 Both CLI views display the latest message as `Activity`.
 
@@ -401,12 +401,17 @@ the existing accounting: they do not increment execution metrics or consume `lim
 Their result replaces the last result and moves the previous one into local history.
 The task's diagnostic error and restart behavior remain unchanged.
 
-`ScenarioExecution` holds the original `OperationContext` and a `ScenarioOutcome`.
+`ScenarioExecution` holds the original `OperationContext` and an `OperationReport`.
 Its `finished_at()` and `elapsed()` methods read timing from the enclosed operation report;
 there are no independently mutable copies of those timing fields. Results and local history
 retain their operation id, generation, and applied revision after configuration replacement,
-automatic restart, or a new explicit start. GET/SET outcomes hold `PollReport` with a typed
-`SnmpError`.
+automatic restart, or a new explicit start. Events and retained results use the same
+`OperationReport`: start/end timestamps and monotonic duration are stored once at its top
+level. Its `OperationCompletion::Returned` contains a `ScenarioOutcome`; GET/SET details
+use `PollDetails` with attempt settings, attempts, a final outcome, and typed `SnmpError`
+values. These details contain no operation timing. The reusable `poll` function still
+returns its standalone `PollReport`; `OperationReport::from_poll` moves its timing and
+attempt evidence into the monitor representation without cloning.
 `OutcomeStatus` separates the assessment of a result from the status of the task itself.
 GET/SET map `Succeeded` to `Succeeded`, and both negative operation outcomes to `Failed`.
 Success after retries is still successful; the attempts preserve evidence of earlier failures.
@@ -457,13 +462,37 @@ The public contract includes the following transition and operation payloads:
   and attempt settings. `OperationContext` captures an `OperationId`, generation, and
   applied configuration revision. An operation number is scoped to a task's generation;
   the complete identity includes the application and task as well.
-- `OperationFinished` carries that context and an `OperationReport`. A `Completed` report
-  reuses `ScenarioOutcome` and its complete `PollReport`, without duplicate timing fields.
-  `Cancelled` and `Panicked` carry an `InterruptedOperationReport`: timing, settings,
-  completed attempts with typed `ScenarioExecutionError` values, and a separately marked
-  interrupted attempt when there was one. Cancellation includes a typed reason.
+- `OperationStarted` and `OperationFinished` are named payload structs, carried directly
+  by their `EventData` variants. Preparation, transitions, and descriptions are also direct
+  newtype payloads, without one-field wrapper objects.
+- `OperationFinished` carries the original context and an `OperationReport`. Common
+  `started_at`, `finished_at`, and `elapsed` fields are available without matching protocol
+  variants. `completion` distinguishes `Returned`, `Cancelled`, and `Panicked`.
+  A returned operation can succeed or fail; its scenario details retain the complete
+  attempt evidence. Cancellation and panic evidence retain settings, completed attempts
+  with typed `ScenarioExecutionError` values, and a separately marked interrupted attempt.
+  Their common timing belongs to the enclosing operation report. Cancellation includes a
+  typed reason.
 - `OperationReport::status()` distinguishes normal success/degradation/failure from
   cancellation and panic, independently of restart policy and limit accounting.
+  `detail()` provides optional access to the scenario evidence of a normal return.
+
+JSON events retain the `metadata` / `data` envelope. `data.type` is an explicit snake-case
+discriminator such as `preparation` or `operation_finished`; payload fields are directly
+inside `data`. Operation completion uses `completion.type`, and returned scenario details
+use `detail.type` with a `report` containing the polling evidence. These serialization
+changes replace the previous externally tagged event/report format; old JSONL records are
+not accepted by the new event schema.
+
+For a basic consumer, a single event match is enough:
+
+```rust
+if let EventData::OperationFinished(operation) = &event.data {
+    let status = operation.report.status();
+    let elapsed = operation.report.elapsed;
+    let finished_at = operation.report.finished_at;
+}
+```
 
 The runtime publishes `TaskStateChanged`, registration/configuration events, `Preparation`,
 and `OperationStarted` / `OperationFinished` for normally completed GET/SET operations,

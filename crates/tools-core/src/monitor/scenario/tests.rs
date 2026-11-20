@@ -11,7 +11,7 @@ use tokio::{
 use super::*;
 use crate::{
     monitor::{TaskProgress, task::TaskId},
-    polling::{AttemptConfig, AttemptOutcome, PollOutcome, PollReport},
+    polling::{AttemptConfig, AttemptOutcome, PollDetails, PollOutcome},
     snmp::{
         RawSnmpOidItem, RawSnmpSetItem, SnmpGetSpec, SnmpSetSpec, business_value::BusinessValue,
         value::SnmpValue,
@@ -60,10 +60,7 @@ impl Session {
                     {
                         let (context, started_at) = self.operations.last().unwrap();
                         assert_eq!(&execution.context, context);
-                        let report_start = match &execution.outcome {
-                            ScenarioOutcome::SnmpGet(report) => report.started_at,
-                            ScenarioOutcome::SnmpSet(report) => report.started_at,
-                        };
+                        let report_start = execution.report.started_at;
                         assert_eq!(report_start, *started_at);
                     }
                     return Some(report);
@@ -240,10 +237,10 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
         let ScenarioReport::Executed { execution, .. } = report else {
             panic!("expected execution report");
         };
-        match (operation, execution.outcome) {
+        match (operation, execution.report.detail().unwrap()) {
             (
                 Operation::Get,
-                ScenarioOutcome::SnmpGet(PollReport {
+                ScenarioOutcome::SnmpGet(PollDetails {
                     outcome: PollOutcome::Succeeded(payload),
                     attempts,
                     ..
@@ -255,7 +252,7 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
             }
             (
                 Operation::Set,
-                ScenarioOutcome::SnmpSet(PollReport {
+                ScenarioOutcome::SnmpSet(PollDetails {
                     outcome: PollOutcome::Succeeded(()),
                     attempts,
                     ..
@@ -287,13 +284,13 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
         };
         assert!(execution.elapsed() >= Duration::from_secs(1));
         assert!(matches!(
-            (operation, execution.outcome),
+            (operation, execution.report.detail().unwrap()),
             (
                 Operation::Get,
-                ScenarioOutcome::SnmpGet(PollReport { outcome: PollOutcome::RetryLimitReached, ref attempts, .. })
+                ScenarioOutcome::SnmpGet(PollDetails { outcome: PollOutcome::RetryLimitReached, attempts, .. })
             ) | (
                 Operation::Set,
-                ScenarioOutcome::SnmpSet(PollReport { outcome: PollOutcome::RetryLimitReached, ref attempts, .. })
+                ScenarioOutcome::SnmpSet(PollDetails { outcome: PollOutcome::RetryLimitReached, attempts, .. })
             ) if attempts.len() == 2
         ));
         assert!(matches!(session.next_report().await, Some(ScenarioReport::Paused { .. })));
@@ -405,10 +402,10 @@ async fn resolves_scn_before_reporting_built() {
     let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap() else {
         panic!("expected execution report");
     };
-    let ScenarioOutcome::SnmpGet(PollReport {
+    let ScenarioOutcome::SnmpGet(PollDetails {
         outcome: PollOutcome::Succeeded(payload),
         ..
-    }) = execution.outcome
+    }) = execution.report.detail().unwrap()
     else {
         panic!("expected successful GET");
     };
@@ -468,12 +465,12 @@ async fn fatal_protocol_error_preserves_the_complete_report_before_ending_scenar
             error,
             ScenarioExecutionError::Snmp(crate::snmp::SnmpError::Protocol { index: 1, .. })
         ));
-        let (attempts, finished_at, elapsed) = match &execution.outcome {
+        let (attempts, finished_at, elapsed) = match execution.report.detail().unwrap() {
             ScenarioOutcome::SnmpGet(report) => {
-                (&report.attempts, report.finished_at, report.elapsed)
+                (&report.attempts, execution.report.finished_at, execution.report.elapsed)
             }
             ScenarioOutcome::SnmpSet(report) => {
-                (&report.attempts, report.finished_at, report.elapsed)
+                (&report.attempts, execution.report.finished_at, execution.report.elapsed)
             }
         };
         assert_eq!(execution.finished_at(), finished_at);
@@ -571,8 +568,8 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
             panic!("expected execution report");
         };
         assert!(matches!(
-            execution.outcome,
-            ScenarioOutcome::SnmpSet(PollReport {
+            execution.report.detail().unwrap(),
+            ScenarioOutcome::SnmpSet(PollDetails {
                 outcome: PollOutcome::Succeeded(()),
                 ..
             })
@@ -627,11 +624,11 @@ async fn set_retries_after_timeout_and_stops_on_success() {
     let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap() else {
         panic!("expected execution report");
     };
-    let ScenarioOutcome::SnmpSet(PollReport {
+    let ScenarioOutcome::SnmpSet(PollDetails {
         outcome: PollOutcome::Succeeded(()),
         attempts,
         ..
-    }) = execution.outcome
+    }) = execution.report.detail().unwrap()
     else {
         panic!("expected successful SET");
     };

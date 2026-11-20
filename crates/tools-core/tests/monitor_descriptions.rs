@@ -166,8 +166,8 @@ async fn queued_descriptions_keep_each_revision_after_consecutive_updates_and_re
             subscription.snapshot.next_seq + u64::try_from(index).unwrap()
         );
         let description = match &event.data {
-            EventData::TaskRegistered { description, .. } if index == 0 => description,
-            EventData::TaskConfigurationChanged { description, .. } if index > 0 => description,
+            EventData::TaskRegistered(description) if index == 0 => description,
+            EventData::TaskConfigurationChanged(description) if index > 0 => description,
             _ => panic!("unexpected configuration event"),
         };
         assert_eq!(serde_json::to_value(description).unwrap(), *expected);

@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(added.metadata.seq, subscription.snapshot.next_seq);
         assert_eq!(added.metadata.application_id, subscription.snapshot.application_id);
         assert_eq!(added.metadata.task_id, id);
-        assert!(matches!(added.data, EventData::TaskRegistered { .. }));
+        assert!(matches!(added.data, EventData::TaskRegistered(_)));
         assert_eq!(app.get_snapshot().await.unwrap().tasks[0].id, id);
 
         app.remove_task(id).await.unwrap();
@@ -360,7 +360,7 @@ mod tests {
         for ((seq, id), event) in ids.into_iter().enumerate().zip(recorded) {
             assert_eq!(event.metadata.seq, seq as u64);
             assert_eq!(event.metadata.task_id, id);
-            assert!(matches!(event.data, EventData::TaskRegistered { .. }));
+            assert!(matches!(event.data, EventData::TaskRegistered(_)));
         }
     }
 

@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
 
 use crate::monitor::{
-    scenario::{OutcomeStatus, ScenarioExecution},
+    OperationStatus,
+    scenario::ScenarioExecution,
     task::{ExecutionMetrics, TaskConfig},
 };
 
@@ -101,9 +102,9 @@ pub struct Health {
 impl Health {
     pub fn record(&mut self, execution: &ScenarioExecution) {
         self.last_execution_at = Some(execution.finished_at());
-        match execution.outcome.status() {
-            OutcomeStatus::Failed => self.consecutive_failures += 1,
-            OutcomeStatus::Succeeded | OutcomeStatus::Degraded => self.consecutive_failures = 0,
+        match execution.report.status() {
+            OperationStatus::Succeeded | OperationStatus::Degraded => self.consecutive_failures = 0,
+            _ => self.consecutive_failures += 1,
         }
         self.last_error = None;
     }
@@ -191,8 +192,9 @@ impl Task {
 
     pub fn apply_execution(&mut self, result: ScenarioExecution) {
         self.health.record(&result);
-        self.metrics
-            .record(result.outcome.status(), result.elapsed());
+        if let Some(detail) = result.report.detail() {
+            self.metrics.record(detail.status(), result.elapsed());
+        }
         self.store_execution(result);
     }
 
@@ -237,6 +239,7 @@ impl Task {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::monitor::OperationReport;
     use crate::{
         monitor::scenario::{PollSchedule, ScenarioOutcome, ScenarioSpec, SnmpGetScenarioSpec},
         polling::{AttemptConfig, AttemptOutcome, AttemptReport, PollOutcome, PollReport},
@@ -271,21 +274,24 @@ mod tests {
                 crate::monitor::Generation::first(),
                 SpecRevision::new(1),
             ),
-            ScenarioOutcome::SnmpGet(PollReport {
-                started_at: finished_at - elapsed,
-                finished_at,
-                elapsed,
-                config: AttemptConfig::try_new(Duration::from_millis(100), 2, Duration::ZERO)
-                    .unwrap(),
-                attempts: (0..3)
-                    .map(|index| AttemptReport {
-                        started_after: Duration::from_millis(index * 100),
-                        elapsed: Duration::from_millis(100),
-                        outcome: AttemptOutcome::TimedOut,
-                    })
-                    .collect(),
-                outcome: PollOutcome::RetryLimitReached,
-            }),
+            OperationReport::from_poll(
+                PollReport {
+                    started_at: finished_at - elapsed,
+                    finished_at,
+                    elapsed,
+                    config: AttemptConfig::try_new(Duration::from_millis(100), 2, Duration::ZERO)
+                        .unwrap(),
+                    attempts: (0..3)
+                        .map(|index| AttemptReport {
+                            started_after: Duration::from_millis(index * 100),
+                            elapsed: Duration::from_millis(100),
+                            outcome: AttemptOutcome::TimedOut,
+                        })
+                        .collect(),
+                    outcome: PollOutcome::RetryLimitReached,
+                },
+                ScenarioOutcome::SnmpGet,
+            ),
         )
     }
 

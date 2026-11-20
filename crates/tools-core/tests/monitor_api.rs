@@ -78,12 +78,12 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     assert_eq!(generation, Generation::first());
     assert_eq!(metadata.seq, subscription.snapshot.next_seq);
     assert_eq!(metadata.task_id, id);
-    assert!(matches!(event.data, EventData::TaskRegistered { .. }));
+    assert!(matches!(event.data, EventData::TaskRegistered(_)));
 
     handle.update_task(id, task("updated", true)).await.unwrap();
     let updated = handle.get_snapshot().await.unwrap().tasks.remove(0);
     let event = subscription.events.recv().await.unwrap();
-    assert!(matches!(event.data, EventData::TaskConfigurationChanged { .. }));
+    assert!(matches!(event.data, EventData::TaskConfigurationChanged(_)));
     assert_eq!(event.metadata.revision, initial.revision.next());
     assert_eq!(updated.revision, event.metadata.revision);
     assert_eq!(updated.name, "updated");
@@ -149,7 +149,7 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
             .await
             .unwrap()
             .unwrap();
-        let fetching = matches!(&event.data, EventData::Preparation { progress, .. }
+        let fetching = matches!(&event.data, EventData::Preparation(progress)
             if progress.message == "Reading SCN: selected OIDs require a site identifier");
         observed.push(serde_json::to_value(event).unwrap());
         if fetching {
@@ -161,7 +161,10 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
     let progress = view.progress.as_ref().unwrap();
     assert_eq!(progress.message, "Reading SCN: selected OIDs require a site identifier");
     assert_eq!(
-        observed.last().unwrap()["data"]["Preparation"]["progress"],
+        serde_json::json!({
+            "at": observed.last().unwrap()["data"]["at"],
+            "message": observed.last().unwrap()["data"]["message"],
+        }),
         serde_json::to_value(progress).unwrap()
     );
     assert_eq!(view.metrics.executions, 0);
@@ -181,10 +184,10 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
             .await
             .unwrap()
             .unwrap();
-        let failed = matches!(event.data, EventData::TaskStateChanged { ref transition, .. }
+        let failed = matches!(event.data, EventData::TaskStateChanged(ref transition)
             if transition.current == TaskStatus::Restarting);
         assert!(
-            !matches!(event.data, EventData::TaskStateChanged { ref transition, .. } if transition.current == TaskStatus::Active)
+            !matches!(event.data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Active)
         );
         observed.push(serde_json::to_value(event).unwrap());
         if failed {

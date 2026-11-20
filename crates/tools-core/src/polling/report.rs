@@ -41,6 +41,37 @@ impl<T, E> PollReport<T, E> {
     }
 }
 
+/// Attempt policy, evidence, and result, independent of operation timing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollDetails<T, E> {
+    /// Settings used by all attempts.
+    pub config: AttemptConfig,
+    /// Completed attempts in execution order.
+    pub attempts: Vec<AttemptReport<E>>,
+    /// The final result or the reason attempts stopped.
+    pub outcome: PollOutcome<T>,
+}
+
+impl<T, E> PollDetails<T, E> {
+    /// Returns the number of attempts, including the first one.
+    pub fn attempt_count(&self) -> usize {
+        self.attempts.len()
+    }
+
+    /// Returns the number of attempts after the first one.
+    pub fn retry_count(&self) -> usize {
+        self.attempt_count().saturating_sub(1)
+    }
+
+    /// Returns the error that stopped attempts without exhausting the retry limit.
+    pub fn non_retryable_error(&self) -> Option<&E> {
+        match (&self.outcome, &self.attempts.last()?.outcome) {
+            (PollOutcome::NonRetryableFailure, AttemptOutcome::Failed { error, .. }) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// Timing and outcome of a single attempted execution of an action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttemptReport<E> {

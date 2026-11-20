@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use tokio::time::Duration;
 
 use crate::{
-    monitor::OperationContext,
-    polling::{PollOutcome, PollReport},
+    monitor::{OperationContext, OperationReport},
+    polling::{PollDetails, PollOutcome},
     snmp::{SnmpError, SnmpGetSample},
 };
 
@@ -24,11 +24,15 @@ pub enum OutcomeStatus {
     Failed,
 }
 
+/// Scenario-specific policy, attempts, and results; operation timing is stored separately.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
+#[serde(tag = "type", content = "report", rename_all = "snake_case")]
 pub enum ScenarioOutcome {
-    SnmpGet(PollReport<Vec<SnmpGetSample>, SnmpError>),
-    SnmpSet(PollReport<(), SnmpError>),
+    /// Evidence and samples from an SNMP GET operation.
+    SnmpGet(PollDetails<Vec<SnmpGetSample>, SnmpError>),
+    /// Evidence and acknowledgement from an SNMP SET operation.
+    SnmpSet(PollDetails<(), SnmpError>),
 }
 
 impl ScenarioOutcome {
@@ -40,7 +44,7 @@ impl ScenarioOutcome {
     }
 }
 
-const fn response_status<T, E>(report: &PollReport<T, E>) -> OutcomeStatus {
+const fn response_status<T, E>(report: &PollDetails<T, E>) -> OutcomeStatus {
     match &report.outcome {
         PollOutcome::Succeeded(_) => OutcomeStatus::Succeeded,
         PollOutcome::RetryLimitReached | PollOutcome::NonRetryableFailure => OutcomeStatus::Failed,
@@ -53,30 +57,24 @@ const fn response_status<T, E>(report: &PollReport<T, E>) -> OutcomeStatus {
 pub struct ScenarioExecution {
     /// The operation and applied configuration that produced this result.
     pub context: OperationContext,
-    /// The complete protocol-specific report, including timing and attempts.
-    pub outcome: ScenarioOutcome,
+    /// The complete operation report, shared with operation-finished events.
+    pub report: OperationReport,
 }
 
 impl ScenarioExecution {
-    /// Retains an operation's original context with its complete result.
-    pub const fn new(context: OperationContext, outcome: ScenarioOutcome) -> Self {
-        Self { context, outcome }
+    /// Retains an operation's original context and complete report.
+    pub const fn new(context: OperationContext, report: OperationReport) -> Self {
+        Self { context, report }
     }
 
-    /// Returns the completion time from the enclosed operation report.
+    /// Returns the operation completion time.
     pub const fn finished_at(&self) -> DateTime<Utc> {
-        match &self.outcome {
-            ScenarioOutcome::SnmpGet(report) => report.finished_at,
-            ScenarioOutcome::SnmpSet(report) => report.finished_at,
-        }
+        self.report.finished_at
     }
 
-    /// Returns the monotonic duration from the enclosed operation report.
+    /// Returns the monotonic operation duration.
     pub const fn elapsed(&self) -> Duration {
-        match &self.outcome {
-            ScenarioOutcome::SnmpGet(report) => report.elapsed,
-            ScenarioOutcome::SnmpSet(report) => report.elapsed,
-        }
+        self.report.elapsed
     }
 }
 

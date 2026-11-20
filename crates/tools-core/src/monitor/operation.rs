@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::{
     monitor::{Generation, OutcomeStatus, ScenarioExecutionError, ScenarioOutcome, SpecRevision},
-    polling::{AttemptConfig, AttemptReport},
+    polling::{AttemptConfig, AttemptReport, PollDetails, PollReport},
 };
 
 /// Identifies an operation within one scenario generation of a task.
@@ -86,12 +86,6 @@ pub struct InterruptedAttempt {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct InterruptedOperationReport {
-    /// UTC operation start time.
-    pub started_at: DateTime<Utc>,
-    /// UTC time at which local execution terminated.
-    pub finished_at: DateTime<Utc>,
-    /// Monotonic duration including attempts and retry delays.
-    pub elapsed: Duration,
     /// Effective attempt settings.
     pub config: AttemptConfig,
     /// Completed attempts in chronological order, preserving typed adapter errors.
@@ -116,52 +110,94 @@ pub enum OperationStatus {
     Panicked,
 }
 
-/// A normal result or explicit evidence of interrupted execution.
+/// A terminal operation report with protocol-independent timing.
 ///
-/// Normal completion reports are published by the runtime. Publication of cancellation
-/// and panic reports is introduced separately; the type alone provides no delivery guarantee.
+/// Runtime publication of cancellation and panic reports remains future work.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Keep terminal evidence inline; OperationFinished already boxes this report"
-)]
-pub enum OperationReport {
-    /// The algorithm returned its complete protocol-specific operation report.
-    #[non_exhaustive]
-    Completed {
-        /// Normal evidence, including successful or failed attempts and the final result.
-        outcome: ScenarioOutcome,
+pub struct OperationReport {
+    /// UTC time at which execution started.
+    pub started_at: DateTime<Utc>,
+    /// UTC time at which execution terminated.
+    pub finished_at: DateTime<Utc>,
+    /// Monotonic execution duration, including retry delays when applicable.
+    pub elapsed: Duration,
+    /// How execution terminated and its scenario-specific evidence.
+    pub completion: OperationCompletion,
+}
+
+/// How an operation terminated, independently of task recovery policy.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OperationCompletion {
+    /// The scenario returned normally, with either successful or failed results.
+    Returned {
+        /// Scenario-specific result and diagnostic evidence.
+        detail: Box<ScenarioOutcome>,
     },
-    /// The monitor cancelled local execution.
-    #[non_exhaustive]
+    /// Local execution was cancelled; remote effects may still have occurred.
     Cancelled {
         /// Why cancellation was requested.
         reason: OperationCancellationReason,
-        /// Evidence collected before cancellation completed.
-        report: InterruptedOperationReport,
+        /// Available evidence before cancellation.
+        evidence: Box<InterruptedOperationReport>,
     },
-    /// Local execution ended with a caught panic.
-    #[non_exhaustive]
+    /// Local execution terminated with a caught panic.
     Panicked {
         /// The panic payload rendered as text.
-        reason: String,
-        /// Evidence collected before the panic.
-        report: InterruptedOperationReport,
+        reason: Box<str>,
+        /// Available evidence before the panic.
+        evidence: Box<InterruptedOperationReport>,
     },
 }
 
 impl OperationReport {
+    /// Returns scenario-specific evidence when the operation returned normally.
+    pub const fn detail(&self) -> Option<&ScenarioOutcome> {
+        match &self.completion {
+            OperationCompletion::Returned { detail } => Some(detail),
+            _ => None,
+        }
+    }
+
+    /// Converts a polling report without duplicating timing inside scenario details.
+    pub fn from_poll<T, E>(
+        report: PollReport<T, E>,
+        describe: impl FnOnce(PollDetails<T, E>) -> ScenarioOutcome,
+    ) -> Self {
+        let PollReport {
+            started_at,
+            finished_at,
+            elapsed,
+            config,
+            attempts,
+            outcome,
+        } = report;
+        Self {
+            started_at,
+            finished_at,
+            elapsed,
+            completion: OperationCompletion::Returned {
+                detail: Box::new(describe(PollDetails {
+                    config,
+                    attempts,
+                    outcome,
+                })),
+            },
+        }
+    }
+
     /// Assesses the result without prescribing continuation, restart, or limit accounting.
     pub const fn status(&self) -> OperationStatus {
-        match self {
-            Self::Completed { outcome } => match outcome.status() {
+        match &self.completion {
+            OperationCompletion::Returned { detail } => match detail.status() {
                 OutcomeStatus::Succeeded => OperationStatus::Succeeded,
                 OutcomeStatus::Degraded => OperationStatus::Degraded,
                 OutcomeStatus::Failed => OperationStatus::Failed,
             },
-            Self::Cancelled { .. } => OperationStatus::Cancelled,
-            Self::Panicked { .. } => OperationStatus::Panicked,
+            OperationCompletion::Cancelled { .. } => OperationStatus::Cancelled,
+            OperationCompletion::Panicked { .. } => OperationStatus::Panicked,
         }
     }
 }
