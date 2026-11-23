@@ -55,43 +55,6 @@ impl SpecRevision {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(in crate::monitor) struct HistoryEntry {
-    pub timestamp: DateTime<Utc>,
-    pub result: ScenarioExecution,
-}
-
-/// Кольцо последних N результатов. `deep_history == 0` → всегда пустое.
-#[derive(Clone, Debug)]
-pub(in crate::monitor) struct History {
-    deep: usize,
-    history: VecDeque<HistoryEntry>,
-}
-
-impl History {
-    pub fn new(deep_history: u8) -> Self {
-        let max = deep_history as usize;
-        Self {
-            deep: max,
-            history: VecDeque::with_capacity(max),
-        }
-    }
-
-    pub fn push(&mut self, entry: HistoryEntry) {
-        if self.deep == 0 {
-            return;
-        }
-        if self.history.len() >= self.deep {
-            self.history.pop_back();
-        }
-        self.history.push_front(entry);
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &HistoryEntry> {
-        self.history.iter()
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Health {
     pub last_execution_at: Option<DateTime<Utc>>,
@@ -125,7 +88,7 @@ pub(in crate::monitor) struct Task {
     revision: SpecRevision,
     config_updated_at: DateTime<Utc>,
     last_result: Option<ScenarioExecution>,
-    history: History,
+    history: VecDeque<ScenarioExecution>,
     metrics: ExecutionMetrics,
     health: Health,
     created_at: DateTime<Utc>,
@@ -144,7 +107,7 @@ impl Task {
             last_result: None,
             metrics: ExecutionMetrics::default(),
             health: Health::default(),
-            history: History::new(deep_history),
+            history: VecDeque::with_capacity(usize::from(deep_history)),
             created_at: dt,
             updated_at: dt,
         }
@@ -182,7 +145,7 @@ impl Task {
         &self.updated_at
     }
 
-    pub fn history(&self) -> &History {
+    pub fn history(&self) -> &VecDeque<ScenarioExecution> {
         &self.history
     }
 
@@ -201,11 +164,14 @@ impl Task {
     /// Stores a result without changing execution metrics or limit accounting.
     pub fn store_execution(&mut self, result: ScenarioExecution) {
         self.updated_at = result.finished_at();
-        if let Some(prev) = self.last_result.replace(result) {
-            self.history.push(HistoryEntry {
-                timestamp: prev.finished_at(),
-                result: prev,
-            });
+        let depth = usize::from(self.config.deep_history());
+        if let Some(previous) = self.last_result.replace(result)
+            && depth > 0
+        {
+            if self.history.len() >= depth {
+                self.history.pop_back();
+            }
+            self.history.push_front(previous);
         }
     }
 
@@ -222,6 +188,7 @@ impl Task {
     pub fn update_config(&mut self, config: TaskConfig) {
         let revision = self.revision.next();
         let now = Utc::now();
+        self.history.truncate(usize::from(config.deep_history()));
         self.config = config;
         self.revision = revision;
         self.config_updated_at = now;
@@ -248,6 +215,10 @@ mod tests {
     use tokio::time::Duration;
 
     fn config(name: &str) -> TaskConfig {
+        config_with_history(name, 3)
+    }
+
+    fn config_with_history(name: &str, deep_history: u8) -> TaskConfig {
         let request =
             SnmpGetSpec::from_raw("127.0.0.1".to_string(), 161, "public".to_string(), None, vec![])
                 .unwrap();
@@ -263,7 +234,7 @@ mod tests {
             )
             .unwrap(),
         );
-        TaskConfig::try_new(name.to_string(), scenario, 10, 3).unwrap()
+        TaskConfig::try_new(name.to_string(), scenario, 10, deep_history).unwrap()
     }
 
     fn failed_execution(finished_at: DateTime<Utc>) -> ScenarioExecution {
@@ -341,5 +312,73 @@ mod tests {
         task.update_config(config("third"));
         assert_eq!(task.config().name(), "third");
         assert_eq!(task.revision(), SpecRevision::new(3));
+    }
+
+    #[test]
+    fn config_update_resizes_history_and_keeps_the_newest_previous_results() {
+        let mut task = Task::new(TaskId(1), config("task"));
+        let started_at = *task.created_at();
+        let finished_at = |seconds| started_at + chrono::Duration::seconds(seconds);
+        let history_times = |task: &Task| {
+            task.history()
+                .iter()
+                .map(ScenarioExecution::finished_at)
+                .collect::<Vec<_>>()
+        };
+        for seconds in 1..=5 {
+            task.apply_execution(failed_execution(finished_at(seconds)));
+        }
+        let metrics = task.metrics();
+
+        task.update_config(config_with_history("task", 1));
+
+        assert_eq!(task.config().deep_history(), 1);
+        assert_eq!(history_times(&task), vec![finished_at(4)]);
+        assert_eq!(task.last_result().unwrap().finished_at(), finished_at(5));
+        assert_eq!(task.metrics(), metrics);
+
+        task.update_config(config_with_history("task", 3));
+
+        assert_eq!(history_times(&task), vec![finished_at(4)]);
+        for seconds in 6..=8 {
+            task.apply_execution(failed_execution(finished_at(seconds)));
+        }
+        let expected_history = vec![finished_at(7), finished_at(6), finished_at(5)];
+        assert_eq!(history_times(&task), expected_history);
+
+        task.update_config(config_with_history("renamed", 3));
+
+        assert_eq!(history_times(&task), expected_history);
+        assert_eq!(task.last_result().unwrap().finished_at(), finished_at(8));
+    }
+
+    #[test]
+    fn config_update_disables_and_reenables_history_without_dropping_the_last_result() {
+        let mut task = Task::new(TaskId(1), config("task"));
+        let started_at = *task.created_at();
+        let finished_at = |seconds| started_at + chrono::Duration::seconds(seconds);
+        for seconds in 1..=3 {
+            task.apply_execution(failed_execution(finished_at(seconds)));
+        }
+
+        task.update_config(config_with_history("task", 0));
+
+        assert!(task.history().is_empty());
+        assert_eq!(task.last_result().unwrap().finished_at(), finished_at(3));
+        task.apply_execution(failed_execution(finished_at(4)));
+        assert!(task.history().is_empty());
+        assert_eq!(task.last_result().unwrap().finished_at(), finished_at(4));
+
+        task.update_config(config_with_history("task", 2));
+
+        assert!(task.history().is_empty());
+        for seconds in 5..=7 {
+            task.apply_execution(failed_execution(finished_at(seconds)));
+        }
+        let retained = task.history();
+        assert_eq!(retained.len(), 2);
+        assert_eq!(retained[0].finished_at(), finished_at(6));
+        assert_eq!(retained[1].finished_at(), finished_at(5));
+        assert_eq!(task.last_result().unwrap().finished_at(), finished_at(7));
     }
 }

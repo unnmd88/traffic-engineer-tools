@@ -22,8 +22,8 @@ use crate::monitor::{
     },
     snapshot::MonitorSnapshot,
     task::{
-        HistoryEntryView, SpecRevision, Task, TaskConfig, TaskConfigurationSnapshot,
-        TaskDescription, TaskId, TaskSnapshot, TaskStatus,
+        SpecRevision, Task, TaskConfig, TaskConfigurationSnapshot, TaskDescription, TaskId,
+        TaskSnapshot, TaskStatus,
     },
 };
 
@@ -976,15 +976,6 @@ impl Orchestrator {
     fn task_snapshot(&self, entry: &TaskEntry) -> TaskSnapshot {
         let t = &entry.task;
         let config = t.config();
-        let history = t
-            .history()
-            .iter()
-            .map(|h| HistoryEntryView {
-                timestamp: h.timestamp,
-                result: h.result.clone(),
-            })
-            .collect();
-
         TaskSnapshot {
             id: t.id(),
             created_at: *t.created_at(),
@@ -999,7 +990,7 @@ impl Orchestrator {
             last_transition: entry.last_transition.clone(),
             metrics: t.metrics(),
             result: t.last_result().cloned(),
-            history,
+            history: t.history().iter().cloned().collect(),
             health: t.health().clone(),
         }
     }
@@ -1685,7 +1676,7 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         let task = &snapshot.tasks[0];
         assert_eq!(task.result.as_ref().unwrap().context, second.context);
-        assert_eq!(task.history[0].result.context, first.context);
+        assert_eq!(task.history[0].context, first.context);
         assert_eq!(task.metrics.executions, 2);
         let mut last = None;
         while let Ok(event) = events.try_recv() {
@@ -1702,7 +1693,7 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].metrics, ExecutionMetrics::default());
         assert_eq!(snapshot.tasks[0].result.as_ref().unwrap().context, second.context);
-        assert_eq!(snapshot.tasks[0].history[0].result.context, first.context);
+        assert_eq!(snapshot.tasks[0].history[0].context, first.context);
     }
 
     #[tokio::test]
@@ -1773,8 +1764,7 @@ mod tests {
         assert_eq!(task.metrics.failed, 1);
         assert_eq!(task.health.consecutive_failures, 0);
         assert_eq!(task.history.len(), 1);
-        assert_eq!(task.history[0].timestamp, first.finished_at());
-        assert_eq!(task.history[0].result.finished_at(), first.finished_at());
+        assert_eq!(task.history[0].finished_at(), first.finished_at());
     }
 
     #[tokio::test]
@@ -1895,7 +1885,7 @@ mod tests {
         );
         assert_eq!(task.metrics.executions, 1);
         assert_eq!(task.history.len(), 1);
-        assert_eq!(task.history[0].result.finished_at(), DateTime::from_timestamp(100, 0).unwrap());
+        assert_eq!(task.history[0].finished_at(), DateTime::from_timestamp(100, 0).unwrap());
         assert_eq!(task.result.as_ref().unwrap().finished_at(), failed.finished_at());
         assert!(orchestrator.entries[&task_id].scenario.is_none());
     }

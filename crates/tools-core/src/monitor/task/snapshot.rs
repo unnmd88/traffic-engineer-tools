@@ -48,16 +48,7 @@ pub struct TaskSnapshot {
     /// The latest retained operation result with its original execution context.
     pub result: Option<ScenarioExecution>,
     /// Previous results ordered from newest to oldest, excluding the latest result.
-    pub history: Vec<HistoryEntryView>,
+    pub history: Vec<ScenarioExecution>,
     /// Recent execution health and diagnostic information.
     pub health: Health,
-}
-
-/// A previous result retained in the task's local history.
-#[derive(Debug, Clone)]
-pub struct HistoryEntryView {
-    /// UTC completion time of the retained result.
-    pub timestamp: DateTime<Utc>,
-    /// The retained operation result with its original execution context.
-    pub result: ScenarioExecution,
 }

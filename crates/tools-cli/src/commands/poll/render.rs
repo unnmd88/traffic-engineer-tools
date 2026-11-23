@@ -155,9 +155,12 @@ fn format_report<T, E: std::fmt::Display>(
 
 fn format_history(view: &TaskSnapshot) -> String {
     let mut out = format!("History: {}\n", view.history.len());
-    for h in &view.history {
-        let kind = format_execution_summary(&h.result);
-        out.push_str(&format!("  {kind} {}\n", h.timestamp.format(DT_FMT_WITH_MICROSECONDS)));
+    for execution in &view.history {
+        let kind = format_execution_summary(execution);
+        out.push_str(&format!(
+            "  {kind} {}\n",
+            execution.finished_at().format(DT_FMT_WITH_MICROSECONDS)
+        ));
     }
     out
 }

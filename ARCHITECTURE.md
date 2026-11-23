@@ -67,7 +67,7 @@ The individual request and SNMP mechanisms are also available through
 | `SnmpGetSpec`, `SnmpSetSpec` | Validated SNMP-request parameters without a network client | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
 | `poll`, `AttemptConfig`, `Pollable`, `PollReport` | Execution of an action with attempts and a complete operation report | [polling](crates/tools-core/src/polling/mod.rs) |
 | `SnmpClient`, `Resolver` | Network operations and OID preparation with device-profile awareness | [client.rs](crates/tools-core/src/snmp/client.rs), [resolve.rs](crates/tools-core/src/snmp/resolve.rs) |
-| `TaskSnapshot`, `TaskConfigurationSnapshot`, `HistoryEntryView` | Owned observations of a task, its accepted configuration, and retained results | [task/snapshot.rs](crates/tools-core/src/monitor/task/snapshot.rs) |
+| `TaskSnapshot`, `TaskConfigurationSnapshot` | Owned observations of a task, its accepted configuration, and retained results | [task/snapshot.rs](crates/tools-core/src/monitor/task/snapshot.rs) |
 | `MonitorSnapshot`, `MonitorSubscription`, `MonitorEvent` | Observing state and changes | [snapshot.rs](crates/tools-core/src/monitor/snapshot.rs), [subscription.rs](crates/tools-core/src/monitor/runtime/subscription.rs), [event.rs](crates/tools-core/src/monitor/event.rs) |
 
 A simplified diagram of a running monitor:
@@ -426,8 +426,18 @@ outcomes.
 and maximum durations. `Health` reflects the recent executions, consecutive failures, and
 a scenario's diagnostic error.
 
-The last result is stored separately from the history. `deep_history` sets the number of
-previous results in the task's local ring; at zero the last result remains available.
+`Task` stores the last result separately from previous results in a
+`VecDeque<ScenarioExecution>`, ordered from newest to oldest. `TaskConfig.deep_history`
+is the single source of the retention depth; at zero the last result remains available.
+`TaskSnapshot.history` contains owned `ScenarioExecution` values in the same order.
+Each result supplies its completion time through `finished_at()` without a separate
+history-entry timestamp or wrapper type.
+Configuration replacement applies the new depth immediately: reducing it discards the
+oldest previous results, increasing it preserves the retained entries and allows future
+results to fill the new depth, and zero clears the ring and disables retention of previous
+results. Increasing the depth does not restore discarded entries. Changing the depth
+preserves the last result and follows the same scenario-replacement behavior as any other
+configuration update.
 This results history differs from the `history_sink` event output.
 
 ## Events, snapshots, and subscriptions
@@ -695,10 +705,6 @@ component's purpose and a link here.
 Open decisions remain about counting fatal errors and about history-output behavior with
 a slow receiver.
 A separate contract for plugging in external scenarios is not yet implemented.
-
-The depth of the results ring is currently set when a `Task` is created.
-Updating `deep_history` via `update_task` does not by itself recreate the ring; applying
-such a setting to an already-registered task needs clarification.
 
 Primary checks: `mise run check`, `mise run test`, and `mise run clippy`.
 Because of the cross-compilation setup, the local-check commands use

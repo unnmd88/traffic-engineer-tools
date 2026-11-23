@@ -3,9 +3,9 @@ use std::time::Duration;
 use tools_core::{
     monitor::{
         AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId, EventData,
-        EventMeta, ExecutionMetrics, Generation, Health, HistoryEntryView, MonitorCommandError,
-        MonitorEvent, MonitorSnapshot, MonitorSubscription, PollSchedule, RestartPolicy,
-        RunningApplication, ScenarioDescription, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec,
+        EventMeta, ExecutionMetrics, Generation, Health, MonitorCommandError, MonitorEvent,
+        MonitorSnapshot, MonitorSubscription, PollSchedule, RestartPolicy, RunningApplication,
+        ScenarioDescription, ScenarioExecution, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec,
         SnmpSetScenarioSpec, SnmpSetSpec, SpecRevision, TaskConfig, TaskConfigurationSnapshot,
         TaskId, TaskSnapshot, TaskStatus,
     },
@@ -51,7 +51,7 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
         let revision: SpecRevision = configuration.revision;
         let metrics: ExecutionMetrics = view.metrics;
         let health: &Health = &view.health;
-        let history: &[HistoryEntryView] = &view.history;
+        let history: &[ScenarioExecution] = &view.history;
         assert_eq!(task_id, application.task_ids()[index]);
         assert_eq!(revision, SpecRevision::new(1));
         assert_eq!(view.status, TaskStatus::Idle);
