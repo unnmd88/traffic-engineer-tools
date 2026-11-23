@@ -3,7 +3,7 @@ use std::time::Duration;
 use tools_core::{
     monitor::{
         AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId, EventData,
-        EventMeta, ExecutionMetrics, Generation, Health, MonitorCommandError, MonitorEvent,
+        EventMeta, ExecutionMetrics, Generation, MonitorCommandError, MonitorEvent,
         MonitorSnapshot, MonitorSubscription, PollSchedule, RestartPolicy, RunningApplication,
         ScenarioDescription, ScenarioExecution, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec,
         SnmpSetScenarioSpec, SnmpSetSpec, SpecRevision, TaskConfig, TaskConfigurationSnapshot,
@@ -50,7 +50,6 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
         let task_id: TaskId = view.id;
         let revision: SpecRevision = configuration.revision;
         let metrics: ExecutionMetrics = view.metrics;
-        let health: &Health = &view.health;
         let history: &[ScenarioExecution] = &view.history;
         assert_eq!(task_id, application.task_ids()[index]);
         assert_eq!(revision, SpecRevision::new(1));
@@ -59,7 +58,8 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
         assert_eq!(view.created_at, configuration.accepted_at);
         assert_eq!(view.created_at, view.updated_at);
         assert_eq!(metrics.executions, 0);
-        assert!(health.last_error.is_none());
+        assert!(view.last_failure.is_none());
+        assert_eq!(metrics.consecutive_failures, 0);
         assert!(history.is_empty());
     }
     assert!(matches!(

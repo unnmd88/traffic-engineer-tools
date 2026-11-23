@@ -6,7 +6,6 @@ use chrono::{DateTime, Utc};
 use derive_more::{Constructor, Display};
 
 use crate::monitor::{
-    OperationStatus,
     scenario::ScenarioExecution,
     task::{ExecutionMetrics, TaskConfig},
 };
@@ -55,32 +54,6 @@ impl SpecRevision {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Health {
-    pub last_execution_at: Option<DateTime<Utc>>,
-    pub consecutive_failures: u64,
-    pub last_error: Option<String>,
-}
-
-impl Health {
-    pub fn record(&mut self, execution: &ScenarioExecution) {
-        self.last_execution_at = Some(execution.finished_at());
-        match execution.report.status() {
-            OperationStatus::Succeeded | OperationStatus::Degraded => self.consecutive_failures = 0,
-            _ => self.consecutive_failures += 1,
-        }
-        self.last_error = None;
-    }
-
-    pub fn record_error(&mut self, reason: String) {
-        self.last_error = Some(reason);
-    }
-
-    pub fn clear_error(&mut self) {
-        self.last_error = None;
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(in crate::monitor) struct Task {
     id: TaskId,
@@ -90,7 +63,6 @@ pub(in crate::monitor) struct Task {
     last_result: Option<ScenarioExecution>,
     history: VecDeque<ScenarioExecution>,
     metrics: ExecutionMetrics,
-    health: Health,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -106,7 +78,6 @@ impl Task {
             config_updated_at: dt,
             last_result: None,
             metrics: ExecutionMetrics::default(),
-            health: Health::default(),
             history: VecDeque::with_capacity(usize::from(deep_history)),
             created_at: dt,
             updated_at: dt,
@@ -149,12 +120,7 @@ impl Task {
         &self.history
     }
 
-    pub fn health(&self) -> &Health {
-        &self.health
-    }
-
     pub fn apply_execution(&mut self, result: ScenarioExecution) {
-        self.health.record(&result);
         if let Some(detail) = result.report.detail() {
             self.metrics.record(detail.status(), result.elapsed());
         }
@@ -175,16 +141,6 @@ impl Task {
         }
     }
 
-    /// Записать причину сбоя (для диагностики «почему Restarting»).
-    pub fn record_error(&mut self, reason: String) {
-        self.health.record_error(reason);
-    }
-
-    /// Сбросить причину после успешной сборки/опроса.
-    pub fn clear_error(&mut self) {
-        self.health.clear_error();
-    }
-
     pub fn update_config(&mut self, config: TaskConfig) {
         let revision = self.revision.next();
         let now = Utc::now();
@@ -195,10 +151,9 @@ impl Task {
         self.updated_at = now;
     }
 
-    /// Новый запуск: сброс накопительных метрик и здоровья (result/history остаются).
+    /// Resets execution metrics for an explicit new start, retaining results and history.
     pub fn reset_run(&mut self) {
         self.metrics = ExecutionMetrics::default();
-        self.health = Health::default();
         self.updated_at = Utc::now();
     }
 }

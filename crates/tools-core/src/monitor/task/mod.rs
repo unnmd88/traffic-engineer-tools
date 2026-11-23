@@ -13,7 +13,7 @@ pub use error::TaskError;
 pub use metrics::ExecutionMetrics;
 pub use progress::TaskProgress;
 pub use snapshot::{TaskConfigurationSnapshot, TaskSnapshot};
-pub use task::{Health, SpecRevision, TaskId, TaskStatus};
+pub use task::{SpecRevision, TaskId, TaskStatus};
 pub use transition::{
     RestartPlan, ScenarioFailure, TaskCommandKind, TaskTransition, TaskTransitionCause,
 };

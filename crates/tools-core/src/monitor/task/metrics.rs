@@ -10,6 +10,8 @@ pub struct ExecutionMetrics {
     pub successful: u64,
     pub degraded: u64,
     pub failed: u64,
+    /// Consecutive accounted failures, reset by a successful or degraded execution.
+    pub consecutive_failures: u64,
     pub current_duration: Duration,
     pub min_duration: Option<Duration>,
     pub max_duration: Option<Duration>,
@@ -19,9 +21,18 @@ impl ExecutionMetrics {
     pub fn record(&mut self, status: OutcomeStatus, elapsed: Duration) {
         self.executions += 1;
         match status {
-            OutcomeStatus::Succeeded => self.successful += 1,
-            OutcomeStatus::Degraded => self.degraded += 1,
-            OutcomeStatus::Failed => self.failed += 1,
+            OutcomeStatus::Succeeded => {
+                self.successful += 1;
+                self.consecutive_failures = 0;
+            }
+            OutcomeStatus::Degraded => {
+                self.degraded += 1;
+                self.consecutive_failures = 0;
+            }
+            OutcomeStatus::Failed => {
+                self.failed += 1;
+                self.consecutive_failures += 1;
+            }
         }
         self.current_duration = elapsed;
         self.min_duration = Some(self.min_duration.map_or(elapsed, |min| min.min(elapsed)));
@@ -50,5 +61,20 @@ mod tests {
         assert_eq!(metrics.current_duration, Duration::from_millis(50));
         assert_eq!(metrics.min_duration, Some(Duration::from_millis(10)));
         assert_eq!(metrics.max_duration, Some(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn failure_streak_tracks_failures_since_the_last_successful_or_degraded_execution() {
+        let mut metrics = ExecutionMetrics::default();
+        for recovery in [OutcomeStatus::Succeeded, OutcomeStatus::Degraded] {
+            metrics.record(OutcomeStatus::Failed, Duration::ZERO);
+            metrics.record(OutcomeStatus::Failed, Duration::ZERO);
+            assert_eq!(metrics.consecutive_failures, 2);
+
+            metrics.record(recovery, Duration::ZERO);
+            assert_eq!(metrics.consecutive_failures, 0);
+        }
+        assert_eq!(metrics.failed, 4);
+        assert_eq!(metrics.executions, 6);
     }
 }

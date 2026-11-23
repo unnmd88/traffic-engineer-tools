@@ -32,6 +32,7 @@ struct TaskEntry {
     state: TaskStatus,
     progress: Option<TaskProgress>,
     last_transition: Option<TaskTransition>,
+    last_failure: Option<ScenarioFailure>,
     attempts: u32,
     next_generation: Generation,
     generation: Generation,
@@ -190,6 +191,7 @@ impl Orchestrator {
                 state: TaskStatus::Idle,
                 progress: None,
                 last_transition: None,
+                last_failure: None,
                 attempts: 0,
                 next_generation: Generation::first(),
                 generation: Generation::first(),
@@ -377,6 +379,7 @@ impl Orchestrator {
         {
             let entry = self.entries.get_mut(&id).expect("checked above");
             entry.task.reset_run();
+            entry.last_failure = None;
             entry.attempts = 0;
         }
         self.spawn_scenario(id);
@@ -601,7 +604,7 @@ impl Orchestrator {
             ScenarioReport::Built { .. } => {
                 let entry = self.entries.get_mut(&task_id).expect("validated task");
                 entry.attempts = 0;
-                entry.task.clear_error();
+                entry.last_failure = None;
                 self.transition(
                     task_id,
                     TaskStatus::Active,
@@ -628,6 +631,7 @@ impl Orchestrator {
             ScenarioReport::Executed { execution, .. } => {
                 let entry = self.entries.get_mut(&task_id).expect("validated task");
                 entry.task.apply_execution(execution.clone());
+                entry.last_failure = None;
                 let completed = limit_reached(entry);
                 let limit = entry.task.config().limit();
                 if completed && let Some(scenario) = entry.scenario.take() {
@@ -707,19 +711,7 @@ impl Orchestrator {
         execution: Option<crate::monitor::ScenarioExecution>,
     ) {
         let entry = self.entries.get_mut(&task_id).expect("validated task");
-        let reason = match &failure {
-            ScenarioFailure::Preparation(error) => error.to_string(),
-            ScenarioFailure::Execution(error) => error.to_string(),
-            ScenarioFailure::Panicked { stage, reason } => {
-                let label = match stage {
-                    PanicStage::Build => "build",
-                    PanicStage::Execution => "execution",
-                    PanicStage::Runtime => "scenario",
-                };
-                format!("{label}: {reason}")
-            }
-        };
-        entry.task.record_error(reason);
+        entry.last_failure = Some(failure.clone());
         entry.scenario = None;
         entry.attempts += 1;
         let delay = self.policy.delay(entry.attempts);
@@ -991,7 +983,7 @@ impl Orchestrator {
             metrics: t.metrics(),
             result: t.last_result().cloned(),
             history: t.history().iter().cloned().collect(),
-            health: t.health().clone(),
+            last_failure: entry.last_failure.clone(),
         }
     }
 
@@ -1216,6 +1208,7 @@ mod tests {
                 state: TaskStatus::Active,
                 progress: None,
                 last_transition: None,
+                last_failure: None,
                 attempts: 0,
                 next_generation: Generation::first().next(),
                 generation: Generation::first(),
@@ -1751,8 +1744,7 @@ mod tests {
         assert_eq!(task.metrics.executions, 1);
         assert_eq!(task.metrics.failed, 1);
         assert_eq!(task.metrics.current_duration, first.elapsed());
-        assert_eq!(task.health.consecutive_failures, 1);
-        assert_eq!(task.health.last_execution_at, Some(first.finished_at()));
+        assert_eq!(task.metrics.consecutive_failures, 1);
         assert_eq!(task.result.as_ref().unwrap().finished_at(), first.finished_at());
         assert!(orchestrator.entries[&task_id].scenario.is_some());
 
@@ -1762,7 +1754,7 @@ mod tests {
         assert_eq!(task.metrics.executions, 2);
         assert_eq!(task.metrics.successful, 1);
         assert_eq!(task.metrics.failed, 1);
-        assert_eq!(task.health.consecutive_failures, 0);
+        assert_eq!(task.metrics.consecutive_failures, 0);
         assert_eq!(task.history.len(), 1);
         assert_eq!(task.history[0].finished_at(), first.finished_at());
     }
@@ -1846,7 +1838,8 @@ mod tests {
             retryable: false,
         };
         let (mut orchestrator, mut events, task_id) = active_task(2);
-        execute(&mut orchestrator, task_id, execution(100, true)).await;
+        execute(&mut orchestrator, task_id, execution(100, false)).await;
+        let metrics = orchestrator.snapshot().tasks[0].metrics;
         events.try_recv().unwrap();
         orchestrator
             .on_report(ScenarioReport::ExecutionFailed {
@@ -1884,6 +1877,12 @@ mod tests {
             serde_json::to_value(task.last_transition.as_ref().unwrap()).unwrap()
         );
         assert_eq!(task.metrics.executions, 1);
+        assert_eq!(task.metrics, metrics);
+        assert_eq!(task.metrics.consecutive_failures, 1);
+        assert!(matches!(&task.last_failure,
+            Some(ScenarioFailure::Execution(ScenarioExecutionError::Snmp(
+                SnmpError::InvalidOid(reason)
+            ))) if reason == "invalid request"));
         assert_eq!(task.history.len(), 1);
         assert_eq!(task.history[0].finished_at(), DateTime::from_timestamp(100, 0).unwrap());
         assert_eq!(task.result.as_ref().unwrap().finished_at(), failed.finished_at());
@@ -2076,7 +2075,12 @@ mod tests {
             assert_eq!(transition.restart.unwrap().attempt, 1);
             let snapshot = orchestrator.snapshot();
             assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
-            assert_eq!(snapshot.tasks[0].health.last_error, Some(error.to_string()));
+            assert!(matches!(&snapshot.tasks[0].last_failure,
+                Some(ScenarioFailure::Preparation(reported)) if reported == &error));
+            assert_eq!(
+                snapshot.tasks[0].last_failure.as_ref().unwrap().to_string(),
+                error.to_string()
+            );
             assert_eq!(snapshot.tasks[0].metrics.executions, 0);
             assert!(snapshot.tasks[0].result.is_none());
             assert_eq!(orchestrator.entries[&task_id].attempts, 1);
@@ -2128,9 +2132,12 @@ mod tests {
             assert_eq!(snapshot.tasks[0].status, TaskStatus::Restarting);
             assert_eq!(snapshot.tasks[0].metrics.executions, 0);
             assert_eq!(
-                snapshot.tasks[0].health.last_error.as_deref(),
-                Some(format!("{label}: panic").as_str())
+                snapshot.tasks[0].last_failure.as_ref().unwrap().to_string(),
+                format!("{label}: panic")
             );
+            assert!(matches!(&snapshot.tasks[0].last_failure,
+                Some(ScenarioFailure::Panicked { stage: actual, reason })
+                    if *actual == stage && reason == "panic"));
         }
     }
 
@@ -2562,7 +2569,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transition_readiness_records_reason_and_clears_previous_health() {
+    async fn transition_readiness_records_reason_and_clears_previous_failure() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let entry = orchestrator.entries.get_mut(&task_id).unwrap();
         entry.state = TaskStatus::Preparing;
@@ -2571,7 +2578,9 @@ mod tests {
             at: Utc::now(),
             message: "Finishing preparation".to_string(),
         });
-        entry.task.record_error("previous failure".to_string());
+        entry.last_failure = Some(ScenarioFailure::Preparation(ScenarioBuildError::Other(
+            "previous failure".to_string(),
+        )));
         orchestrator
             .on_report(ScenarioReport::Built {
                 task_id,
@@ -2584,8 +2593,49 @@ mod tests {
         assert!(matches!(ready.cause, TaskTransitionCause::ScenarioReady));
         assert!(ready.restart.is_none());
         assert_eq!(orchestrator.entries[&task_id].attempts, 0);
-        assert!(orchestrator.snapshot().tasks[0].health.last_error.is_none());
+        assert!(orchestrator.snapshot().tasks[0].last_failure.is_none());
         assert!(orchestrator.snapshot().tasks[0].progress.is_none());
+    }
+
+    #[tokio::test]
+    async fn typed_failure_survives_restart_preparation_until_readiness() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        execute(&mut orchestrator, task_id, execution(100, false)).await;
+        events.try_recv().unwrap();
+        fail_scenario(&mut orchestrator, task_id).await;
+        let recovery = take_transition(&orchestrator, &mut events, task_id);
+        let expected = orchestrator.snapshot().tasks[0]
+            .last_failure
+            .clone()
+            .unwrap();
+
+        orchestrator
+            .maybe_respawn(task_id, Generation::first())
+            .await;
+        control_scenario(&mut orchestrator, task_id);
+        let preparing = take_transition(&orchestrator, &mut events, task_id);
+        assert_eq!(preparing.current, TaskStatus::Preparing);
+        assert!(matches!(preparing.cause, TaskTransitionCause::RestartDue { .. }));
+        let snapshot = orchestrator.snapshot();
+        let retained = snapshot.tasks[0].last_failure.as_ref().unwrap();
+        assert_eq!(
+            serde_json::to_value(retained).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(matches!(recovery.cause, TaskTransitionCause::Failure(_)));
+        assert_eq!(snapshot.tasks[0].metrics.consecutive_failures, 1);
+
+        let generation = orchestrator.entries[&task_id].generation;
+        orchestrator
+            .on_report(ScenarioReport::Built {
+                task_id,
+                generation,
+            })
+            .await;
+        let snapshot = orchestrator.snapshot();
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Active);
+        assert!(snapshot.tasks[0].last_failure.is_none());
+        assert_eq!(snapshot.tasks[0].metrics.consecutive_failures, 1);
     }
 
     #[tokio::test]
@@ -2713,13 +2763,8 @@ mod tests {
         assert_eq!(plan.attempt, 1);
         assert!(plan.scheduled_at >= before + Duration::from_secs(1));
         assert!(plan.scheduled_at <= Utc::now() + Duration::from_secs(1));
-        assert_eq!(
-            orchestrator.snapshot().tasks[0]
-                .health
-                .last_error
-                .as_deref(),
-            Some(error.to_string().as_str())
-        );
+        assert!(matches!(&orchestrator.snapshot().tasks[0].last_failure,
+            Some(ScenarioFailure::Preparation(reported)) if reported == &error));
 
         orchestrator.pause(task_id).await.unwrap();
         let paused = take_transition(&orchestrator, &mut events, task_id);
@@ -2735,6 +2780,11 @@ mod tests {
         assert!(matches!(stopped.cause, TaskTransitionCause::Command(TaskCommandKind::Stop)));
         orchestrator.stop(task_id).await.unwrap();
         assert!(events.try_recv().is_err());
+        assert!(matches!(&orchestrator.snapshot().tasks[0].last_failure,
+            Some(ScenarioFailure::Preparation(reported)) if reported == &error));
+        orchestrator.start(task_id).await.unwrap();
+        control_scenario(&mut orchestrator, task_id);
+        assert!(orchestrator.snapshot().tasks[0].last_failure.is_none());
     }
 
     #[tokio::test]

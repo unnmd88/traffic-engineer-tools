@@ -81,7 +81,7 @@ fn format_card(view: &TaskSnapshot) -> String {
 fn format_results(view: &TaskSnapshot) -> String {
     let mut out = String::new();
 
-    match &view.health.last_error {
+    match &view.last_failure {
         Some(err) => out.push_str(&format!("Status: {} ({err})\n", view.status)),
         None => out.push_str(&format!("Status: {}\n", view.status)),
     }

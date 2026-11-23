@@ -77,7 +77,7 @@ a design decision remain proposals rather than accepted API changes.
 
 ### Internal leaks / dead surface
 
-- [ ] `pub(crate)` on `Health::{record, record_error, clear_error}` and `ExecutionMetrics::record`.
+- [ ] `pub(crate)` on `ExecutionMetrics::record`.
 - [ ] Decide `Pollable`: public extension point (drop `async_trait`, document) or seal it.
 - [ ] Remove or internalize orphan `polling::Metrics` (produced/consumed nowhere).
 - [ ] Move `DT_FMT` / `DT_FMT_WITH_MICROSECONDS` from core to `tctl` (presentation).

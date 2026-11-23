@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::monitor::scenario::ScenarioExecution;
 
 use super::{
-    ExecutionMetrics, Health, SpecRevision, TaskDescription, TaskId, TaskProgress, TaskStatus,
-    TaskTransition,
+    ExecutionMetrics, ScenarioFailure, SpecRevision, TaskDescription, TaskId, TaskProgress,
+    TaskStatus, TaskTransition,
 };
 
 /// An accepted configuration revision captured for observation.
@@ -49,6 +49,7 @@ pub struct TaskSnapshot {
     pub result: Option<ScenarioExecution>,
     /// Previous results ordered from newest to oldest, excluding the latest result.
     pub history: Vec<ScenarioExecution>,
-    /// Recent execution health and diagnostic information.
-    pub health: Health,
+    /// The latest scenario failure, retained through restart preparation and pause/stop.
+    /// Cleared by an explicit new start, successful preparation, or an accounted result.
+    pub last_failure: Option<ScenarioFailure>,
 }

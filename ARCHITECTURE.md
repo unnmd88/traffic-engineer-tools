@@ -59,7 +59,7 @@ The individual request and SNMP mechanisms are also available through
 | `RunningApplication` | Owns the background execution and its termination | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `ApplicationHandle` | Cloneable access to commands, snapshots, and subscriptions | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `Orchestrator` | Internal owner of task state, their lifecycle, and event ordering | [runtime/orchestrator.rs](crates/tools-core/src/monitor/runtime/orchestrator.rs) |
-| `Task` | Internal configuration, revision, results, metrics, and health of a task | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
+| `Task` | Internal configuration, revision, results, and execution metrics of a task | [task/task.rs](crates/tools-core/src/monitor/task/task.rs) |
 | `TaskProgress` | Scenario-authored preparation activity text and its source timestamp | [task/progress.rs](crates/tools-core/src/monitor/task/progress.rs) |
 | `TaskTransition` | Task lifecycle changes, their causes, and restart plans, shared by events and task snapshots | [task/transition.rs](crates/tools-core/src/monitor/task/transition.rs) |
 | `ScenarioSpec` | Public description of the selected scenario | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
@@ -181,9 +181,10 @@ Through an internal `OrchestratorHandle`, the public handle passes commands and 
 for replies over separate channels.
 
 `Task` holds the `TaskConfig`, revision, timestamps, the last result, local history,
-metrics, and health. The current `TaskStatus`, latest text progress, last transition,
-execution generation, restart counter, and scenario handle live in the orchestrator's record. There is no second
-internal status enum. `TaskSnapshot.status` and `TaskSnapshot.last_transition` expose the status
+and metrics. The current `TaskStatus`, latest text progress, last transition, last typed
+scenario failure, execution generation, restart counter, and scenario handle live in the
+orchestrator's record. There is no second internal status enum.
+`TaskSnapshot.status` and `TaskSnapshot.last_transition` expose the status
 and the last actual change. The transition contains its UTC change time, previous/current
 states, typed cause, and optional restart plan. Publication time remains in event metadata.
 
@@ -219,7 +220,8 @@ request with its retries to finish.
 When the configuration of an active task changes, the old execution is cancelled and a new
 one starts with a new generation. Metrics and accumulated results are preserved.
 For a paused task, applying a new scenario is deferred until `resume`.
-An explicit new `start_task` resets metrics and health while keeping results and history.
+An explicit new `start_task` resets metrics and clears the last scenario failure while
+keeping results and history.
 
 Timestamps have different meanings: `TaskSnapshot.created_at` is task creation,
 `configuration.accepted_at` is acceptance of the current configuration revision, and
@@ -422,9 +424,17 @@ Success after retries is still successful; the attempts preserve evidence of ear
 The `Degraded` variant exists in the contract but is not currently produced by these
 outcomes.
 
-`ExecutionMetrics` counts complete executions and outcomes, and stores the last, minimum,
-and maximum durations. `Health` reflects the recent executions, consecutive failures, and
-a scenario's diagnostic error.
+`ExecutionMetrics` counts complete executions and outcomes, including consecutive failures,
+and stores the last, minimum, and maximum durations. Successful or degraded accounted
+executions reset the failure streak; non-retryable failures, preparation errors, and panics
+do not change metrics or the streak.
+
+`TaskEntry` retains the latest typed `ScenarioFailure`, exposed as `TaskSnapshot.last_failure`.
+It survives automatic restart preparation, configuration replacement, pause, and stop,
+independently of the latest lifecycle transition. An explicit new start, successful
+preparation, or an accounted operation result clears it. Interfaces format this failure
+for display; the core preserves its type. Operation completion time is available from
+the retained result's `finished_at()` rather than a separate diagnostic timestamp.
 
 `Task` stores the last result separately from previous results in a
 `VecDeque<ScenarioExecution>`, ordered from newest to oldest. `TaskConfig.deep_history`

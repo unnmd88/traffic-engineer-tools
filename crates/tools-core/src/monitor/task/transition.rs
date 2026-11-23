@@ -37,6 +37,23 @@ pub enum ScenarioFailure {
     },
 }
 
+impl std::fmt::Display for ScenarioFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preparation(error) => error.fmt(f),
+            Self::Execution(error) => error.fmt(f),
+            Self::Panicked { stage, reason } => {
+                let label = match stage {
+                    PanicStage::Build => "build",
+                    PanicStage::Execution => "execution",
+                    PanicStage::Runtime => "scenario",
+                };
+                write!(f, "{label}: {reason}")
+            }
+        }
+    }
+}
+
 /// Why a task actually changed state; accepting a command alone is not a transition.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]

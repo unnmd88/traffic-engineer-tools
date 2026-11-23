@@ -74,7 +74,7 @@ fn format_task(out: &mut String, task: &TaskSnapshot, now: DateTime<Local>, widt
     if let Some(progress) = &task.progress {
         push_line(out, &format!("Activity: {}", progress.message), width);
     }
-    if let Some(error) = &task.health.last_error {
+    if let Some(error) = &task.last_failure {
         push_line(out, &format!("Error: {error}"), width);
     }
     let runs = match description.limit {
@@ -88,7 +88,7 @@ fn format_task(out: &mut String, task: &TaskSnapshot, now: DateTime<Local>, widt
             task.metrics.successful,
             task.metrics.degraded,
             task.metrics.failed,
-            task.health.consecutive_failures,
+            task.metrics.consecutive_failures,
         ),
         width,
     );
