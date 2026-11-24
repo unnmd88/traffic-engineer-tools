@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, watch},
     task::{AbortHandle, JoinSet},
     time::{Instant, sleep_until},
 };
@@ -17,8 +17,8 @@ use crate::monitor::{
         restart_policy::RestartPolicy,
     },
     scenario::{
-        Generation, PanicStage, RunBudget, ScenarioCommand, ScenarioContext, ScenarioReport,
-        ScenarioSpec, run_scenario,
+        Generation, PanicStage, RunBudget, RunMode, ScenarioContext, ScenarioReport, ScenarioSpec,
+        run_scenario,
     },
     snapshot::MonitorSnapshot,
     task::{
@@ -75,7 +75,19 @@ impl TaskEntry {
 struct ScenarioHandle {
     generation: Generation,
     abort: AbortHandle,
-    cmd: mpsc::Sender<ScenarioCommand>,
+    mode_tx: watch::Sender<RunMode>,
+}
+
+impl ScenarioHandle {
+    fn request_mode(&self, mode: RunMode) {
+        self.mode_tx.send_if_modified(|current| {
+            if *current == mode {
+                return false;
+            }
+            *current = mode;
+            true
+        });
+    }
 }
 
 enum Command {
@@ -400,30 +412,16 @@ impl Orchestrator {
     }
 
     async fn pause(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
-        let (forward, set_state) = {
-            let entry = self
-                .entries
-                .get_mut(&id)
-                .ok_or(MonitorCommandError::TaskNotFound(id))?;
-            match entry.state {
-                TaskStatus::Preparing | TaskStatus::Active => {
-                    (entry.scenario.is_some(), entry.scenario.is_none())
-                }
-                TaskStatus::Restarting => (false, true),
-                _ => (false, false),
-            }
-        };
-
-        if forward
-            && let Some(cmd) = self
-                .entries
-                .get(&id)
-                .and_then(|e| e.scenario.as_ref())
-                .map(|scenario| scenario.cmd.clone())
-        {
-            let _ = cmd.send(ScenarioCommand::Pause).await;
-        }
-        if set_state {
+        let entry = self
+            .entries
+            .get(&id)
+            .ok_or(MonitorCommandError::TaskNotFound(id))?;
+        if let Some(scenario) = &entry.scenario {
+            scenario.request_mode(RunMode::Paused);
+        } else if matches!(
+            entry.state,
+            TaskStatus::Preparing | TaskStatus::Active | TaskStatus::Restarting
+        ) {
             self.transition(
                 id,
                 TaskStatus::Paused,
@@ -436,31 +434,14 @@ impl Orchestrator {
     }
 
     async fn resume(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
-        let (forward, spawn) = {
-            let entry = self
-                .entries
-                .get_mut(&id)
-                .ok_or(MonitorCommandError::TaskNotFound(id))?;
-            match entry.state {
-                TaskStatus::Paused => (entry.scenario.is_some(), entry.scenario.is_none()),
-                _ => (false, false),
-            }
-        };
-
-        if forward
-            && let Some(cmd) = self
-                .entries
-                .get(&id)
-                .and_then(|e| e.scenario.as_ref())
-                .map(|scenario| scenario.cmd.clone())
-        {
-            let _ = cmd.send(ScenarioCommand::Resume).await;
-        }
-        if spawn {
-            {
-                let entry = self.entries.get_mut(&id).expect("checked above");
-                entry.attempts = 0;
-            }
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or(MonitorCommandError::TaskNotFound(id))?;
+        if let Some(scenario) = &entry.scenario {
+            scenario.request_mode(RunMode::Running);
+        } else if entry.state == TaskStatus::Paused {
+            entry.attempts = 0;
             self.spawn_scenario(id, TaskTransitionCause::Command(TaskCommandKind::Resume))
                 .await;
         }
@@ -797,7 +778,7 @@ impl Orchestrator {
             scenario_kind,
             device = %scenario.target(),
         );
-        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (mode_tx, mode_rx) = watch::channel(RunMode::Running);
         let report_tx = self.report_tx.clone();
         let abort = self.scenarios.spawn(
             run_scenario(
@@ -809,14 +790,14 @@ impl Orchestrator {
                 },
                 budget,
                 report_tx,
-                cmd_rx,
+                mode_rx,
             )
             .instrument(span),
         );
         entry.scenario = Some(ScenarioHandle {
             generation,
             abort,
-            cmd: cmd_tx,
+            mode_tx,
         });
         self.transition(task_id, TaskStatus::Preparing, cause, None)
             .await;
@@ -1217,7 +1198,7 @@ mod tests {
         let mut task =
             Task::new(task_id, TaskConfig::try_new("test".to_string(), scenario, 3).unwrap());
         task.begin_run(limit);
-        let (cmd, _cmd_rx) = mpsc::channel(8);
+        let (mode_tx, _mode_rx) = watch::channel(RunMode::Running);
         let abort = orchestrator.scenarios.spawn(std::future::pending());
         orchestrator.entries.insert(
             task_id,
@@ -1233,7 +1214,7 @@ mod tests {
                 scenario: Some(ScenarioHandle {
                     generation: Generation::first(),
                     abort,
-                    cmd,
+                    mode_tx,
                 }),
                 finishing_scenario: None,
             },
@@ -1306,12 +1287,12 @@ mod tests {
         if let Some(scenario) = entry.scenario.take() {
             scenario.abort.abort();
         }
-        let (cmd, _commands) = mpsc::channel(8);
+        let (mode_tx, _mode_rx) = watch::channel(RunMode::Running);
         let abort = orchestrator.scenarios.spawn(std::future::pending());
         entry.scenario = Some(ScenarioHandle {
             generation: entry.generation,
             abort,
-            cmd,
+            mode_tx,
         });
     }
 
@@ -2205,19 +2186,13 @@ mod tests {
     async fn pause_and_resume_wait_for_acknowledgements_and_stop_rejects_late_reports() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let generation = orchestrator.entries[&task_id].generation;
-        let (cmd, mut commands) = mpsc::channel(8);
-        let scenario = orchestrator
-            .entries
-            .get_mut(&task_id)
-            .unwrap()
-            .scenario
-            .as_mut()
-            .unwrap();
-        scenario.cmd = cmd;
+        let scenario = orchestrator.entries[&task_id].scenario.as_ref().unwrap();
+        let mut mode = scenario.mode_tx.subscribe();
         let abort = scenario.abort.clone();
 
         orchestrator.pause(task_id).await.unwrap();
-        assert!(matches!(commands.recv().await, Some(ScenarioCommand::Pause)));
+        assert!(mode.has_changed().unwrap());
+        assert_eq!(*mode.borrow_and_update(), RunMode::Paused);
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
         assert!(events.try_recv().is_err());
         orchestrator
@@ -2232,10 +2207,11 @@ mod tests {
         );
 
         orchestrator.pause(task_id).await.unwrap();
-        assert!(commands.try_recv().is_err());
+        assert!(!mode.has_changed().unwrap());
         assert!(events.try_recv().is_err());
         orchestrator.resume(task_id).await.unwrap();
-        assert!(matches!(commands.recv().await, Some(ScenarioCommand::Resume)));
+        assert!(mode.has_changed().unwrap());
+        assert_eq!(*mode.borrow_and_update(), RunMode::Running);
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
         assert!(events.try_recv().is_err());
         orchestrator
@@ -2250,11 +2226,11 @@ mod tests {
         );
 
         orchestrator.resume(task_id).await.unwrap();
-        assert!(commands.try_recv().is_err());
+        assert!(!mode.has_changed().unwrap());
         assert!(events.try_recv().is_err());
         orchestrator.stop(task_id).await.unwrap();
         assert!(abort.is_finished());
-        assert!(commands.recv().await.is_none());
+        assert!(mode.changed().await.is_err());
         assert!(
             matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Stopped)
         );
@@ -2277,6 +2253,42 @@ mod tests {
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Stopped);
         assert_eq!(orchestrator.snapshot().tasks[0].metrics, ExecutionMetrics::default());
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn latest_mode_replaces_unconfirmed_pause_and_resume_requests() {
+        let (mut orchestrator, mut events, task_id) = active_task(0);
+        let scenario = orchestrator.entries[&task_id].scenario.as_ref().unwrap();
+        let mut mode = scenario.mode_tx.subscribe();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            for _ in 0..16 {
+                orchestrator.pause(task_id).await.unwrap();
+            }
+            assert_eq!(*mode.borrow(), RunMode::Paused);
+            assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
+            orchestrator.resume(task_id).await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(*mode.borrow_and_update(), RunMode::Running);
+        assert!(events.try_recv().is_err());
+
+        orchestrator.pause(task_id).await.unwrap();
+        orchestrator
+            .on_report(ScenarioReport::Paused {
+                task_id,
+                generation: Generation::first(),
+            })
+            .await;
+        assert_eq!(*mode.borrow_and_update(), RunMode::Paused);
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
+
+        orchestrator.resume(task_id).await.unwrap();
+        assert_eq!(*mode.borrow(), RunMode::Running);
+        orchestrator.pause(task_id).await.unwrap();
+        assert_eq!(*mode.borrow_and_update(), RunMode::Paused);
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
     }
 
     #[tokio::test]
@@ -2582,18 +2594,16 @@ mod tests {
     async fn transition_pause_resume_wait_for_acknowledgements_and_ignore_duplicates() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let generation = Generation::first();
-        let (cmd, mut commands) = mpsc::channel(8);
-        orchestrator
-            .entries
-            .get_mut(&task_id)
-            .unwrap()
+        let mut mode = orchestrator.entries[&task_id]
             .scenario
-            .as_mut()
+            .as_ref()
             .unwrap()
-            .cmd = cmd;
+            .mode_tx
+            .subscribe();
 
         orchestrator.pause(task_id).await.unwrap();
-        assert!(matches!(commands.try_recv().unwrap(), ScenarioCommand::Pause));
+        assert!(mode.has_changed().unwrap());
+        assert_eq!(*mode.borrow_and_update(), RunMode::Paused);
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Active);
         assert!(events.try_recv().is_err());
         orchestrator
@@ -2614,7 +2624,7 @@ mod tests {
             })
             .await;
         orchestrator.pause(task_id).await.unwrap();
-        assert!(commands.try_recv().is_err());
+        assert!(!mode.has_changed().unwrap());
         assert!(events.try_recv().is_err());
         assert_eq!(
             serde_json::to_value(
@@ -2628,7 +2638,8 @@ mod tests {
         );
 
         orchestrator.resume(task_id).await.unwrap();
-        assert!(matches!(commands.try_recv().unwrap(), ScenarioCommand::Resume));
+        assert!(mode.has_changed().unwrap());
+        assert_eq!(*mode.borrow_and_update(), RunMode::Running);
         assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
         assert!(events.try_recv().is_err());
         orchestrator

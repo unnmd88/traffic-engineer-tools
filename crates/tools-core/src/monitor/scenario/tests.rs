@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use async_snmp::{ErrorStatus, Pdu, PduType, Value, message::CommunityMessage};
 use tokio::{
     net::UdpSocket,
-    sync::mpsc,
+    sync::{mpsc, watch},
     task::{JoinHandle, yield_now},
     time::{Duration, Instant, advance, timeout},
 };
@@ -20,7 +20,7 @@ use crate::{
 
 struct Session {
     join: JoinHandle<()>,
-    commands: mpsc::Sender<ScenarioCommand>,
+    mode_tx: watch::Sender<RunMode>,
     reports: mpsc::Receiver<ScenarioReport>,
     progress: Vec<TaskProgress>,
     operations: Vec<(crate::monitor::OperationContext, chrono::DateTime<chrono::Utc>)>,
@@ -165,7 +165,7 @@ fn spawn(scenario: ScenarioSpec) -> Session {
 
 fn spawn_with_budget(scenario: ScenarioSpec, budget: RunBudget) -> Session {
     let (report_tx, reports) = mpsc::channel(64);
-    let (commands, cmd_rx) = mpsc::channel(8);
+    let (mode_tx, mode_rx) = watch::channel(RunMode::Running);
     let join = tokio::spawn(run_scenario(
         scenario,
         ScenarioContext {
@@ -175,11 +175,11 @@ fn spawn_with_budget(scenario: ScenarioSpec, budget: RunBudget) -> Session {
         },
         budget,
         report_tx,
-        cmd_rx,
+        mode_rx,
     ));
     Session {
         join,
-        commands,
+        mode_tx,
         reports,
         progress: Vec::new(),
         operations: Vec::new(),
@@ -220,7 +220,7 @@ async fn reply(peer: &UdpSocket, message: CommunityMessage, source: SocketAddr, 
 }
 
 async fn stop(session: Session) {
-    drop(session.commands);
+    drop(session.mode_tx);
     timeout(Duration::from_secs(1), session.join)
         .await
         .unwrap()
@@ -315,7 +315,7 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
     for operation in [Operation::Get, Operation::Set] {
         let (mut session, peer) = start_with_budget(operation, 1, RunBudget::Remaining(2)).await;
         receive(&peer).await;
-        session.commands.send(ScenarioCommand::Pause).await.unwrap();
+        session.mode_tx.send(RunMode::Paused).unwrap();
         receive(&peer).await;
         let ScenarioReport::RunFinished {
             execution,
@@ -338,18 +338,14 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
         ));
         assert!(matches!(session.next_report().await, Some(ScenarioReport::Paused { .. })));
         advance(Duration::from_secs(100)).await;
-        session.commands.send(ScenarioCommand::Pause).await.unwrap();
+        session.mode_tx.send(RunMode::Paused).unwrap();
         yield_now().await;
         assert!(session.reports.try_recv().is_err());
         let mut packet = [0; 2048];
         assert_eq!(peer.try_recv(&mut packet).unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
 
         let resumed_at = Instant::now();
-        session
-            .commands
-            .send(ScenarioCommand::Resume)
-            .await
-            .unwrap();
+        session.mode_tx.send(RunMode::Running).unwrap();
         assert!(matches!(session.next_report().await, Some(ScenarioReport::Resumed { .. })));
         let (message, source) = receive(&peer).await;
         assert_eq!(resumed_at.elapsed(), Duration::from_secs(10));
@@ -367,17 +363,47 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn resume_replaces_a_pause_requested_during_an_operation() {
+    for operation in [Operation::Get, Operation::Set] {
+        let (mut session, peer) = start_with_budget(operation, 0, RunBudget::Remaining(2)).await;
+        let (message, source) = receive(&peer).await;
+        session.mode_tx.send(RunMode::Paused).unwrap();
+        session.mode_tx.send(RunMode::Running).unwrap();
+        let response = message.pdu.standard().unwrap().to_response();
+        reply(&peer, message, source, response).await;
+        assert!(matches!(
+            session.next_report().await,
+            Some(ScenarioReport::RunFinished {
+                limit_reached: false,
+                ..
+            })
+        ));
+
+        let (message, source) = timeout(Duration::from_secs(20), receive(&peer))
+            .await
+            .unwrap();
+        let response = message.pdu.standard().unwrap().to_response();
+        reply(&peer, message, source, response).await;
+        assert!(matches!(
+            session.next_report().await,
+            Some(ScenarioReport::RunFinished {
+                limit_reached: true,
+                ..
+            })
+        ));
+        assert!(session.next_report().await.is_none());
+        session.join.await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn redundant_resume_does_not_postpone_request() {
     for operation in [Operation::Get, Operation::Set] {
         let (session, peer) = start(operation, 0).await;
         let started_at = Instant::now();
         for _ in 0..9 {
             advance(Duration::from_secs(1)).await;
-            session
-                .commands
-                .send(ScenarioCommand::Resume)
-                .await
-                .unwrap();
+            session.mode_tx.send(RunMode::Running).unwrap();
             yield_now().await;
         }
         receive(&peer).await;
@@ -393,7 +419,7 @@ async fn closed_channels_end_active_and_paused_scenarios() {
             for close_reports in [false, true] {
                 let (mut session, _peer) = start(operation, 0).await;
                 if paused {
-                    session.commands.send(ScenarioCommand::Pause).await.unwrap();
+                    session.mode_tx.send(RunMode::Paused).unwrap();
                     assert!(matches!(
                         session.next_report().await,
                         Some(ScenarioReport::Paused { .. })
@@ -402,7 +428,7 @@ async fn closed_channels_end_active_and_paused_scenarios() {
                 if close_reports {
                     drop(session.reports);
                 } else {
-                    drop(session.commands);
+                    drop(session.mode_tx);
                 }
                 timeout(Duration::from_secs(1), session.join)
                     .await

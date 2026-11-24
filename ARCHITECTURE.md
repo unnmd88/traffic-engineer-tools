@@ -65,7 +65,7 @@ The individual request and SNMP mechanisms are also available through
 | `TaskProgress` | Scenario-authored preparation activity text and its source timestamp | [task/progress.rs](crates/tools-core/src/monitor/task/progress.rs) |
 | `TaskTransition` | Task lifecycle changes, their causes, and restart plans, shared by events and task snapshots | [task/transition.rs](crates/tools-core/src/monitor/task/transition.rs) |
 | `ScenarioSpec` | Public description of the selected scenario | [scenario/spec.rs](crates/tools-core/src/monitor/scenario/spec.rs) |
-| GET/SET execution | Request preparation, schedule, commands, and reports of a concrete scenario | [impls/repeat_snmp_get.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), [impls/repeat_snmp_set.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs) |
+| GET/SET execution | Request preparation, schedule, run mode, and reports of a concrete scenario | [impls/repeat_snmp_get.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_get.rs), [impls/repeat_snmp_set.rs](crates/tools-core/src/monitor/scenario/impls/repeat_snmp_set.rs) |
 | `SnmpGetSpec`, `SnmpSetSpec` | Validated SNMP-request parameters without a network client | [snmp/request.rs](crates/tools-core/src/snmp/request.rs) |
 | `poll`, `AttemptConfig`, `Pollable`, `PollReport` | Execution of an action with attempts and a complete operation report | [polling](crates/tools-core/src/polling/mod.rs) |
 | `SnmpClient`, `Resolver` | Network operations and OID preparation with device-profile awareness | [client.rs](crates/tools-core/src/snmp/client.rs), [resolve.rs](crates/tools-core/src/snmp/resolve.rs) |
@@ -204,8 +204,8 @@ Main `ApplicationHandle` commands:
 |---|---|
 | `add_task` | Registers a task as `Idle` and returns a `TaskId`; no execution yet |
 | `start_task(task_id, limit)` | Starts a fresh execution from `Idle`, `Stopped`, or `Completed` with the supplied `RunLimit` |
-| `pause_task` | Passes a pause to a live scenario; while waiting for a restart it moves to paused without starting |
-| `resume_task` | Resumes a live scenario or creates a new one if the previous one already finished |
+| `pause_task` | Requests the paused mode for a live scenario; while waiting for a restart it moves to paused |
+| `resume_task` | Requests the running mode for a live scenario or starts a paused task that has no live scenario |
 | `stop_task` | Cancels an ongoing scenario, waits for local execution to end, and moves the task to `Stopped`; a terminal task retains its status |
 | `update_task` | Replaces the configuration and increments the revision in `Idle`, `Stopped`, or `Completed` |
 | `remove_task` | Removes the task and cancels its execution if it was started |
@@ -213,9 +213,13 @@ Main `ApplicationHandle` commands:
 The start-command reply confirms that the start was initiated, not successful network
 preparation. Repeating a start with the same limit is idempotent during an ongoing
 execution. A different limit during that execution returns `TaskAlreadyRunning`.
-For a live scenario, pause and resume are confirmed by its reports and the
-corresponding public events. A regular GET/SET pause waits for the current complete
-request with its retries to finish.
+Each live scenario has a Tokio `watch` channel holding the latest requested run mode.
+Pause and resume update it regardless of the confirmed task status, without waiting for
+queue capacity. A later request can supersede a mode the scenario has yet to apply.
+The command reply confirms the request. Reports from the scenario confirm applied changes
+and produce the corresponding public transitions. GET/SET scenarios apply the mode
+after preparation, between complete requests with retries, or while waiting for the next
+request. An applied resume recalculates the next deadline according to the schedule.
 
 `stop_task(...).await` confirms that the local scenario has exited and any pending automatic
 restart has been invalidated. A request already sent to the device can still take effect.
@@ -244,9 +248,8 @@ Two variants are currently available: repeating `SnmpGet` and `SnmpSet`.
 It is an enum with implementations inside the core; there is no API yet for plugging in an
 arbitrary external scenario implementation.
 
-Each implementation independently performs preparation, follows its own schedule, handles
-commands, and publishes reports. The orchestrator owns the lifecycle, not the computation
-of the next deadline of a particular scenario.
+Each implementation independently performs preparation, computes its next deadline,
+applies the requested run mode, and publishes reports. The orchestrator owns the task lifecycle.
 
 Code layout in [scenario](crates/tools-core/src/monitor/scenario/mod.rs):
 
@@ -256,7 +259,7 @@ Code layout in [scenario](crates/tools-core/src/monitor/scenario/mod.rs):
 | `spec.rs` | Scenario descriptions and their validation |
 | `execution.rs` | Results, outcome statuses, generations, and panic stages |
 | `error.rs` | Configuration, build, and execution errors |
-| `runtime.rs` | Internal commands and reports, dispatch to implementations, panic isolation, and shared helpers |
+| `runtime.rs` | Requested run mode and reports, dispatch to implementations, panic isolation, and shared helpers |
 | `prepare.rs` | Shared GET/SET preparation, immediate activity logging, SCN polling, and a preparation deadline |
 | `impls/mod.rs` | Concrete scenario implementations (currently repeating SNMP GET/SET) |
 | `impls/repeat_snmp_get.rs`, `impls/repeat_snmp_set.rs` | Standalone GET and SET execution together with request adapters |

@@ -2,7 +2,10 @@ use std::{net::IpAddr, panic::AssertUnwindSafe};
 
 use chrono::{DateTime, Utc};
 use futures_util::FutureExt;
-use tokio::{sync::mpsc, time::Duration};
+use tokio::{
+    sync::{mpsc, watch},
+    time::{Duration, Instant},
+};
 
 use crate::{
     monitor::{OperationContext, OperationId, RunLimit, SpecRevision, TaskProgress, task::TaskId},
@@ -12,6 +15,7 @@ use crate::{
 
 use super::{
     Generation, ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioSpec,
+    schedule::PollTimer,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -51,16 +55,16 @@ pub(in crate::monitor) async fn run(
     context: ScenarioContext,
     budget: RunBudget,
     report_tx: mpsc::Sender<ScenarioReport>,
-    cmd_rx: mpsc::Receiver<ScenarioCommand>,
+    mode_rx: watch::Receiver<RunMode>,
 ) {
     let panic_tx = report_tx.clone();
     let execution = async move {
         match spec {
             ScenarioSpec::SnmpGet(spec) => {
-                super::impls::repeat_snmp_get::run(spec, context, budget, report_tx, cmd_rx).await;
+                super::impls::repeat_snmp_get::run(spec, context, budget, report_tx, mode_rx).await;
             }
             ScenarioSpec::SnmpSet(spec) => {
-                super::impls::repeat_snmp_set::run(spec, context, budget, report_tx, cmd_rx).await;
+                super::impls::repeat_snmp_set::run(spec, context, budget, report_tx, mode_rx).await;
             }
         }
     };
@@ -75,10 +79,58 @@ pub(in crate::monitor) async fn run(
     }
 }
 
-#[derive(Debug)]
-pub(in crate::monitor) enum ScenarioCommand {
-    Pause,
-    Resume,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::monitor) enum RunMode {
+    Running,
+    Paused,
+}
+
+/// Waits for the next scheduled operation, applying requested modes between operations.
+pub(super) async fn wait_for_next_operation(
+    timer: &mut PollTimer,
+    mode_rx: &mut watch::Receiver<RunMode>,
+    report_tx: &mpsc::Sender<ScenarioReport>,
+    context: ScenarioContext,
+) -> bool {
+    let ScenarioContext {
+        task_id,
+        generation,
+        ..
+    } = context;
+    let mut applied_mode = RunMode::Running;
+    loop {
+        let requested_mode = *mode_rx.borrow_and_update();
+        if requested_mode != applied_mode {
+            applied_mode = requested_mode;
+            let report = match applied_mode {
+                RunMode::Running => {
+                    timer.resume(Instant::now());
+                    ScenarioReport::Resumed {
+                        task_id,
+                        generation,
+                    }
+                }
+                RunMode::Paused => ScenarioReport::Paused {
+                    task_id,
+                    generation,
+                },
+            };
+            if report_tx.send(report).await.is_err() {
+                return false;
+            }
+            continue;
+        }
+        tokio::select! {
+            biased;
+            () = report_tx.closed() => return false,
+            change = mode_rx.changed() => {
+                if change.is_err() {
+                    return false;
+                }
+            }
+            () = timer.wait_next(), if applied_mode == RunMode::Running => return true,
+        }
+    }
 }
 
 #[derive(Debug)]

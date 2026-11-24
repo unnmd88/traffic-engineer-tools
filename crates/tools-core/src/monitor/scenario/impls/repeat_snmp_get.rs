@@ -9,7 +9,10 @@ use std::panic::AssertUnwindSafe;
 
 use async_trait::async_trait;
 use futures_util::FutureExt;
-use tokio::{sync::mpsc, time::Instant};
+use tokio::{
+    sync::{mpsc, watch},
+    time::Instant,
+};
 
 use crate::{
     polling::{AttemptError, Pollable},
@@ -20,19 +23,18 @@ use crate::monitor::OperationReport;
 use crate::monitor::scenario::{
     ScenarioBuildError, ScenarioExecution, ScenarioOutcome, SnmpGetScenarioSpec, prepare,
     runtime::{
-        Operations, RunBudget, ScenarioCommand, ScenarioContext, ScenarioReport, classify_error,
-        fatal_request_error, panic_message,
+        Operations, RunBudget, RunMode, ScenarioContext, ScenarioReport, classify_error,
+        fatal_request_error, panic_message, wait_for_next_operation,
     },
     schedule::PollTimer,
 };
 
-#[expect(clippy::too_many_lines)]
 pub(in crate::monitor::scenario) async fn run(
     spec: SnmpGetScenarioSpec,
     context: ScenarioContext,
     mut budget: RunBudget,
     report_tx: mpsc::Sender<ScenarioReport>,
-    mut cmd_rx: mpsc::Receiver<ScenarioCommand>,
+    mut mode_rx: watch::Receiver<RunMode>,
 ) {
     let ScenarioContext {
         task_id,
@@ -82,88 +84,55 @@ pub(in crate::monitor::scenario) async fn run(
     }
 
     let mut operations = Operations::new(task_id, generation, revision, report_tx.clone());
-    let mut paused = false;
-    loop {
-        if paused {
-            let cmd = tokio::select! {
-                () = report_tx.closed() => return,
-                cmd = cmd_rx.recv() => cmd,
-            };
-            match cmd {
-                Some(ScenarioCommand::Resume) => {
-                    paused = false;
-                    timer.resume(Instant::now());
-                    if report_tx
-                        .send(ScenarioReport::Resumed {
+    while wait_for_next_operation(&mut timer, &mut mode_rx, &report_tx, context).await {
+        let executed =
+            AssertUnwindSafe(operations.poll(&attempt, &request, "Read configured SNMP OIDs"))
+                .catch_unwind()
+                .await;
+        match executed {
+            Ok(None) => return,
+            Ok(Some((context, report))) => {
+                let error = fatal_request_error(&report);
+                let execution = ScenarioExecution::new(
+                    context,
+                    OperationReport::from_poll(report, ScenarioOutcome::SnmpGet),
+                );
+                if let Some(error) = error {
+                    let _ = report_tx
+                        .send(ScenarioReport::ExecutionFailed {
                             task_id,
                             generation,
+                            error,
+                            execution,
                         })
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
+                        .await;
+                    return;
                 }
-                Some(ScenarioCommand::Pause) => {}
-                None => return,
-            }
-            continue;
-        }
-
-        tokio::select! {
-            biased;
-            () = report_tx.closed() => return,
-            cmd = cmd_rx.recv() => match cmd {
-                Some(ScenarioCommand::Pause) => {
-                    paused = true;
-                    if report_tx.send(ScenarioReport::Paused {
+                timer.execution_finished(Instant::now());
+                let limit_reached = budget.record_finished_run();
+                if report_tx
+                    .send(ScenarioReport::RunFinished {
                         task_id,
                         generation,
-                    }).await.is_err() {
-                        return;
-                    }
+                        execution,
+                        limit_reached,
+                    })
+                    .await
+                    .is_err()
+                    || limit_reached
+                {
+                    return;
                 }
-                Some(ScenarioCommand::Resume) => {}
-                None => return,
-            },
-            () = timer.wait_next() => {
-                let executed = AssertUnwindSafe(operations.poll(&attempt, &request, "Read configured SNMP OIDs"))
-                    .catch_unwind()
+            }
+            Err(panic) => {
+                let _ = report_tx
+                    .send(ScenarioReport::ExecutionPanicked {
+                        task_id,
+                        generation,
+                        reason: panic_message(panic.as_ref()),
+                    })
                     .await;
-                match executed {
-                    Ok(None) => return,
-                    Ok(Some((context, report))) => {
-                        let error = fatal_request_error(&report);
-                        let execution = ScenarioExecution::new(context, OperationReport::from_poll(report, ScenarioOutcome::SnmpGet));
-                        if let Some(error) = error {
-                            let _ = report_tx.send(ScenarioReport::ExecutionFailed {
-                                task_id,
-                                generation,
-                                error,
-                                execution,
-                            }).await;
-                            return;
-                        }
-                        timer.execution_finished(Instant::now());
-                        let limit_reached = budget.record_finished_run();
-                        if report_tx.send(ScenarioReport::RunFinished {
-                            task_id,
-                            generation,
-                            execution,
-                            limit_reached,
-                        }).await.is_err() || limit_reached {
-                            return;
-                        }
-                    }
-                    Err(panic) => {
-                        let _ = report_tx.send(ScenarioReport::ExecutionPanicked {
-                            task_id,
-                            generation,
-                            reason: panic_message(panic.as_ref()),
-                        }).await;
-                        return;
-                    }
-                }
+                return;
             }
         }
     }

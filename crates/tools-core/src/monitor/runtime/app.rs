@@ -169,10 +169,15 @@ impl ApplicationHandle {
         self.orchestrator.start_task(task_id, limit).await
     }
 
+    /// Requests pause. A live scenario applies it between operations and reports
+    /// the transition to `Paused`. A later resume request can supersede it.
     pub async fn pause_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.pause_task(task_id).await
     }
 
+    /// Requests resumption, including when a live scenario has yet to apply
+    /// its requested pause. A live scenario reports the transition to `Active`
+    /// when resumption changes its applied mode.
     pub async fn resume_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.resume_task(task_id).await
     }
