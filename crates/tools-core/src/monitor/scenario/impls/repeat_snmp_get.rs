@@ -9,10 +9,7 @@ use std::panic::AssertUnwindSafe;
 
 use async_trait::async_trait;
 use futures_util::FutureExt;
-use tokio::{
-    sync::{mpsc, watch},
-    time::Instant,
-};
+use tokio::{sync::watch, time::Instant};
 
 use crate::{
     polling::{AttemptError, Pollable},
@@ -21,21 +18,21 @@ use crate::{
 
 use crate::monitor::OperationReport;
 use crate::monitor::scenario::{
-    ScenarioBuildError, ScenarioExecution, ScenarioOutcome, SnmpGetScenarioSpec, prepare,
+    PanicStage, ScenarioExecution, ScenarioExit, ScenarioOutcome, SnmpGetScenarioSpec, prepare,
     runtime::{
-        Operations, RunBudget, RunMode, ScenarioContext, ScenarioReport, classify_error,
-        fatal_request_error, panic_message, wait_for_next_operation,
+        Operations, RunBudget, RunMode, RunReports, ScenarioContext, ScenarioUpdate, UpdateData,
+        classify_error, fatal_request_error, panic_message, wait_for_next_operation,
     },
     schedule::PollTimer,
 };
 
-pub(in crate::monitor::scenario) async fn run(
+pub(in crate::monitor::scenario) async fn run<M: From<ScenarioUpdate>>(
     spec: SnmpGetScenarioSpec,
     context: ScenarioContext,
     mut budget: RunBudget,
-    report_tx: mpsc::Sender<ScenarioReport>,
+    reports: &mut RunReports<M>,
     mut mode_rx: watch::Receiver<RunMode>,
-) {
+) -> ScenarioExit {
     let ScenarioContext {
         task_id,
         generation,
@@ -46,96 +43,54 @@ pub(in crate::monitor::scenario) async fn run(
         schedule,
         attempt,
     } = spec;
-    let request = match prepare::get(request, attempt, task_id, generation, report_tx.clone()).await
-    {
-        Ok((client, items)) => SnmpGetRequest { client, items },
-        Err(ScenarioBuildError::Panicked(reason)) => {
-            let _ = report_tx
-                .send(ScenarioReport::BuildPanicked {
-                    task_id,
-                    generation,
-                    reason,
-                })
-                .await;
-            return;
-        }
-        Err(error) => {
-            let _ = report_tx
-                .send(ScenarioReport::BuildFailed {
-                    task_id,
-                    generation,
-                    error,
-                })
-                .await;
-            return;
-        }
-    };
+    let request =
+        match prepare::get(request, attempt, task_id, generation, reports.sender.clone()).await {
+            Ok((client, items)) => SnmpGetRequest { client, items },
+            Err(error) => return ScenarioExit::build_failed(error),
+        };
 
     let mut timer = PollTimer::new(schedule, Instant::now());
-    if report_tx
-        .send(ScenarioReport::Built {
-            task_id,
-            generation,
-        })
+    if reports
+        .sender
+        .send(context.update(UpdateData::Built).into())
         .await
         .is_err()
     {
-        return;
+        return ScenarioExit::Cancelled;
     }
 
-    let mut operations = Operations::new(task_id, generation, revision, report_tx.clone());
-    while wait_for_next_operation(&mut timer, &mut mode_rx, &report_tx, context).await {
-        let executed =
-            AssertUnwindSafe(operations.poll(&attempt, &request, "Read configured SNMP OIDs"))
-                .catch_unwind()
-                .await;
+    let mut operations = Operations::new(task_id, generation, revision, reports.sender.clone());
+    while wait_for_next_operation(&mut timer, &mut mode_rx, &reports.sender, context).await {
+        let polling = operations.poll(&attempt, &request, "Read configured SNMP OIDs");
+        let executed = AssertUnwindSafe(polling).catch_unwind().await;
         match executed {
-            Ok(None) => return,
-            Ok(Some((context, report))) => {
+            Ok(None) => return ScenarioExit::Cancelled,
+            Ok(Some((operation, report))) => {
                 let error = fatal_request_error(&report);
                 let execution = ScenarioExecution::new(
-                    context,
+                    operation,
                     OperationReport::from_poll(report, ScenarioOutcome::SnmpGet),
                 );
                 if let Some(error) = error {
-                    let _ = report_tx
-                        .send(ScenarioReport::ExecutionFailed {
-                            task_id,
-                            generation,
-                            error,
-                            execution,
-                        })
-                        .await;
-                    return;
+                    return ScenarioExit::ExecutionFailed(error, Box::new(execution));
                 }
                 timer.execution_finished(Instant::now());
-                let limit_reached = budget.record_finished_run();
-                if report_tx
-                    .send(ScenarioReport::RunFinished {
-                        task_id,
-                        generation,
-                        execution,
-                        limit_reached,
-                    })
-                    .await
-                    .is_err()
-                    || limit_reached
-                {
-                    return;
+                if budget.record_finished_run() {
+                    return ScenarioExit::Completed(Some(execution));
+                }
+                if !reports.finished(context, execution).await {
+                    return ScenarioExit::Cancelled;
                 }
             }
             Err(panic) => {
-                let _ = report_tx
-                    .send(ScenarioReport::ExecutionPanicked {
-                        task_id,
-                        generation,
-                        reason: panic_message(panic.as_ref()),
-                    })
-                    .await;
-                return;
+                return ScenarioExit::panicked(
+                    PanicStage::Execution,
+                    panic_message(panic.as_ref()),
+                );
             }
         }
     }
+    ScenarioExit::Cancelled
 }
 
 struct SnmpGetRequest {

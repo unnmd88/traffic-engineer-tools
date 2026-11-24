@@ -12,6 +12,8 @@ use tools_core::{
     polling::AttemptConfig,
 };
 
+type Prepare = fn(AppConfig, Vec<InitialTask>) -> Application;
+
 fn task(name: &str, set: bool) -> TaskConfig {
     let target = "127.0.0.1:1161".parse().unwrap();
     let community = "public".parse().unwrap();
@@ -31,7 +33,16 @@ fn task(name: &str, set: bool) -> TaskConfig {
 
 #[test]
 fn prepared_application_exposes_configuration_and_snapshot_types() {
-    let application = Application::new(
+    check_prepared_application_exposes_configuration_and_snapshot_types(Application::new);
+}
+
+#[test]
+fn ordered_prepared_application_exposes_configuration_and_snapshot_types() {
+    check_prepared_application_exposes_configuration_and_snapshot_types(Application::new_ordered);
+}
+
+fn check_prepared_application_exposes_configuration_and_snapshot_types(prepare: Prepare) {
+    let application = prepare(
         AppConfig {
             restart: RestartPolicy::default(),
             history_sink: None,
@@ -85,7 +96,16 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
 
 #[tokio::test]
 async fn handle_updates_configuration_and_publishes_public_events() {
-    let running: RunningApplication = Application::new(AppConfig::default(), vec![]).spawn();
+    check_handle_updates_configuration_and_publishes_public_events(Application::new).await;
+}
+
+#[tokio::test]
+async fn ordered_handle_updates_configuration_and_publishes_public_events() {
+    check_handle_updates_configuration_and_publishes_public_events(Application::new_ordered).await;
+}
+
+async fn check_handle_updates_configuration_and_publishes_public_events(prepare: Prepare) {
+    let running: RunningApplication = prepare(AppConfig::default(), vec![]).spawn();
     let handle: ApplicationHandle = running.handle();
     let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
     let id = handle.add_task(task("initial", false)).await.unwrap();
@@ -140,6 +160,16 @@ async fn handle_updates_configuration_and_publishes_public_events() {
 
 #[tokio::test(start_paused = true)]
 async fn one_registered_task_can_start_again_with_a_different_limit() {
+    check_one_registered_task_can_start_again_with_a_different_limit(Application::new).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn ordered_one_registered_task_can_start_again_with_a_different_limit() {
+    check_one_registered_task_can_start_again_with_a_different_limit(Application::new_ordered)
+        .await;
+}
+
+async fn check_one_registered_task_can_start_again_with_a_different_limit(prepare: Prepare) {
     use async_snmp::{Value, message::CommunityMessage};
     use tokio::{net::UdpSocket, time::timeout};
     use tools_core::{monitor::TaskTransitionCause, snmp::RawSnmpOidItem};
@@ -162,7 +192,7 @@ async fn one_registered_task_can_start_again_with_a_different_limit() {
         AttemptConfig::try_new(Duration::from_secs(1), 0, Duration::ZERO).unwrap(),
     )
     .unwrap();
-    let running = Application::new(AppConfig::default(), vec![]).spawn();
+    let running = prepare(AppConfig::default(), vec![]).spawn();
     let handle = running.handle();
     let id = handle
         .add_task(TaskConfig::try_new("get".to_string(), scenario, 3).unwrap())
@@ -233,6 +263,21 @@ async fn one_registered_task_can_start_again_with_a_different_limit() {
 
 #[tokio::test]
 async fn preparation_is_observable_before_scn_returns_and_survives_in_history() {
+    check_preparation_is_observable_before_scn_returns_and_survives_in_history(Application::new)
+        .await;
+}
+
+#[tokio::test]
+async fn ordered_preparation_is_observable_before_scn_returns_and_survives_in_history() {
+    check_preparation_is_observable_before_scn_returns_and_survives_in_history(
+        Application::new_ordered,
+    )
+    .await;
+}
+
+async fn check_preparation_is_observable_before_scn_returns_and_survives_in_history(
+    prepare: Prepare,
+) {
     use async_snmp::{Value, message::CommunityMessage};
     use tools_core::{
         monitor::{ScenarioBuildError, ScenarioFailure, TaskTransitionCause},
@@ -263,7 +308,7 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
     .unwrap();
     let config = TaskConfig::try_new("prepare".to_string(), scenario, 3).unwrap();
     let (history, mut recorded) = tokio::sync::mpsc::channel(64);
-    let application = Application::new(
+    let application = prepare(
         AppConfig {
             history_sink: Some(history),
             ..AppConfig::default()
@@ -353,4 +398,49 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
         history.push(json);
     }
     assert_eq!(history, observed);
+}
+
+#[tokio::test]
+async fn ordered_subscription_recovers_from_lag_during_concurrent_changes() {
+    use tokio::sync::broadcast::error::RecvError;
+
+    let running = Application::new_ordered(AppConfig::default(), vec![]).spawn();
+    let handle = running.handle();
+    let first_config = task("first", false);
+    let first = handle.add_task(first_config.clone()).await.unwrap();
+    let mut slow = handle.subscribe_with_snapshot().await.unwrap();
+    for _ in 0..1025 {
+        handle
+            .update_task(first, first_config.clone())
+            .await
+            .unwrap();
+    }
+    assert!(matches!(slow.events.recv().await, Err(RecvError::Lagged(_))));
+    let (subscription, second) =
+        tokio::join!(handle.subscribe_with_snapshot(), handle.add_task(task("second", true)),);
+    let mut subscription = subscription.unwrap();
+    let second = second.unwrap();
+    assert_eq!(subscription.snapshot.tasks[0].configuration.revision, SpecRevision::new(1026));
+    let mut seq = subscription.snapshot.next_seq;
+    if !subscription
+        .snapshot
+        .tasks
+        .iter()
+        .any(|task| task.id == second)
+    {
+        let event = subscription.events.recv().await.unwrap();
+        assert_eq!((event.metadata.seq, event.metadata.task_id), (seq, second));
+        assert!(matches!(event.data, EventData::TaskRegistered(_)));
+        seq += 1;
+    }
+    handle.remove_task(first).await.unwrap();
+    let removed = subscription.events.recv().await.unwrap();
+    assert_eq!((removed.metadata.seq, removed.metadata.task_id), (seq, first));
+    assert!(matches!(removed.data, EventData::TaskRemoved));
+    let snapshot = handle.get_snapshot().await.unwrap();
+    assert_eq!(snapshot.next_seq, seq + 1);
+    assert_eq!(snapshot.tasks.len(), 1);
+    assert_eq!(snapshot.tasks[0].id, second);
+    running.shutdown().await.unwrap();
+    assert!(matches!(subscription.events.recv().await, Err(RecvError::Closed)));
 }

@@ -25,24 +25,25 @@ use crate::{
 use super::{
     Generation, ScenarioBuildError,
     runtime::{
-        ScenarioReport, build_timeout, classify_error, connect, panic_message, transport_timeout,
+        ScenarioUpdate, UpdateData, build_timeout, classify_error, connect, panic_message,
+        transport_timeout,
     },
 };
 
 type ScnRequestReport = PollReport<SnmpVarbind, SnmpError>;
 
-struct Preparation {
+struct Preparation<M> {
     task_id: TaskId,
     generation: Generation,
-    reports: mpsc::Sender<ScenarioReport>,
+    reports: mpsc::Sender<M>,
     deadline: Instant,
 }
 
-impl Preparation {
+impl<M: From<ScenarioUpdate>> Preparation<M> {
     fn new(
         task_id: TaskId,
         generation: Generation,
-        reports: mpsc::Sender<ScenarioReport>,
+        reports: mpsc::Sender<M>,
         attempt: AttemptConfig,
     ) -> Self {
         Self {
@@ -62,11 +63,14 @@ impl Preparation {
             at = %progress.at, message = %progress.message, "scenario preparation progress");
         let _ = self
             .reports
-            .send(ScenarioReport::Progress {
-                task_id: self.task_id,
-                generation: self.generation,
-                progress,
-            })
+            .send(
+                ScenarioUpdate {
+                    task_id: self.task_id,
+                    generation: self.generation,
+                    data: UpdateData::Progress(progress),
+                }
+                .into(),
+            )
             .await;
     }
 
@@ -200,12 +204,12 @@ fn decode_scn(report: &ScnRequestReport) -> Result<Scn, ScenarioBuildError> {
     }
 }
 
-pub(super) async fn get(
+pub(super) async fn get<M: From<ScenarioUpdate>>(
     spec: SnmpGetSpec,
     attempt: AttemptConfig,
     task_id: TaskId,
     generation: Generation,
-    reports: mpsc::Sender<ScenarioReport>,
+    reports: mpsc::Sender<M>,
 ) -> Result<(SnmpClient, Vec<SnmpGetItem>), ScenarioBuildError> {
     let preparation = Preparation::new(task_id, generation, reports, attempt);
     async {
@@ -228,12 +232,12 @@ pub(super) async fn get(
     .await
 }
 
-pub(super) async fn set(
+pub(super) async fn set<M: From<ScenarioUpdate>>(
     spec: SnmpSetSpec,
     attempt: AttemptConfig,
     task_id: TaskId,
     generation: Generation,
-    reports: mpsc::Sender<ScenarioReport>,
+    reports: mpsc::Sender<M>,
 ) -> Result<(SnmpClient, Vec<SnmpSetItem>), ScenarioBuildError> {
     let preparation = Preparation::new(task_id, generation, reports, attempt);
     async {
@@ -269,6 +273,7 @@ pub(super) async fn set(
 
 #[cfg(test)]
 mod tests {
+    use super::super::ScenarioReport;
     use super::*;
 
     fn settings() -> AttemptConfig {

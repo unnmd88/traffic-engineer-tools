@@ -725,3 +725,219 @@ async fn set_retries_after_timeout_and_stops_on_success() {
     assert!(matches!(attempts[1].outcome, AttemptOutcome::Succeeded));
     stop(session).await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn stop_during_publication_keeps_a_completed_nonfinal_operation() {
+    for operation in [Operation::Get, Operation::Set] {
+        let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let spec = match operation {
+            Operation::Get => get_scenario(request(&peer, None, "1.3.6.1.2.1.1.1.0"), 0),
+            Operation::Set => set_scenario(set_request(&peer, None, None), 0),
+        };
+        let (tx, mut updates) = mpsc::channel::<ScenarioUpdate>(1);
+        let (_mode_tx, mode) = watch::channel(RunMode::Running);
+        let (stop, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let context = ScenarioContext {
+            task_id: TaskId(7),
+            generation: Generation::first(),
+            revision: crate::monitor::SpecRevision::new(1),
+        };
+        let run = execute(
+            spec,
+            context,
+            RunBudget::Unlimited,
+            ScenarioChannels {
+                reports: tx.clone(),
+                mode,
+            },
+            async {
+                cancelled.await.unwrap();
+            },
+        );
+        tokio::pin!(run);
+        timeout(Duration::from_secs(30), async {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut run => panic!("scenario exited during preparation"),
+                    update = updates.recv() => {
+                        if matches!(update.unwrap().data, UpdateData::Built) { break; }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        tokio::select! {
+            biased;
+            _ = &mut run => panic!("scenario exited before the first request"),
+            packet = timeout(Duration::from_secs(30), receive(&peer)) => { packet.unwrap(); }
+        }
+        assert_eq!(updates.len(), 1);
+        advance(Duration::from_secs(2)).await;
+        assert!(futures_util::poll!(&mut run).is_pending());
+        stop.send(()).unwrap();
+        assert!(futures_util::poll!(&mut run).is_pending());
+        let UpdateData::OperationStarted(started) = updates.try_recv().unwrap().data else {
+            panic!("expected the start to occupy the mailbox slot");
+        };
+
+        assert!(matches!(
+            timeout(Duration::from_secs(5), run)
+                .await
+                .expect("stopped scenario flushed the pending result"),
+            ScenarioExit::Cancelled
+        ));
+        let UpdateData::RunFinished(finished) = updates.try_recv().unwrap().data else {
+            panic!("expected the completed operation before exit");
+        };
+        assert_eq!(finished.context, started.context);
+        assert_eq!(finished.report.status(), crate::monitor::OperationStatus::Failed);
+        assert!(updates.try_recv().is_err());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn ordered_monitor_recovers_from_a_parser_panic_with_the_remaining_budget() {
+    use crate::monitor::{
+        AppConfig, Application, EventData, InitialTask, RunLimit, TaskConfig, TaskStatus,
+        TaskTransitionCause,
+    };
+
+    let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let spec = request(&peer, None, "1.3.6.1.2.1.1.1.0");
+    let mut oids = spec.oids().to_vec();
+    oids[0].parser = Some(|value| {
+        assert!(!matches!(value, SnmpValue::Integer(2)), "invalid sample");
+        Ok(BusinessValue::Integer32(1))
+    });
+    let spec = SnmpGetSpec::new(peer.local_addr().unwrap(), spec.community().clone(), None, oids);
+    let config = TaskConfig::try_new("recovery".into(), get_scenario(spec, 0), 1).unwrap();
+    let application = Application::new_ordered(
+        AppConfig::default(),
+        vec![InitialTask {
+            config,
+            limit: RunLimit::Runs(2.try_into().unwrap()),
+        }],
+    );
+    let mut events = application.subscribe();
+    let running = application.spawn();
+    let handle = running.handle();
+
+    for value in [1, 2, 3] {
+        let (request, source) = timeout(Duration::from_secs(30), receive(&peer))
+            .await
+            .unwrap();
+        let mut response = request.pdu.standard().unwrap().to_response();
+        response.varbinds[0].value = Value::Integer(value);
+        reply(&peer, request, source, response).await;
+    }
+    let mut states = Vec::new();
+    let mut results = Vec::new();
+    let mut next_seq = 0;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            assert_eq!(event.metadata.seq, next_seq);
+            next_seq += 1;
+            match event.data {
+                EventData::TaskStateChanged(change) => {
+                    states.push(change.current);
+                    if change.current == TaskStatus::Restarting {
+                        assert!(matches!(&change.cause, TaskTransitionCause::Failure(failure)
+                            if matches!(failure.as_ref(), crate::monitor::ScenarioFailure::Panicked { stage: PanicStage::Execution, reason } if reason == "invalid sample")));
+                        assert_eq!(change.restart.unwrap().attempt, 1);
+                    }
+                    if change.current == TaskStatus::Completed {
+                        assert!(matches!(change.cause, TaskTransitionCause::LimitReached { limit: 2 }));
+                        break;
+                    }
+                }
+                EventData::OperationFinished(finish) => results.push(finish.context),
+                _ => {}
+            }
+        }
+    }).await.unwrap();
+    assert_eq!(
+        states,
+        [
+            TaskStatus::Preparing,
+            TaskStatus::Active,
+            TaskStatus::Restarting,
+            TaskStatus::Preparing,
+            TaskStatus::Active,
+            TaskStatus::Completed
+        ]
+    );
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[1].generation, results[0].generation.next());
+    let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
+    assert_eq!(view.completed_runs, 2);
+    assert_eq!(view.metrics.executions, 2);
+    assert_eq!(view.metrics.successful, 2);
+    assert!(view.last_failure.is_none());
+    assert_eq!(view.result.unwrap().context, results[1]);
+    assert_eq!(view.history[0].context, results[0]);
+    running.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn ordered_pause_during_set_preserves_the_result_and_resumes_the_same_run() {
+    use crate::monitor::{
+        AppConfig, Application, EventData, InitialTask, RunLimit, TaskConfig, TaskStatus,
+    };
+
+    let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let spec = set_scenario(set_request(&peer, None, None), 0);
+    let config = TaskConfig::try_new("writer".into(), spec, 1).unwrap();
+    let application = Application::new_ordered(
+        AppConfig::default(),
+        vec![InitialTask {
+            config,
+            limit: RunLimit::Runs(2.try_into().unwrap()),
+        }],
+    );
+    let id = application.task_ids()[0];
+    let mut events = application.subscribe();
+    let running = application.spawn();
+    let handle = running.handle();
+    let (message, source) = timeout(Duration::from_secs(30), receive(&peer))
+        .await
+        .unwrap();
+    handle.pause_task(id).await.unwrap();
+    assert_eq!(handle.get_snapshot().await.unwrap().tasks[0].status, TaskStatus::Active);
+    let response = message.pdu.standard().unwrap().to_response();
+    reply(&peer, message, source, response).await;
+    async fn wait_state(
+        events: &mut tokio::sync::broadcast::Receiver<crate::monitor::MonitorEvent>,
+        state: TaskStatus,
+    ) {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(events.recv().await.unwrap().data, EventData::TaskStateChanged(change) if change.current == state) { return; }
+            }
+        }).await.unwrap()
+    }
+    wait_state(&mut events, TaskStatus::Paused).await;
+    let paused = handle.get_snapshot().await.unwrap().tasks.remove(0);
+    assert_eq!(paused.completed_runs, 1);
+    advance(Duration::from_secs(50)).await;
+    assert!(
+        matches!(peer.try_recv(&mut [0; 2048]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    handle.resume_task(id).await.unwrap();
+    wait_state(&mut events, TaskStatus::Active).await;
+    let (message, source) = timeout(Duration::from_secs(30), receive(&peer))
+        .await
+        .unwrap();
+    let response = message.pdu.standard().unwrap().to_response();
+    reply(&peer, message, source, response).await;
+    wait_state(&mut events, TaskStatus::Completed).await;
+    let completed = handle.get_snapshot().await.unwrap().tasks.remove(0);
+    let first = paused.result.unwrap().context;
+    let last = completed.result.unwrap().context;
+    assert_eq!(first.generation, last.generation);
+    assert_eq!(last.operation_id.get(), first.operation_id.get() + 1);
+    assert_eq!(completed.metrics.successful, 2);
+    running.shutdown().await.unwrap();
+}

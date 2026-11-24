@@ -1,6 +1,9 @@
 mod app;
+mod command;
 mod error;
+mod event_output;
 mod orchestrator;
+mod ordered;
 mod restart_policy;
 mod subscription;
 

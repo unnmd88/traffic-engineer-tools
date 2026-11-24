@@ -14,7 +14,8 @@ pub use schedule::PollSchedule;
 pub use spec::{ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec};
 
 pub(super) use runtime::{
-    RunBudget, RunMode, ScenarioContext, ScenarioReport, run as run_scenario,
+    RunBudget, RunMode, ScenarioChannels, ScenarioContext, ScenarioExit, ScenarioReport,
+    ScenarioUpdate, UpdateData, execute, run as run_scenario,
 };
 
 #[cfg(test)]

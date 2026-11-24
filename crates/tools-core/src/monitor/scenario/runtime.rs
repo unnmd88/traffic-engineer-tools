@@ -25,6 +25,16 @@ pub(in crate::monitor) struct ScenarioContext {
     pub revision: SpecRevision,
 }
 
+impl ScenarioContext {
+    pub(super) fn update(self, data: UpdateData) -> ScenarioUpdate {
+        ScenarioUpdate {
+            task_id: self.task_id,
+            generation: self.generation,
+            data,
+        }
+    }
+}
+
 pub(in crate::monitor) enum RunBudget {
     Unlimited,
     Remaining(u64),
@@ -57,26 +67,175 @@ pub(in crate::monitor) async fn run(
     report_tx: mpsc::Sender<ScenarioReport>,
     mode_rx: watch::Receiver<RunMode>,
 ) {
-    let panic_tx = report_tx.clone();
-    let execution = async move {
+    let channels = ScenarioChannels {
+        reports: report_tx.clone(),
+        mode: mode_rx,
+    };
+    let outcome = execute(spec, context, budget, channels, std::future::pending()).await;
+    if let Some(report) = outcome.into_report(context) {
+        let _ = report_tx.send(report).await;
+    }
+}
+
+/// The outcome returned after the local scenario future has released its resources.
+pub(in crate::monitor) enum ScenarioExit {
+    /// Carries the final counted run at the limit, or no run for independent scenario completion.
+    Completed(Option<ScenarioExecution>),
+    PreparationFailed(ScenarioBuildError),
+    ExecutionFailed(ScenarioExecutionError, Box<ScenarioExecution>),
+    Panicked {
+        stage: super::PanicStage,
+        reason: String,
+    },
+    Cancelled,
+}
+
+impl ScenarioExit {
+    fn into_report(self, context: ScenarioContext) -> Option<ScenarioReport> {
+        use super::PanicStage;
+
+        let ScenarioContext {
+            task_id,
+            generation,
+            ..
+        } = context;
+        Some(match self {
+            Self::Cancelled => return None,
+            Self::Completed(None) => ScenarioReport::Completed {
+                task_id,
+                generation,
+            },
+            Self::Completed(Some(execution)) => ScenarioReport::RunFinished {
+                task_id,
+                generation,
+                execution,
+                limit_reached: true,
+            },
+            Self::PreparationFailed(error) => ScenarioReport::BuildFailed {
+                task_id,
+                generation,
+                error,
+            },
+            Self::ExecutionFailed(error, execution) => ScenarioReport::ExecutionFailed {
+                task_id,
+                generation,
+                error,
+                execution: *execution,
+            },
+            Self::Panicked { stage, reason } => match stage {
+                PanicStage::Build => ScenarioReport::BuildPanicked {
+                    task_id,
+                    generation,
+                    reason,
+                },
+                PanicStage::Execution => ScenarioReport::ExecutionPanicked {
+                    task_id,
+                    generation,
+                    reason,
+                },
+                PanicStage::Runtime => ScenarioReport::Panicked {
+                    task_id,
+                    generation,
+                    reason,
+                },
+            },
+        })
+    }
+
+    pub(super) fn build_failed(error: ScenarioBuildError) -> Self {
+        match error {
+            ScenarioBuildError::Panicked(reason) => {
+                Self::panicked(super::PanicStage::Build, reason)
+            }
+            error => Self::PreparationFailed(error),
+        }
+    }
+
+    pub(super) fn panicked(stage: super::PanicStage, reason: String) -> Self {
+        Self::Panicked { stage, reason }
+    }
+}
+
+pub(in crate::monitor) struct ScenarioChannels<M> {
+    pub reports: mpsc::Sender<M>,
+    pub mode: watch::Receiver<RunMode>,
+}
+
+/// Keeps a finished operation until the channel has accepted it, including across cancellation.
+pub(super) struct RunReports<M> {
+    pub(super) sender: mpsc::Sender<M>,
+    pending: Option<ScenarioExecution>,
+}
+
+impl<M: From<ScenarioUpdate>> RunReports<M> {
+    pub(super) async fn finished(
+        &mut self,
+        context: ScenarioContext,
+        execution: ScenarioExecution,
+    ) -> bool {
+        self.pending = Some(execution);
+        self.flush(context).await
+    }
+
+    async fn flush(&mut self, context: ScenarioContext) -> bool {
+        if self.pending.is_none() {
+            return true;
+        }
+        let Ok(permit) = self.sender.reserve().await else {
+            return false;
+        };
+        let execution = self
+            .pending
+            .take()
+            .expect("pending result owns the reserved slot");
+        permit.send(context.update(UpdateData::RunFinished(execution)).into());
+        true
+    }
+}
+
+pub(in crate::monitor) async fn execute<M: From<ScenarioUpdate>>(
+    spec: ScenarioSpec,
+    context: ScenarioContext,
+    budget: RunBudget,
+    channels: ScenarioChannels<M>,
+    stop: impl std::future::Future<Output = ()>,
+) -> ScenarioExit {
+    let mut reports = RunReports {
+        sender: channels.reports,
+        pending: None,
+    };
+    let execution = async {
         match spec {
             ScenarioSpec::SnmpGet(spec) => {
-                super::impls::repeat_snmp_get::run(spec, context, budget, report_tx, mode_rx).await;
+                super::impls::repeat_snmp_get::run(
+                    spec,
+                    context,
+                    budget,
+                    &mut reports,
+                    channels.mode,
+                )
+                .await
             }
             ScenarioSpec::SnmpSet(spec) => {
-                super::impls::repeat_snmp_set::run(spec, context, budget, report_tx, mode_rx).await;
+                super::impls::repeat_snmp_set::run(
+                    spec,
+                    context,
+                    budget,
+                    &mut reports,
+                    channels.mode,
+                )
+                .await
             }
         }
     };
-    if let Err(panic) = AssertUnwindSafe(execution).catch_unwind().await {
-        let _ = panic_tx
-            .send(ScenarioReport::Panicked {
-                task_id: context.task_id,
-                generation: context.generation,
-                reason: panic_message(panic.as_ref()),
-            })
-            .await;
-    }
+    let exit = tokio::select! {
+        biased;
+        () = stop => ScenarioExit::Cancelled,
+        outcome = AssertUnwindSafe(execution).catch_unwind() => outcome.unwrap_or_else(|panic|
+            ScenarioExit::panicked(super::PanicStage::Runtime, panic_message(panic.as_ref()))),
+    };
+    reports.flush(context).await;
+    exit
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,36 +245,25 @@ pub(in crate::monitor) enum RunMode {
 }
 
 /// Waits for the next scheduled operation, applying requested modes between operations.
-pub(super) async fn wait_for_next_operation(
+pub(super) async fn wait_for_next_operation<M: From<ScenarioUpdate>>(
     timer: &mut PollTimer,
     mode_rx: &mut watch::Receiver<RunMode>,
-    report_tx: &mpsc::Sender<ScenarioReport>,
+    report_tx: &mpsc::Sender<M>,
     context: ScenarioContext,
 ) -> bool {
-    let ScenarioContext {
-        task_id,
-        generation,
-        ..
-    } = context;
     let mut applied_mode = RunMode::Running;
     loop {
         let requested_mode = *mode_rx.borrow_and_update();
         if requested_mode != applied_mode {
             applied_mode = requested_mode;
-            let report = match applied_mode {
+            let data = match applied_mode {
                 RunMode::Running => {
                     timer.resume(Instant::now());
-                    ScenarioReport::Resumed {
-                        task_id,
-                        generation,
-                    }
+                    UpdateData::Resumed
                 }
-                RunMode::Paused => ScenarioReport::Paused {
-                    task_id,
-                    generation,
-                },
+                RunMode::Paused => UpdateData::Paused,
             };
-            if report_tx.send(report).await.is_err() {
+            if report_tx.send(context.update(data).into()).await.is_err() {
                 return false;
             }
             continue;
@@ -133,8 +281,70 @@ pub(super) async fn wait_for_next_operation(
     }
 }
 
+/// Messages a scenario can send while its execution is still live.
+pub(in crate::monitor) struct ScenarioUpdate {
+    pub task_id: TaskId,
+    pub generation: Generation,
+    pub data: UpdateData,
+}
+
+pub(in crate::monitor) enum UpdateData {
+    Progress(TaskProgress),
+    Built,
+    OperationStarted(crate::monitor::OperationStarted),
+    RunFinished(ScenarioExecution),
+    Paused,
+    Resumed,
+}
+
+impl From<ScenarioUpdate> for ScenarioReport {
+    fn from(update: ScenarioUpdate) -> Self {
+        let ScenarioUpdate {
+            task_id,
+            generation,
+            data,
+        } = update;
+        match data {
+            UpdateData::Progress(progress) => Self::Progress {
+                task_id,
+                generation,
+                progress,
+            },
+            UpdateData::Built => Self::Built {
+                task_id,
+                generation,
+            },
+            UpdateData::OperationStarted(operation) => Self::OperationStarted {
+                task_id,
+                context: operation.context,
+                purpose: operation.purpose,
+                started_at: operation.started_at,
+                config: operation.config,
+            },
+            UpdateData::RunFinished(execution) => Self::RunFinished {
+                task_id,
+                generation,
+                execution,
+                limit_reached: false,
+            },
+            UpdateData::Paused => Self::Paused {
+                task_id,
+                generation,
+            },
+            UpdateData::Resumed => Self::Resumed {
+                task_id,
+                generation,
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::monitor) enum ScenarioReport {
+    Completed {
+        task_id: TaskId,
+        generation: Generation,
+    },
     Progress {
         task_id: TaskId,
         generation: Generation,
@@ -205,6 +415,10 @@ impl ScenarioReport {
                 generation,
                 ..
             }
+            | Self::Completed {
+                task_id,
+                generation,
+            }
             | Self::Built {
                 task_id,
                 generation,
@@ -251,20 +465,20 @@ impl ScenarioReport {
     }
 }
 
-pub(super) struct Operations {
+pub(super) struct Operations<M> {
     task_id: TaskId,
     generation: Generation,
     revision: SpecRevision,
     next_id: u64,
-    report_tx: mpsc::Sender<ScenarioReport>,
+    report_tx: mpsc::Sender<M>,
 }
 
-impl Operations {
+impl<M: From<ScenarioUpdate>> Operations<M> {
     pub(super) fn new(
         task_id: TaskId,
         generation: Generation,
         revision: SpecRevision,
-        report_tx: mpsc::Sender<ScenarioReport>,
+        report_tx: mpsc::Sender<M>,
     ) -> Self {
         Self {
             task_id,
@@ -290,13 +504,19 @@ impl Operations {
             if let PollProgress::Started { at } = progress
                 && let Some((permit, purpose)) = start.take()
             {
-                permit.send(ScenarioReport::OperationStarted {
-                    task_id: self.task_id,
-                    context,
-                    purpose,
-                    started_at: at,
-                    config: *config,
-                });
+                permit.send(
+                    ScenarioUpdate {
+                        task_id: self.task_id,
+                        generation: self.generation,
+                        data: UpdateData::OperationStarted(crate::monitor::OperationStarted {
+                            context,
+                            purpose,
+                            started_at: at,
+                            config: *config,
+                        }),
+                    }
+                    .into(),
+                );
             }
         })
         .await;
@@ -500,7 +720,7 @@ mod tests {
 
     #[tokio::test]
     async fn closed_report_channel_prevents_starting_an_operation() {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = mpsc::channel::<ScenarioReport>(1);
         drop(rx);
         let mut operations =
             Operations::new(TaskId(5), Generation::first(), SpecRevision::new(1), tx);

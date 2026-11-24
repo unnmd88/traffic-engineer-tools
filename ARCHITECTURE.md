@@ -14,6 +14,7 @@ The description below is verified against the current working tree.
 - [Task description and configuration validation](#task-description-and-configuration-validation)
 - [Build, start, and shutdown](#build-start-and-shutdown)
 - [Orchestrator and internal state](#orchestrator-and-internal-state)
+- [Alternative ordered orchestrator](#alternative-ordered-orchestrator)
 - [Scenarios](#scenarios)
 - [Preparation messages and immediate logging](#preparation-messages-and-immediate-logging)
 - [Requests, attempts, and SNMP](#requests-attempts-and-snmp)
@@ -175,7 +176,7 @@ accumulated history. For an orderly shutdown, use `shutdown().await`.
 
 ## Orchestrator and internal state
 
-`Orchestrator` processes commands and scenario reports sequentially.
+`Application::new` selects the default `Orchestrator`, which processes commands and scenario reports sequentially.
 It owns the task registry, execution states, and the event counter.
 Through an internal `OrchestratorHandle`, the public handle passes commands and waits
 for replies over separate channels.
@@ -237,6 +238,56 @@ Timestamps have different meanings: `TaskSnapshot.created_at` is task creation,
 `updated_at` is the last accounted activity of the task,
 including an execution result or a new start. It is not a universal timestamp of every
 status change.
+
+## Alternative ordered orchestrator
+
+`Application::new_ordered(config, tasks)` selects the implementation in
+[runtime/ordered](crates/tools-core/src/monitor/runtime/ordered/mod.rs).
+Both constructors return the same prepared `Application` and expose the same
+`ApplicationHandle`, snapshots, subscriptions, event schema and history sink.
+The CLI uses `Application::new`. The public API tests run registration, configuration
+replacement, repeated finite starts and observation of preparation failures through both
+constructors. [Shared API tests](crates/tools-core/tests/monitor_api.rs)
+
+The subscription snapshot and its receiver are created in one actor turn.
+After `Lagged`, subscribing again establishes a new sequence boundary that also covers
+concurrent task changes. Across automatic restarts the task retains its counted runs,
+metrics and local result history. Its replacement generation uses the remaining budget
+and starts a new sequence of operation IDs. GET/SET tests exercise pause during a write
+and recovery after a read parser panics. [Scenario tests](crates/tools-core/src/monitor/scenario/tests.rs)
+
+The ordered runtime processes commands, scenario updates and local exit notifications
+through one bounded Tokio channel. Its receive order defines the order of concurrent
+inputs. Each scenario sends progress, readiness, applied modes and operation reports
+directly to this channel. A returning scenario supplies a typed outcome and can include
+its final operation. Each worker holds at most one completed intermediate operation
+while waiting for channel capacity. On stop, removal or shutdown it drops the scenario
+future, delivers any completed operation it holds, then sends the exit notification.
+The actor can therefore account for both intermediate and final results before replying.
+The default runtime adapts these same scenario updates and outcomes to its existing
+report channel.
+
+A task owns the requested mode across generations. A preparation or execution failure
+while pause is requested retains the failure and leaves the task paused until resume.
+Failure in running mode schedules a restart tagged with the failed generation. Pause,
+stop and removal cancel a pending restart.
+
+For a live task, stop and removal request cancellation and defer their replies.
+The actor continues processing other tasks and collects later commands for the closing
+task in order. At local exit it applies the final outcome, then processes those commands.
+A final counted operation appears in history and metrics before the stop reply. Reaching
+the limit yields `Completed`; an interrupted live execution yields `Stopped` on stop.
+Removal publishes `TaskRemoved` after exit and after any returned operation. Snapshots
+during cancellation show the last confirmed public status. Cancelling a pending network
+operation can still leave an `OperationStarted` event without a terminal report.
+
+During orderly shutdown the actor cancels live runs, processes exits and drains the
+history writer. Pending stop and removal commands receive their replies after local exit.
+After the last local exit the command receiver drops queued callers before waiting for
+the history writer. Those callers receive `ChannelClosed` even while the external history
+channel is full. The shutdown caller waits for history forwarding to finish.
+Both implementations apply the bounded history backpressure described in
+[Event history output](#event-history-output).
 
 ## Scenarios
 

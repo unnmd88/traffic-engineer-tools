@@ -13,8 +13,10 @@ use crate::monitor::{
     event::MonitorEvent,
     runtime::{
         MonitorSubscription,
+        command::OrchestratorHandle,
         error::{ApplicationError, MonitorCommandError},
-        orchestrator::{Orchestrator, OrchestratorHandle},
+        orchestrator::Orchestrator,
+        ordered::OrderedOrchestrator,
         restart_policy::RestartPolicy,
     },
     snapshot::MonitorSnapshot,
@@ -62,9 +64,14 @@ pub struct InitialTask {
 /// ```
 #[must_use]
 pub struct Application {
-    orchestrator: Orchestrator,
+    orchestrator: Prepared,
     handle: ApplicationHandle,
     task_ids: Vec<TaskId>,
+}
+
+enum Prepared {
+    Current(Box<Orchestrator>),
+    Ordered(Box<OrderedOrchestrator>),
 }
 
 #[derive(Clone)]
@@ -87,10 +94,25 @@ impl Application {
         let task_ids = orchestrator.prepare_tasks(tasks);
 
         Self {
-            orchestrator,
+            orchestrator: Prepared::Current(Box::new(orchestrator)),
             handle: ApplicationHandle {
                 uid,
                 orchestrator: orchestrator_handle,
+            },
+            task_ids,
+        }
+    }
+
+    /// Prepares a monitor using the alternative orchestrator with an ordered command and report queue.
+    /// Its stop and removal replies confirm local exit and published results from the retiring run.
+    pub fn new_ordered(config: AppConfig, tasks: Vec<InitialTask>) -> Self {
+        let uid = ApplicationId::generate();
+        let (orchestrator, handle, task_ids) = OrderedOrchestrator::new(uid, config, tasks);
+        Self {
+            orchestrator: Prepared::Ordered(Box::new(orchestrator)),
+            handle: ApplicationHandle {
+                uid,
+                orchestrator: handle,
             },
             task_ids,
         }
@@ -110,7 +132,10 @@ impl Application {
 
     pub fn subscribe_with_snapshot(&self) -> MonitorSubscription {
         MonitorSubscription {
-            snapshot: self.orchestrator.snapshot(),
+            snapshot: match &self.orchestrator {
+                Prepared::Current(actor) => actor.snapshot(),
+                Prepared::Ordered(actor) => actor.snapshot(),
+            },
             events: self.subscribe(),
         }
     }
@@ -118,7 +143,10 @@ impl Application {
     pub fn spawn(self) -> RunningApplication {
         RunningApplication {
             handle: self.handle,
-            join: tokio::spawn(self.orchestrator.run()),
+            join: match self.orchestrator {
+                Prepared::Current(actor) => tokio::spawn(actor.run()),
+                Prepared::Ordered(actor) => tokio::spawn(actor.run()),
+            },
         }
     }
 }
@@ -360,100 +388,112 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_running_application_closes_events_and_history_with_handles_alive() {
-        let (sender, mut history) = mpsc::channel(1);
-        let application = Application::new(
-            AppConfig {
-                history_sink: Some(sender),
-                ..AppConfig::default()
-            },
-            vec![],
-        );
-        let mut events = application.subscribe();
-        let running = application.spawn();
-        let app = running.handle();
-        app.get_snapshot().await.unwrap();
+        for prepare in [Application::new, Application::new_ordered] {
+            let (sender, mut history) = mpsc::channel(1);
+            let application = prepare(
+                AppConfig {
+                    history_sink: Some(sender),
+                    ..AppConfig::default()
+                },
+                vec![],
+            );
+            let mut events = application.subscribe();
+            let running = application.spawn();
+            let app = running.handle();
+            app.get_snapshot().await.unwrap();
 
-        drop(running);
-        timeout(Duration::from_secs(1), async {
-            assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
-            assert!(history.recv().await.is_none());
-            assert!(matches!(app.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
-        })
-        .await
-        .unwrap();
+            drop(running);
+            timeout(Duration::from_secs(1), async {
+                assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
+                assert!(history.recv().await.is_none());
+                assert!(matches!(
+                    app.get_snapshot().await,
+                    Err(MonitorCommandError::ChannelClosed)
+                ));
+            })
+            .await
+            .unwrap();
+        }
     }
 
     #[tokio::test]
     async fn shutdown_waits_for_buffered_history_to_reach_the_external_channel() {
-        let (sender, mut history) = mpsc::channel(1);
-        let running = Application::new(
-            AppConfig {
-                history_sink: Some(sender),
-                ..AppConfig::default()
-            },
-            vec![],
-        )
-        .spawn();
-        let app = running.handle();
-        let mut ids = Vec::new();
-        for name in ["first", "second", "third"] {
-            ids.push(app.add_task(spec(name)).await.unwrap());
-        }
+        for prepare in [Application::new, Application::new_ordered] {
+            let (sender, mut history) = mpsc::channel(1);
+            let running = prepare(
+                AppConfig {
+                    history_sink: Some(sender),
+                    ..AppConfig::default()
+                },
+                vec![],
+            )
+            .spawn();
+            let app = running.handle();
+            let mut ids = Vec::new();
+            for name in ["first", "second", "third"] {
+                ids.push(app.add_task(spec(name)).await.unwrap());
+            }
 
-        let mut shutdown = Box::pin(running.shutdown());
-        assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
-        tokio::task::yield_now().await;
-        assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
+            let mut shutdown = Box::pin(running.shutdown());
+            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
+            tokio::task::yield_now().await;
+            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
 
-        let recorded = timeout(Duration::from_secs(1), async {
-            let (result, recorded) = tokio::join!(shutdown, async {
-                let mut recorded = Vec::new();
-                while let Some(event) = history.recv().await {
-                    recorded.push(event);
-                }
+            let recorded = timeout(Duration::from_secs(1), async {
+                let (result, recorded) = tokio::join!(shutdown, async {
+                    let mut recorded = Vec::new();
+                    while let Some(event) = history.recv().await {
+                        recorded.push(event);
+                    }
+                    recorded
+                });
+                result.unwrap();
                 recorded
-            });
-            result.unwrap();
-            recorded
-        })
-        .await
-        .unwrap();
-        assert_eq!(recorded.len(), ids.len());
-        for ((seq, id), event) in ids.into_iter().enumerate().zip(recorded) {
-            assert_eq!(event.metadata.seq, seq as u64);
-            assert_eq!(event.metadata.task_id, id);
-            assert!(matches!(event.data, EventData::TaskRegistered(_)));
+            })
+            .await
+            .unwrap();
+            assert_eq!(recorded.len(), ids.len());
+            for ((seq, id), event) in ids.into_iter().enumerate().zip(recorded) {
+                assert_eq!(event.metadata.seq, seq as u64);
+                assert_eq!(event.metadata.task_id, id);
+                assert!(matches!(event.data, EventData::TaskRegistered(_)));
+            }
         }
     }
 
     #[tokio::test]
     async fn cancelling_shutdown_aborts_the_runtime_and_history_writer() {
-        let (sender, mut history) = mpsc::channel(1);
-        let running = Application::new(
-            AppConfig {
-                history_sink: Some(sender),
-                ..AppConfig::default()
-            },
-            vec![],
-        )
-        .spawn();
-        let app = running.handle();
-        app.add_task(spec("first")).await.unwrap();
-        app.add_task(spec("second")).await.unwrap();
-        let mut events = app.subscribe();
-        let mut shutdown = Box::pin(running.shutdown());
-        assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
-        tokio::task::yield_now().await;
-        assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
+        for prepare in [Application::new, Application::new_ordered] {
+            let (sender, mut history) = mpsc::channel(1);
+            let running = prepare(
+                AppConfig {
+                    history_sink: Some(sender),
+                    ..AppConfig::default()
+                },
+                vec![],
+            )
+            .spawn();
+            let app = running.handle();
+            app.add_task(spec("first")).await.unwrap();
+            app.add_task(spec("second")).await.unwrap();
+            let mut events = app.subscribe();
+            let mut shutdown = Box::pin(running.shutdown());
+            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
+            tokio::task::yield_now().await;
+            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
 
-        drop(shutdown);
-        timeout(Duration::from_secs(1), async {
-            assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
-            while history.recv().await.is_some() {}
-            assert!(matches!(app.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
-        })
-        .await
-        .unwrap();
+            drop(shutdown);
+            timeout(Duration::from_secs(1), async {
+                assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
+                while history.recv().await.is_some() {}
+                assert!(matches!(
+                    app.get_snapshot().await,
+                    Err(MonitorCommandError::ChannelClosed)
+                ));
+            })
+            .await
+            .unwrap();
+        }
     }
 
     #[tokio::test]

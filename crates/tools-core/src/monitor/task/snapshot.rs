@@ -57,3 +57,34 @@ pub struct TaskSnapshot {
     /// Cleared by an explicit new start, successful preparation, or an accounted result.
     pub last_failure: Option<ScenarioFailure>,
 }
+
+impl super::Task {
+    pub(in crate::monitor) fn snapshot(
+        &self,
+        status: TaskStatus,
+        progress: Option<&TaskProgress>,
+        last_transition: Option<&TaskTransition>,
+        last_failure: Option<&ScenarioFailure>,
+    ) -> TaskSnapshot {
+        let config = self.config();
+        TaskSnapshot {
+            id: self.id(),
+            created_at: *self.created_at(),
+            configuration: TaskConfigurationSnapshot {
+                revision: self.revision(),
+                accepted_at: *self.config_updated_at(),
+                description: TaskDescription::from(config),
+            },
+            updated_at: *self.updated_at(),
+            status,
+            progress: progress.cloned(),
+            last_transition: last_transition.cloned(),
+            metrics: self.metrics(),
+            run_limit: self.run_limit(),
+            completed_runs: self.completed_runs(),
+            result: self.last_result().cloned(),
+            history: self.history().iter().cloned().collect(),
+            last_failure: last_failure.cloned(),
+        }
+    }
+}

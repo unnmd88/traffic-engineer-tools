@@ -2,11 +2,16 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot, watch},
+    sync::{broadcast, mpsc, watch},
     task::{AbortHandle, JoinSet},
     time::{Instant, sleep_until},
 };
 use tracing::Instrument;
+
+use super::{
+    command::{Command, OrchestratorHandle},
+    event_output::{log_event, log_writer},
+};
 
 use crate::monitor::{
     OperationFinished, OperationStarted, RestartPlan, ScenarioFailure, TaskCommandKind,
@@ -22,8 +27,7 @@ use crate::monitor::{
     },
     snapshot::MonitorSnapshot,
     task::{
-        RunLimit, SpecRevision, Task, TaskConfig, TaskConfigurationSnapshot, TaskDescription,
-        TaskId, TaskSnapshot, TaskStatus,
+        RunLimit, SpecRevision, Task, TaskConfig, TaskDescription, TaskId, TaskSnapshot, TaskStatus,
     },
 };
 
@@ -90,52 +94,6 @@ impl ScenarioHandle {
     }
 }
 
-enum Command {
-    AddTask {
-        spec: TaskConfig,
-        reply: oneshot::Sender<Result<TaskId, MonitorCommandError>>,
-    },
-    RemoveTask {
-        task_id: TaskId,
-        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
-    },
-    StartTask {
-        task_id: TaskId,
-        limit: RunLimit,
-        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
-    },
-    PauseTask {
-        task_id: TaskId,
-        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
-    },
-    ResumeTask {
-        task_id: TaskId,
-        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
-    },
-    StopTask {
-        task_id: TaskId,
-        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
-    },
-    UpdateTask {
-        task_id: TaskId,
-        spec: TaskConfig,
-        reply: oneshot::Sender<Result<(), MonitorCommandError>>,
-    },
-    GetSnapshot {
-        reply: oneshot::Sender<MonitorSnapshot>,
-    },
-    SubscribeWithSnapshot {
-        reply: oneshot::Sender<MonitorSubscription>,
-    },
-    Shutdown {
-        reply: oneshot::Sender<()>,
-    },
-    Respawn {
-        task_id: TaskId,
-        generation: Generation,
-    },
-}
-
 pub(super) struct Orchestrator {
     next_id: u64,
     initial_tasks: Vec<(TaskId, RunLimit)>,
@@ -183,13 +141,7 @@ impl Orchestrator {
             seq: 0,
             application_id,
         };
-        (
-            this,
-            OrchestratorHandle {
-                cmd_tx,
-                live_tx: live_tx.downgrade(),
-            },
-        )
+        (this, OrchestratorHandle::current(cmd_tx, live_tx.downgrade()))
     }
 
     pub(super) fn prepare_tasks(&mut self, tasks: Vec<InitialTask>) -> Vec<TaskId> {
@@ -550,6 +502,17 @@ impl Orchestrator {
         }
 
         match rep {
+            ScenarioReport::Completed { .. } => {
+                let entry = self.entries.get_mut(&task_id).expect("validated task");
+                entry.finishing_scenario = entry.scenario.take().map(|scenario| scenario.abort);
+                self.transition(
+                    task_id,
+                    TaskStatus::Completed,
+                    TaskTransitionCause::ScenarioCompleted,
+                    None,
+                )
+                .await;
+            }
             ScenarioReport::Progress { progress, .. } => {
                 let entry = self.entries.get_mut(&task_id).expect("validated task");
                 if entry.state != TaskStatus::Preparing {
@@ -867,7 +830,7 @@ impl Orchestrator {
     }
 
     async fn emit_event(&mut self, ev: MonitorEvent) {
-        self.log_event(&ev);
+        log_event(&ev);
         if self.live_tx.receiver_count() > 0 {
             let _ = self.live_tx.send(ev.clone());
         }
@@ -876,111 +839,13 @@ impl Orchestrator {
         }
     }
 
-    fn log_event(&self, event: &MonitorEvent) {
-        let metadata = &event.metadata;
-        match &event.data {
-            EventData::TaskStateChanged(transition) => match &transition.cause {
-                TaskTransitionCause::Failure(failure) => match failure.as_ref() {
-                    ScenarioFailure::Panicked { .. } => tracing::error!(
-                        application_id = %metadata.application_id,
-                        task_id = metadata.task_id.0,
-                        generation = ?metadata.generation,
-                        revision = metadata.revision.0,
-                        seq = metadata.seq,
-                        ?transition,
-                        "task state changed after a scenario panic"
-                    ),
-                    _ => tracing::warn!(
-                        application_id = %metadata.application_id,
-                        task_id = metadata.task_id.0,
-                        generation = ?metadata.generation,
-                        revision = metadata.revision.0,
-                        seq = metadata.seq,
-                        ?transition,
-                        "task state changed after a scenario failure"
-                    ),
-                },
-                _ => tracing::info!(
-                    application_id = %metadata.application_id,
-                    task_id = metadata.task_id.0,
-                    generation = ?metadata.generation,
-                    revision = metadata.revision.0,
-                    seq = metadata.seq,
-                    ?transition,
-                    "task state changed"
-                ),
-            },
-            EventData::OperationStarted(operation) => tracing::debug!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?operation.context.generation,
-                revision = operation.context.revision.0,
-                operation_id = operation.context.operation_id.get(),
-                seq = metadata.seq,
-                "operation started"
-            ),
-            EventData::OperationFinished(OperationFinished { context, report }) => tracing::debug!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?context.generation,
-                revision = context.revision.0,
-                operation_id = context.operation_id.get(),
-                seq = metadata.seq,
-                status = ?report.status(),
-                "operation finished"
-            ),
-            EventData::Preparation(_) => {}
-            EventData::TaskRemoved => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "task removed"
-            ),
-            EventData::TaskRegistered(description) => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                task_name = description.name,
-                "task registered"
-            ),
-            EventData::TaskConfigurationChanged(description) => tracing::info!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                task_name = description.name,
-                "task configuration updated"
-            ),
-        }
-    }
-
     fn task_snapshot(&self, entry: &TaskEntry) -> TaskSnapshot {
-        let t = &entry.task;
-        let config = t.config();
-        TaskSnapshot {
-            id: t.id(),
-            created_at: *t.created_at(),
-            configuration: TaskConfigurationSnapshot {
-                revision: t.revision(),
-                accepted_at: *t.config_updated_at(),
-                description: TaskDescription::from(config),
-            },
-            updated_at: *t.updated_at(),
-            status: entry.state,
-            progress: entry.progress.clone(),
-            last_transition: entry.last_transition.clone(),
-            metrics: t.metrics(),
-            run_limit: t.run_limit(),
-            completed_runs: t.completed_runs(),
-            result: t.last_result().cloned(),
-            history: t.history().iter().cloned().collect(),
-            last_failure: entry.last_failure.clone(),
-        }
+        entry.task.snapshot(
+            entry.state,
+            entry.progress.as_ref(),
+            entry.last_transition.as_ref(),
+            entry.last_failure.as_ref(),
+        )
     }
 
     pub(super) fn snapshot(&self) -> MonitorSnapshot {
@@ -1012,153 +877,11 @@ fn log_background_result(
     }
 }
 
-async fn log_writer(mut rx: mpsc::Receiver<MonitorEvent>, hist_tx: mpsc::Sender<MonitorEvent>) {
-    while let Some(ev) = rx.recv().await {
-        if let Err(error) = hist_tx.send(ev).await {
-            let metadata = &error.0.metadata;
-            tracing::warn!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "history sink closed; event forwarding stopped"
-            );
-            break;
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct OrchestratorHandle {
-    cmd_tx: mpsc::Sender<Command>,
-    live_tx: broadcast::WeakSender<MonitorEvent>,
-}
-
-impl OrchestratorHandle {
-    pub async fn add_task(&self, spec: TaskConfig) -> Result<TaskId, MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::AddTask { spec, reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
-    }
-
-    pub async fn remove_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::RemoveTask { task_id, reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
-    }
-
-    pub async fn start_task(
-        &self,
-        task_id: TaskId,
-        limit: RunLimit,
-    ) -> Result<(), MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::StartTask {
-                task_id,
-                limit,
-                reply: tx,
-            })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
-    }
-
-    pub async fn pause_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::PauseTask { task_id, reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
-    }
-
-    pub async fn resume_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::ResumeTask { task_id, reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
-    }
-
-    pub async fn stop_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::StopTask { task_id, reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
-    }
-
-    pub async fn update_task(
-        &self,
-        task_id: TaskId,
-        spec: TaskConfig,
-    ) -> Result<(), MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::UpdateTask {
-                task_id,
-                spec,
-                reply: tx,
-            })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
-    }
-
-    pub async fn get_snapshot(&self) -> Result<MonitorSnapshot, MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::GetSnapshot { reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<MonitorEvent> {
-        self.live_tx.upgrade().map_or_else(
-            || {
-                let (_, events) = broadcast::channel(1);
-                events
-            },
-            |sender| sender.subscribe(),
-        )
-    }
-
-    pub async fn subscribe_with_snapshot(
-        &self,
-    ) -> Result<MonitorSubscription, MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::SubscribeWithSnapshot { reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)
-    }
-
-    pub async fn shutdown(&self) -> Result<(), MonitorCommandError> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::Shutdown { reply: tx })
-            .await
-            .map_err(|_| MonitorCommandError::ChannelClosed)?;
-        rx.await.map_err(|_| MonitorCommandError::ChannelClosed)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::monitor::OperationReport;
     use chrono::DateTime;
+    use tokio::sync::oneshot;
     use tokio::time::Duration;
 
     use super::*;
