@@ -197,8 +197,6 @@ itself imply that the task has stopped or requires a restart.
 All runtime status mutations pass through `TaskEntry::transition`; the orchestrator publishes
 the same transition that the entry retains for snapshots. A request or report that leaves
 the status unchanged emits no state-transition event and preserves the last transition.
-An accepted update may still start another generation while the status stays `Preparing`;
-its configuration event and subsequent preparation reports remain observable.
 
 Main `ApplicationHandle` commands:
 
@@ -208,8 +206,8 @@ Main `ApplicationHandle` commands:
 | `start_task(task_id, limit)` | Starts a fresh execution from `Idle`, `Stopped`, or `Completed` with the supplied `RunLimit` |
 | `pause_task` | Passes a pause to a live scenario; while waiting for a restart it moves to paused without starting |
 | `resume_task` | Resumes a live scenario or creates a new one if the previous one already finished |
-| `stop_task` | Requests cancellation for an ongoing execution and moves it to `Stopped`; `Completed` retains its terminal cause |
-| `update_task` | Replaces the configuration and increments the revision; behavior depends on the current status |
+| `stop_task` | Cancels an ongoing scenario, waits for local execution to end, and moves the task to `Stopped`; a terminal task retains its status |
+| `update_task` | Replaces the configuration and increments the revision in `Idle`, `Stopped`, or `Completed` |
 | `remove_task` | Removes the task and cancels its execution if it was started |
 
 The start-command reply confirms that the start was initiated, not successful network
@@ -219,12 +217,16 @@ For a live scenario, pause and resume are confirmed by its reports and the
 corresponding public events. A regular GET/SET pause waits for the current complete
 request with its retries to finish.
 
-When the configuration of an active task changes, the old execution is cancelled and a new
-one starts with a new generation. The completed-run count, metrics, and accumulated results
-are preserved.
-For a paused task, applying a new scenario is deferred until `resume`.
-An explicit new `start_task` fixes the new run limit, resets execution metrics and the
-completed-run count, and clears the last scenario failure while keeping results and history.
+`stop_task(...).await` confirms that the local scenario has exited and any pending automatic
+restart has been invalidated. A request already sent to the device can still take effect.
+When a scenario reports completion or failure, the orchestrator retains its background task
+handle until it can confirm exit before a subsequent stop or scenario start.
+
+An update in `Preparing`, `Active`, `Paused`, or `Restarting` returns
+`TaskUpdateWhileRunning` without publishing a configuration event. An accepted update
+publishes `TaskConfigurationChanged` and retains the task ID and its results up to the
+configured history depth. The next `start_task` uses the new revision, fixes a new run limit,
+resets execution metrics and the completed-run count, and clears the last scenario failure.
 
 Timestamps have different meanings: `TaskSnapshot.created_at` is task creation,
 `configuration.accepted_at` is acceptance of the current configuration revision, and
@@ -414,8 +416,7 @@ and panics also leave the count unchanged.
 The runner marks the last `RunFinished` when its budget is exhausted and exits before
 scheduling another run. The orchestrator counts that report independently of
 `ExecutionMetrics` and publishes `OperationFinished` before `TaskStateChanged` to `Completed`
-with cause `LimitReached`. During an active configuration update, the current replacement
-path can still discard an old generation's report that was queued before the replacement.
+with cause `LimitReached`.
 
 `ScenarioExecution` holds the original `OperationContext` and an `OperationReport`.
 Its `finished_at()` and `elapsed()` methods read timing from the enclosed operation report;

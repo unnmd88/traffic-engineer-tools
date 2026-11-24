@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
-    task::JoinSet,
+    task::{AbortHandle, JoinSet},
     time::{Instant, sleep_until},
 };
 use tracing::Instrument;
@@ -37,6 +37,7 @@ struct TaskEntry {
     next_generation: Generation,
     generation: Generation,
     scenario: Option<ScenarioHandle>,
+    finishing_scenario: Option<AbortHandle>,
 }
 
 impl TaskEntry {
@@ -73,7 +74,7 @@ impl TaskEntry {
 
 struct ScenarioHandle {
     generation: Generation,
-    abort: tokio::task::AbortHandle,
+    abort: AbortHandle,
     cmd: mpsc::Sender<ScenarioCommand>,
 }
 
@@ -204,6 +205,7 @@ impl Orchestrator {
                 next_generation: Generation::first(),
                 generation: Generation::first(),
                 scenario: None,
+                finishing_scenario: None,
             },
         );
         id
@@ -475,22 +477,27 @@ impl Orchestrator {
         id: TaskId,
         cause: TaskTransitionCause,
     ) -> Result<(), MonitorCommandError> {
-        let stopped = {
+        let (stopped, scenario) = {
             let entry = self
                 .entries
                 .get_mut(&id)
                 .ok_or(MonitorCommandError::TaskNotFound(id))?;
-            match entry.state {
-                TaskStatus::Idle | TaskStatus::Stopped | TaskStatus::Completed => false,
-                _ => {
-                    if let Some(scenario) = entry.scenario.take() {
-                        scenario.abort.abort();
-                    }
-                    entry.attempts = 0;
-                    true
-                }
+            let stopped = !matches!(
+                entry.state,
+                TaskStatus::Idle | TaskStatus::Stopped | TaskStatus::Completed
+            );
+            if stopped {
+                entry.attempts = 0;
             }
+            let scenario = entry.scenario.take().map(|scenario| scenario.abort);
+            (stopped, scenario.or_else(|| entry.finishing_scenario.take()))
         };
+        if let Some(scenario) = scenario {
+            if stopped {
+                scenario.abort();
+            }
+            self.wait_for_scenario(&scenario).await;
+        }
         if stopped {
             self.transition(id, TaskStatus::Stopped, cause, None).await;
         }
@@ -498,42 +505,32 @@ impl Orchestrator {
     }
 
     async fn update(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), MonitorCommandError> {
-        let (respawn, description) = {
-            let entry = self
-                .entries
-                .get_mut(&id)
-                .ok_or(MonitorCommandError::TaskNotFound(id))?;
-            entry.task.update_config(spec);
-            entry.attempts = 0;
-            (
-                matches!(
-                    entry.state,
-                    TaskStatus::Preparing | TaskStatus::Active | TaskStatus::Restarting
-                ),
-                Box::new(TaskDescription::from(entry.task.config())),
-            )
-        };
-        let paused = matches!(self.entries.get(&id), Some(e) if e.state == TaskStatus::Paused);
-
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or(MonitorCommandError::TaskNotFound(id))?;
+        if !matches!(entry.state, TaskStatus::Idle | TaskStatus::Stopped | TaskStatus::Completed) {
+            return Err(MonitorCommandError::TaskUpdateWhileRunning {
+                task_id: id,
+                status: entry.state,
+            });
+        }
+        entry.task.update_config(spec);
+        let description = Box::new(TaskDescription::from(entry.task.config()));
         self.emit(id, EventData::TaskConfigurationChanged(description))
             .await;
-
-        if respawn {
-            {
-                let entry = self.entries.get_mut(&id).expect("checked above");
-                if let Some(scenario) = entry.scenario.take() {
-                    scenario.abort.abort();
-                }
-            }
-            self.spawn_scenario(id, TaskTransitionCause::ConfigurationChanged)
-                .await;
-        } else if paused
-            && let Some(entry) = self.entries.get_mut(&id)
-            && let Some(scenario) = entry.scenario.take()
-        {
-            scenario.abort.abort();
-        }
         Ok(())
+    }
+
+    async fn wait_for_scenario(&mut self, scenario: &AbortHandle) {
+        while !scenario.is_finished() {
+            let result = self
+                .scenarios
+                .join_next()
+                .await
+                .expect("running scenario is tracked");
+            log_background_result(result, "scenario", self.application_id);
+        }
     }
 
     async fn remove(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
@@ -703,7 +700,7 @@ impl Orchestrator {
     ) {
         let entry = self.entries.get_mut(&task_id).expect("validated task");
         entry.last_failure = Some(failure.clone());
-        entry.scenario = None;
+        entry.finishing_scenario = entry.scenario.take().map(|scenario| scenario.abort);
         entry.attempts += 1;
         let delay = self.policy.delay(entry.attempts);
         let deadline = Instant::now() + delay;
@@ -754,7 +751,7 @@ impl Orchestrator {
         let Some(RunLimit::Runs(limit)) = entry.task.run_limit() else {
             unreachable!("only a finite limit can be reached");
         };
-        entry.scenario = None;
+        entry.finishing_scenario = entry.scenario.take().map(|scenario| scenario.abort);
         self.transition(
             task_id,
             TaskStatus::Completed,
@@ -765,6 +762,15 @@ impl Orchestrator {
     }
 
     async fn spawn_scenario(&mut self, task_id: TaskId, cause: TaskTransitionCause) {
+        let finishing = self
+            .entries
+            .get_mut(&task_id)
+            .expect("task is registered")
+            .finishing_scenario
+            .take();
+        if let Some(finishing) = finishing {
+            self.wait_for_scenario(&finishing).await;
+        }
         let entry = self.entries.get_mut(&task_id).expect("task is registered");
         let limit = entry.task.run_limit().expect("task execution has started");
         let budget = RunBudget::new(limit, entry.task.completed_runs());
@@ -1212,7 +1218,7 @@ mod tests {
             Task::new(task_id, TaskConfig::try_new("test".to_string(), scenario, 3).unwrap());
         task.begin_run(limit);
         let (cmd, _cmd_rx) = mpsc::channel(8);
-        let join = tokio::spawn(std::future::pending::<()>());
+        let abort = orchestrator.scenarios.spawn(std::future::pending());
         orchestrator.entries.insert(
             task_id,
             TaskEntry {
@@ -1226,9 +1232,10 @@ mod tests {
                 generation: Generation::first(),
                 scenario: Some(ScenarioHandle {
                     generation: Generation::first(),
-                    abort: join.abort_handle(),
+                    abort,
                     cmd,
                 }),
+                finishing_scenario: None,
             },
         );
         (orchestrator, events, task_id)
@@ -1300,10 +1307,10 @@ mod tests {
             scenario.abort.abort();
         }
         let (cmd, _commands) = mpsc::channel(8);
-        let join = tokio::spawn(std::future::pending::<()>());
+        let abort = orchestrator.scenarios.spawn(std::future::pending());
         entry.scenario = Some(ScenarioHandle {
             generation: entry.generation,
-            abort: join.abort_handle(),
+            abort,
             cmd,
         });
     }
@@ -1633,8 +1640,13 @@ mod tests {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         let first = execution(100, true);
         execute(&mut orchestrator, task_id, first.clone()).await;
+        orchestrator.stop(task_id).await.unwrap();
         orchestrator
             .update(task_id, set_config("replacement"))
+            .await
+            .unwrap();
+        orchestrator
+            .start(task_id, RunLimit::Unlimited)
             .await
             .unwrap();
         control_scenario(&mut orchestrator, task_id);
@@ -1687,7 +1699,7 @@ mod tests {
         let task = &snapshot.tasks[0];
         assert_eq!(task.result.as_ref().unwrap().context, second.context);
         assert_eq!(task.history[0].context, first.context);
-        assert_eq!(task.metrics.executions, 2);
+        assert_eq!(task.metrics.executions, 1);
         let mut last = None;
         while let Ok(event) = events.try_recv() {
             last = Some(event);
@@ -1975,7 +1987,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configuration_replacement_clears_progress_even_while_preparing() {
+    async fn rejected_update_preserves_preparation_progress() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         orchestrator.entries.get_mut(&task_id).unwrap().state = TaskStatus::Preparing;
         let retired = Generation::first();
@@ -1991,39 +2003,16 @@ mod tests {
             })
             .await;
         assert!(matches!(events.try_recv().unwrap().data, EventData::Preparation(_)));
-        orchestrator
-            .update(task_id, set_config("replacement"))
-            .await
-            .unwrap();
+        assert!(matches!(
+            orchestrator.update(task_id, set_config("replacement")).await,
+            Err(MonitorCommandError::TaskUpdateWhileRunning { task_id: rejected, status: TaskStatus::Preparing })
+                if rejected == task_id
+        ));
         let task = orchestrator.snapshot().tasks.remove(0);
         assert_eq!(task.status, TaskStatus::Preparing);
-        assert!(task.progress.is_none());
-        assert!(matches!(
-            events.try_recv().unwrap().data,
-            EventData::TaskConfigurationChanged(_)
-        ));
-        orchestrator
-            .on_report(ScenarioReport::Progress {
-                task_id,
-                generation: retired,
-                progress,
-            })
-            .await;
-        assert!(orchestrator.snapshot().tasks[0].progress.is_none());
+        assert_eq!(task.progress.as_ref(), Some(&progress));
+        assert_eq!(task.configuration.revision, SpecRevision::new(1));
         assert!(events.try_recv().is_err());
-        let progress = TaskProgress {
-            at: Utc::now(),
-            message: "New configuration".to_string(),
-        };
-        orchestrator
-            .on_report(ScenarioReport::Progress {
-                task_id,
-                generation: retired.next(),
-                progress: progress.clone(),
-            })
-            .await;
-        assert_eq!(orchestrator.snapshot().tasks[0].progress.as_ref(), Some(&progress));
-        assert_eq!(events.try_recv().unwrap().metadata.revision, SpecRevision::new(2));
     }
 
     #[tokio::test]
@@ -2264,7 +2253,7 @@ mod tests {
         assert!(commands.try_recv().is_err());
         assert!(events.try_recv().is_err());
         orchestrator.stop(task_id).await.unwrap();
-        wait_for_abort(abort).await;
+        assert!(abort.is_finished());
         assert!(commands.recv().await.is_none());
         assert!(
             matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Stopped)
@@ -2291,154 +2280,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_spec_update_replaces_scenario_and_preserves_execution_metrics() {
-        let (mut orchestrator, mut events, task_id) = active_task(0);
+    async fn rejected_update_keeps_active_scenario_and_accounting() {
+        let (mut orchestrator, mut events, task_id) = active_task(2);
         execute(&mut orchestrator, task_id, execution(100, true)).await;
         events.try_recv().unwrap();
-        let metrics = orchestrator.snapshot().tasks[0].metrics;
-        let previous_generation = orchestrator.entries[&task_id].generation;
-        let abort = orchestrator.entries[&task_id]
-            .scenario
-            .as_ref()
-            .unwrap()
-            .abort
-            .clone();
+        let generation = orchestrator.entries[&task_id].generation;
+        let before = orchestrator.snapshot().tasks.remove(0);
 
-        orchestrator
-            .update(task_id, set_config("updated"))
-            .await
-            .unwrap();
-        control_scenario(&mut orchestrator, task_id);
-        wait_for_abort(abort).await;
-        let updated = events.try_recv().unwrap();
-        let starting = events.try_recv().unwrap();
-        assert!(matches!(updated.data, EventData::TaskConfigurationChanged(_)));
-        assert!(
-            matches!(starting.data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Preparing)
-        );
-        assert_eq!(updated.metadata.task_id, task_id);
-        assert_eq!(updated.metadata.revision, SpecRevision::new(2));
-        assert_eq!(updated.metadata.generation, previous_generation);
-        assert_eq!(starting.metadata.application_id, updated.metadata.application_id);
-        assert_eq!(starting.metadata.task_id, updated.metadata.task_id);
-        assert_eq!(starting.metadata.seq, updated.metadata.seq + 1);
-        assert_eq!(starting.metadata.revision, SpecRevision::new(2));
-        assert_eq!(starting.metadata.generation, previous_generation.next());
-
-        for report in [
-            ScenarioReport::Built {
-                task_id,
-                generation: previous_generation,
-            },
-            ScenarioReport::BuildFailed {
-                task_id,
-                generation: previous_generation,
-                error: ScenarioBuildError::Other("obsolete".to_string()),
-            },
-            ScenarioReport::RunFinished {
-                task_id,
-                generation: previous_generation,
-                execution: execution(200, false),
-                limit_reached: false,
-            },
-            ScenarioReport::Paused {
-                task_id,
-                generation: previous_generation,
-            },
-        ] {
-            orchestrator.on_report(report).await;
-        }
-        assert!(events.try_recv().is_err());
-        let snapshot = orchestrator.snapshot();
-        assert_eq!(snapshot.tasks[0].status, TaskStatus::Preparing);
-        assert_eq!(snapshot.tasks[0].configuration.description.name, "updated");
-        assert_eq!(snapshot.tasks[0].metrics, metrics);
-        assert_eq!(
-            snapshot.tasks[0]
-                .result
-                .as_ref()
-                .unwrap()
-                .finished_at()
-                .timestamp(),
-            100
-        );
-        assert!(matches!(&snapshot.tasks[0].configuration.description.scenario,
-                crate::monitor::ScenarioDescription::SnmpSet { schedule, .. }
-                    if schedule.duration() == Duration::from_secs(2)));
-        orchestrator
-            .on_report(ScenarioReport::Built {
-                task_id,
-                generation: starting.metadata.generation,
-            })
-            .await;
-        assert!(
-            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Active)
-        );
-        assert_eq!(orchestrator.snapshot().tasks[0].metrics, metrics);
-    }
-
-    #[tokio::test]
-    async fn paused_spec_update_defers_new_scenario_until_resume() {
-        let (mut orchestrator, mut events, task_id) = active_task(0);
-        let previous_generation = orchestrator.entries[&task_id].generation;
-        let abort = orchestrator.entries[&task_id]
-            .scenario
-            .as_ref()
-            .unwrap()
-            .abort
-            .clone();
-        orchestrator
-            .on_report(ScenarioReport::Paused {
-                task_id,
-                generation: previous_generation,
-            })
-            .await;
-        events.try_recv().unwrap();
-        orchestrator
-            .update(task_id, set_config("updated while paused"))
-            .await
-            .unwrap();
-        wait_for_abort(abort).await;
         assert!(matches!(
-            events.try_recv().unwrap().data,
-            EventData::TaskConfigurationChanged(_)
+            orchestrator.update(task_id, set_config("replacement")).await,
+            Err(MonitorCommandError::TaskUpdateWhileRunning { task_id: rejected, status: TaskStatus::Active })
+                if rejected == task_id
         ));
-        assert!(events.try_recv().is_err());
-        assert!(orchestrator.report_rx.try_recv().is_err());
-        assert!(orchestrator.entries[&task_id].scenario.is_none());
-        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
-        assert_eq!(orchestrator.entries[&task_id].generation, previous_generation);
-        orchestrator
-            .on_report(ScenarioReport::Built {
-                task_id,
-                generation: previous_generation,
-            })
-            .await;
-        assert!(events.try_recv().is_err());
-        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Paused);
 
-        orchestrator.resume(task_id).await.unwrap();
-        control_scenario(&mut orchestrator, task_id);
-        let starting = events.try_recv().unwrap();
-        assert!(
-            matches!(starting.data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Preparing)
-        );
-        assert_eq!(starting.metadata.revision, SpecRevision::new(2));
-        assert_eq!(starting.metadata.generation, previous_generation.next());
-        let snapshot = orchestrator.snapshot();
-        assert_eq!(snapshot.tasks[0].configuration.description.name, "updated while paused");
-        assert!(matches!(&snapshot.tasks[0].configuration.description.scenario,
-                crate::monitor::ScenarioDescription::SnmpSet { schedule, .. }
-                    if schedule.duration() == Duration::from_secs(2)));
-        orchestrator
-            .on_report(ScenarioReport::Built {
-                task_id,
-                generation: starting.metadata.generation,
-            })
-            .await;
-        assert!(
-            matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Active)
-        );
+        let task = orchestrator.snapshot().tasks.remove(0);
+        assert_eq!(task.configuration.revision, before.configuration.revision);
+        assert_eq!(task.configuration.description.name, before.configuration.description.name);
+        assert_eq!(task.metrics, before.metrics);
+        assert_eq!(task.completed_runs, 1);
+        assert_eq!(orchestrator.entries[&task_id].generation, generation);
+        assert!(events.try_recv().is_err());
+
+        execute(&mut orchestrator, task_id, execution(200, true)).await;
+        assert_eq!(orchestrator.snapshot().tasks[0].status, TaskStatus::Completed);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2468,15 +2332,33 @@ mod tests {
             matches!(stale_restart, Command::Respawn { generation, .. } if generation == previous_generation)
         );
 
+        assert!(matches!(
+            orchestrator.update(task_id, set_config("replacement")).await,
+            Err(MonitorCommandError::TaskUpdateWhileRunning { task_id: rejected, status: TaskStatus::Restarting })
+                if rejected == task_id
+        ));
+        assert!(events.try_recv().is_err());
+        orchestrator.stop(task_id).await.unwrap();
+        assert!(matches!(events.try_recv().unwrap().data,
+            EventData::TaskStateChanged(transition) if transition.current == TaskStatus::Stopped));
+        orchestrator
+            .maybe_respawn(task_id, previous_generation)
+            .await;
+        assert!(events.try_recv().is_err());
+
         orchestrator
             .update(task_id, set_config("latest"))
             .await
             .unwrap();
-        control_scenario(&mut orchestrator, task_id);
         assert!(matches!(
             events.try_recv().unwrap().data,
             EventData::TaskConfigurationChanged(_)
         ));
+        orchestrator
+            .start(task_id, RunLimit::Unlimited)
+            .await
+            .unwrap();
+        control_scenario(&mut orchestrator, task_id);
         let starting = events.try_recv().unwrap();
         assert!(
             matches!(starting.data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Preparing)
@@ -2671,7 +2553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transition_paused_update_retains_last_change_and_ignores_retired_reports() {
+    async fn rejected_update_retains_paused_transition_and_scenario() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         orchestrator
             .on_report(ScenarioReport::Paused {
@@ -2680,27 +2562,20 @@ mod tests {
             })
             .await;
         let paused = take_transition(&orchestrator, &mut events, task_id);
-        orchestrator
-            .update(task_id, set_config("new configuration"))
-            .await
-            .unwrap();
-        let accepted = events.try_recv().unwrap();
-        assert!(matches!(accepted.data, EventData::TaskConfigurationChanged(_)));
-        assert_eq!(accepted.metadata.revision, SpecRevision::new(2));
+        assert!(matches!(
+            orchestrator.update(task_id, set_config("replacement")).await,
+            Err(MonitorCommandError::TaskUpdateWhileRunning { task_id: rejected, status: TaskStatus::Paused })
+                if rejected == task_id
+        ));
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Paused);
+        assert_eq!(snapshot.tasks[0].configuration.revision, SpecRevision::new(1));
         assert_eq!(
             serde_json::to_value(snapshot.tasks[0].last_transition.as_ref().unwrap()).unwrap(),
             serde_json::to_value(paused).unwrap()
         );
-        orchestrator
-            .on_report(ScenarioReport::Built {
-                task_id,
-                generation: Generation::first(),
-            })
-            .await;
         assert!(events.try_recv().is_err());
-        assert!(orchestrator.entries[&task_id].scenario.is_none());
+        assert!(orchestrator.entries[&task_id].scenario.is_some());
     }
 
     #[tokio::test]

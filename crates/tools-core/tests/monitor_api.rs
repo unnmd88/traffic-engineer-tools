@@ -114,6 +114,21 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     assert!(updated.configuration.accepted_at >= initial.configuration.accepted_at);
     assert_eq!(updated.updated_at, updated.configuration.accepted_at);
 
+    handle.start_task(id, RunLimit::Unlimited).await.unwrap();
+    assert!(matches!(
+        handle.update_task(id, task("too early", false)).await,
+        Err(MonitorCommandError::TaskUpdateWhileRunning { task_id, .. }) if task_id == id
+    ));
+    handle.stop_task(id).await.unwrap();
+    handle
+        .update_task(id, task("next run", false))
+        .await
+        .unwrap();
+    let stopped = handle.get_snapshot().await.unwrap().tasks.remove(0);
+    assert_eq!(stopped.id, id);
+    assert_eq!(stopped.status, TaskStatus::Stopped);
+    assert_eq!(stopped.configuration.revision, updated.configuration.revision.next());
+
     handle.remove_task(id).await.unwrap();
     let error: MonitorCommandError = handle.remove_task(id).await.unwrap_err();
     assert!(matches!(error, MonitorCommandError::TaskNotFound(missing) if missing == id));
@@ -203,6 +218,15 @@ async fn one_registered_task_can_start_again_with_a_different_limit() {
         assert_eq!(after_stop.tasks[0].status, TaskStatus::Completed);
         assert_eq!(after_stop.next_seq, completed.next_seq);
     }
+
+    handle
+        .update_task(id, task("after completion", true))
+        .await
+        .unwrap();
+    let updated = handle.get_snapshot().await.unwrap().tasks.remove(0);
+    assert_eq!(updated.status, TaskStatus::Completed);
+    assert_eq!(updated.configuration.revision, SpecRevision::new(2));
+    assert_eq!(updated.result.as_ref().unwrap().context.revision, SpecRevision::new(1));
 
     running.shutdown().await.unwrap();
 }

@@ -177,10 +177,30 @@ impl ApplicationHandle {
         self.orchestrator.resume_task(task_id).await
     }
 
+    /// Stops the current execution and waits for its local scenario to finish.
+    ///
+    /// Pending automatic restarts are invalidated. An already-sent device request
+    /// may still take effect. An idle or terminal task keeps its current status.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MonitorCommandError::TaskNotFound`] for an unknown task or
+    /// [`MonitorCommandError::ChannelClosed`] if the monitor closes before replying.
     pub async fn stop_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
         self.orchestrator.stop_task(task_id).await
     }
 
+    /// Replaces the configuration of an idle, stopped, or completed task.
+    ///
+    /// The new revision is used at the next start. Previous results keep their
+    /// original revision and history is retained up to the new configured depth.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MonitorCommandError::TaskUpdateWhileRunning`] during preparation,
+    /// active execution, pause, or automatic restart. An unknown task returns
+    /// [`MonitorCommandError::TaskNotFound`]. If the monitor closes before replying,
+    /// returns [`MonitorCommandError::ChannelClosed`].
     pub async fn update_task(
         &self,
         task_id: TaskId,
