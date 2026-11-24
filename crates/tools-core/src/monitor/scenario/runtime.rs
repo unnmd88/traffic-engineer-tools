@@ -5,7 +5,7 @@ use futures_util::FutureExt;
 use tokio::{sync::mpsc, time::Duration};
 
 use crate::{
-    monitor::{OperationContext, OperationId, SpecRevision, TaskProgress, task::TaskId},
+    monitor::{OperationContext, OperationId, RunLimit, SpecRevision, TaskProgress, task::TaskId},
     polling::{AttemptConfig, AttemptError, PollProgress, PollReport, Pollable, poll_observed},
     snmp::{SnmpClient, SnmpClientConfig, SnmpError, community::Community},
 };
@@ -21,9 +21,35 @@ pub(in crate::monitor) struct ScenarioContext {
     pub revision: SpecRevision,
 }
 
+pub(in crate::monitor) enum RunBudget {
+    Unlimited,
+    Remaining(u64),
+}
+
+impl RunBudget {
+    pub(in crate::monitor) const fn new(limit: RunLimit, completed_runs: u64) -> Self {
+        match limit {
+            RunLimit::Unlimited => Self::Unlimited,
+            RunLimit::Runs(limit) => Self::Remaining(limit.get().saturating_sub(completed_runs)),
+        }
+    }
+
+    pub(in crate::monitor) const fn is_exhausted(&self) -> bool {
+        matches!(self, Self::Remaining(0))
+    }
+
+    pub(super) fn record_finished_run(&mut self) -> bool {
+        if let Self::Remaining(remaining) = self {
+            *remaining -= 1;
+        }
+        self.is_exhausted()
+    }
+}
+
 pub(in crate::monitor) async fn run(
     spec: ScenarioSpec,
     context: ScenarioContext,
+    budget: RunBudget,
     report_tx: mpsc::Sender<ScenarioReport>,
     cmd_rx: mpsc::Receiver<ScenarioCommand>,
 ) {
@@ -31,10 +57,10 @@ pub(in crate::monitor) async fn run(
     let execution = async move {
         match spec {
             ScenarioSpec::SnmpGet(spec) => {
-                super::impls::repeat_snmp_get::run(spec, context, report_tx, cmd_rx).await;
+                super::impls::repeat_snmp_get::run(spec, context, budget, report_tx, cmd_rx).await;
             }
             ScenarioSpec::SnmpSet(spec) => {
-                super::impls::repeat_snmp_set::run(spec, context, report_tx, cmd_rx).await;
+                super::impls::repeat_snmp_set::run(spec, context, budget, report_tx, cmd_rx).await;
             }
         }
     };
@@ -83,10 +109,12 @@ pub(in crate::monitor) enum ScenarioReport {
         generation: Generation,
         reason: String,
     },
-    Executed {
+    /// Marks a complete run and carries the report of its final operation.
+    RunFinished {
         task_id: TaskId,
         generation: Generation,
         execution: ScenarioExecution,
+        limit_reached: bool,
     },
     ExecutionFailed {
         task_id: TaskId,
@@ -139,7 +167,7 @@ impl ScenarioReport {
                 generation,
                 ..
             }
-            | Self::Executed {
+            | Self::RunFinished {
                 task_id,
                 generation,
                 ..
@@ -256,6 +284,17 @@ pub(super) fn classify_error(error: SnmpError) -> AttemptError<SnmpError> {
         SnmpError::Network { .. } | SnmpError::Timeout { .. } => AttemptError::Retryable(error),
         _ => AttemptError::NonRetryable(error),
     }
+}
+
+/// An error response from the device is a negative result of the request.
+pub(super) fn fatal_request_error<T>(
+    report: &PollReport<T, SnmpError>,
+) -> Option<ScenarioExecutionError> {
+    report
+        .non_retryable_error()
+        .filter(|error| !matches!(error, SnmpError::Protocol { .. }))
+        .cloned()
+        .map(ScenarioExecutionError::from)
 }
 
 pub(super) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {

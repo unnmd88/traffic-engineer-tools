@@ -16,6 +16,9 @@ pub enum ApplicationError {
 pub enum MonitorCommandError {
     #[error("task not found: {0}")]
     TaskNotFound(TaskId),
+    /// A new limit requires a new execution after the current one ends.
+    #[error("task {0} is already running with a different limit")]
+    TaskAlreadyRunning(TaskId),
     #[error("monitor command channel closed")]
     ChannelClosed,
 }

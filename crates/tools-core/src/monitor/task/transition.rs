@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::monitor::{PanicStage, ScenarioBuildError, ScenarioExecutionError};
 
-use super::TaskStatus;
+use super::{RunLimit, TaskStatus};
 
 /// A user command whose application caused a task state transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,10 +68,10 @@ pub enum TaskTransitionCause {
     ConfigurationChanged,
     /// The scenario finished according to its own completion condition.
     ScenarioCompleted,
-    /// The task reached its configured operation limit.
+    /// The task reached the run limit fixed at start.
     #[non_exhaustive]
     LimitReached {
-        /// The configured limit that triggered completion.
+        /// The run limit that triggered completion.
         limit: u64,
     },
     /// A scenario failure caused recovery or termination.
@@ -111,6 +111,9 @@ pub struct TaskTransition {
     pub current: TaskStatus,
     /// The typed reason that caused the transition.
     pub cause: TaskTransitionCause,
+    /// The limit fixed by this transition when it starts a new execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_limit: Option<RunLimit>,
     /// The next start plan when entering the restart-waiting state.
     pub restart: Option<RestartPlan>,
 }

@@ -3,11 +3,12 @@
 //! Shows the full lifecycle from a consumer's point of view:
 //! build a task, subscribe before start, spawn, read events, take a snapshot, shut down.
 
-use std::time::Duration;
+use std::{num::NonZeroU64, time::Duration};
 
 use tools_core::{
     monitor::{
-        AppConfig, Application, EventData, PollSchedule, ScenarioSpec, TaskConfig, TaskStatus,
+        AppConfig, Application, EventData, InitialTask, PollSchedule, RunLimit, ScenarioSpec,
+        TaskConfig, TaskStatus,
     },
     polling::AttemptConfig,
     snmp::{RawSnmpOidItem, SnmpGetSpec},
@@ -31,10 +32,16 @@ async fn main() -> anyhow::Result<()> {
         PollSchedule::fixed_delay(Duration::from_secs(1))?,
         AttemptConfig::try_new(Duration::from_millis(500), 2, Duration::from_millis(100))?,
     )?;
-    let task = TaskConfig::try_new("sysDescr".to_string(), scenario, 3, 3)?;
+    let task = TaskConfig::try_new("sysDescr".to_string(), scenario, 3)?;
 
     // 2. Assemble the application and subscribe BEFORE start so no event is missed.
-    let app = Application::new(AppConfig::default(), vec![task]);
+    let app = Application::new(
+        AppConfig::default(),
+        vec![InitialTask {
+            config: task,
+            limit: RunLimit::Runs(NonZeroU64::new(3).unwrap()),
+        }],
+    );
     let mut sub = app.subscribe_with_snapshot();
     println!("snapshot before start: {} task(s)", sub.snapshot.tasks.len());
 

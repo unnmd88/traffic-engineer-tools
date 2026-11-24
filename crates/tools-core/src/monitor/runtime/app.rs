@@ -18,7 +18,7 @@ use crate::monitor::{
         restart_policy::RestartPolicy,
     },
     snapshot::MonitorSnapshot,
-    task::{TaskConfig, TaskId},
+    task::{RunLimit, TaskConfig, TaskId},
 };
 
 #[derive(Clone, Copy, Debug, Display, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -36,6 +36,15 @@ pub struct AppConfig {
     pub restart: RestartPolicy,
 }
 
+/// A task to register and start automatically when the monitor is spawned.
+#[derive(Clone, Debug)]
+pub struct InitialTask {
+    /// The task to register before the monitor starts.
+    pub config: TaskConfig,
+    /// The limit to use for the automatic start.
+    pub limit: RunLimit,
+}
+
 /// A prepared monitor, before it is started.
 ///
 /// `Application::new` is synchronous, assigns ids to the initial tasks, and does
@@ -45,9 +54,9 @@ pub struct AppConfig {
 /// # Example
 ///
 /// ```
-/// use tools_core::monitor::{AppConfig, Application, TaskConfig};
+/// use tools_core::monitor::{AppConfig, Application};
 ///
-/// let app = Application::new(AppConfig::default(), Vec::<TaskConfig>::new());
+/// let app = Application::new(AppConfig::default(), vec![]);
 /// let sub = app.subscribe_with_snapshot();
 /// assert_eq!(sub.snapshot.tasks.len(), 0);
 /// ```
@@ -71,7 +80,7 @@ pub struct RunningApplication {
 }
 
 impl Application {
-    pub fn new(config: AppConfig, tasks: Vec<TaskConfig>) -> Self {
+    pub fn new(config: AppConfig, tasks: Vec<InitialTask>) -> Self {
         let uid = ApplicationId::generate();
         let (mut orchestrator, orchestrator_handle) =
             Orchestrator::new(config.history_sink, config.restart, uid);
@@ -147,8 +156,17 @@ impl ApplicationHandle {
         self.orchestrator.remove_task(task_id).await
     }
 
-    pub async fn start_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
-        self.orchestrator.start_task(task_id).await
+    /// Starts an idle or terminal task with a new run limit and a fresh count.
+    ///
+    /// The reply confirms that a start was requested; preparation runs in the background.
+    /// Repeating a start with the same limit leaves an ongoing execution in place.
+    /// A different limit returns [`MonitorCommandError::TaskAlreadyRunning`].
+    pub async fn start_task(
+        &self,
+        task_id: TaskId,
+        limit: RunLimit,
+    ) -> Result<(), MonitorCommandError> {
+        self.orchestrator.start_task(task_id, limit).await
     }
 
     pub async fn pause_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
@@ -196,9 +214,9 @@ mod tests {
     use crate::{
         monitor::{
             event::EventData,
-            runtime::{AppConfig, Application, error::MonitorCommandError},
+            runtime::{AppConfig, Application, InitialTask, error::MonitorCommandError},
             scenario::{PollSchedule, ScenarioSpec, SnmpGetScenarioSpec},
-            task::{TaskConfig, TaskStatus},
+            task::{RunLimit, TaskConfig, TaskStatus},
         },
         polling::AttemptConfig,
         snmp::SnmpGetSpec,
@@ -221,7 +239,7 @@ mod tests {
             )
             .unwrap(),
         );
-        TaskConfig::try_new(name.to_string(), scenario, 0, 3).unwrap()
+        TaskConfig::try_new(name.to_string(), scenario, 3).unwrap()
     }
 
     #[test]
@@ -232,7 +250,13 @@ mod tests {
                 history_sink: Some(sender),
                 ..AppConfig::default()
             },
-            vec![spec("first"), spec("second")],
+            ["first", "second"]
+                .into_iter()
+                .map(|name| InitialTask {
+                    config: spec(name),
+                    limit: RunLimit::Unlimited,
+                })
+                .collect(),
         );
         let mut subscription = application.subscribe_with_snapshot();
         assert_eq!(subscription.snapshot.application_id, *application.id());

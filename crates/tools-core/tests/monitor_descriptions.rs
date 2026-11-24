@@ -3,8 +3,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tools_core::{
     monitor::{
-        AppConfig, Application, EventData, PollSchedule, ScenarioDescription, ScenarioSpec,
-        SpecRevision, TaskConfig, TaskConfigurationSnapshot, TaskDescription,
+        AppConfig, Application, EventData, InitialTask, PollSchedule, RunLimit,
+        ScenarioDescription, ScenarioSpec, SpecRevision, TaskConfig, TaskConfigurationSnapshot,
+        TaskDescription,
     },
     polling::AttemptConfig,
     snmp::{
@@ -35,7 +36,7 @@ fn get_task(name: &str) -> TaskConfig {
         AttemptConfig::try_new(Duration::from_millis(750), 2, Duration::from_millis(100)).unwrap(),
     )
     .unwrap();
-    TaskConfig::try_new(name.to_string(), scenario, 10, 4).unwrap()
+    TaskConfig::try_new(name.to_string(), scenario, 4).unwrap()
 }
 
 fn set_task(name: &str) -> TaskConfig {
@@ -57,7 +58,7 @@ fn set_task(name: &str) -> TaskConfig {
         AttemptConfig::try_new(Duration::from_millis(50), 1, Duration::ZERO).unwrap(),
     )
     .unwrap();
-    TaskConfig::try_new(name.to_string(), scenario, 20, 5).unwrap()
+    TaskConfig::try_new(name.to_string(), scenario, 5).unwrap()
 }
 
 fn assert_no_credentials(record: &Value) {
@@ -80,7 +81,6 @@ fn get_description_retains_normalized_oid_ipv6_target_profile_and_execution_sett
         record,
         json!({
             "name": "read phase",
-            "limit": 10,
             "deep_history": 4,
             "scenario": { "SnmpGet": {
                 "target": "[2001:db8::7]:1161",
@@ -97,6 +97,10 @@ fn get_description_retains_normalized_oid_ipv6_target_profile_and_execution_sett
     );
     assert_no_credentials(&record);
     let restored: TaskDescription = serde_json::from_value(record.clone()).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), record);
+    let mut legacy_record = record.clone();
+    legacy_record["limit"] = json!(10);
+    let restored: TaskDescription = serde_json::from_value(legacy_record).unwrap();
     assert_eq!(serde_json::to_value(restored).unwrap(), record);
 }
 
@@ -220,11 +224,16 @@ fn task_snapshot_describes_custom_requests_and_owns_its_configuration() {
             AttemptConfig::try_new(Duration::from_secs(1), 0, Duration::ZERO).unwrap(),
         )
         .unwrap(),
-        10,
         4,
     )
     .unwrap();
-    let application = Application::new(AppConfig::default(), vec![config]);
+    let application = Application::new(
+        AppConfig::default(),
+        vec![InitialTask {
+            config,
+            limit: RunLimit::Unlimited,
+        }],
+    );
     let mut snapshot = application
         .subscribe_with_snapshot()
         .snapshot

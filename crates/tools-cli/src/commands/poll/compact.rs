@@ -1,6 +1,8 @@
 use chrono::{DateTime, Local};
 use tools_core::{
-    monitor::{OperationStatus, ScenarioDescription, ScenarioOutcome, TaskSnapshot, TaskStatus},
+    monitor::{
+        OperationStatus, RunLimit, ScenarioDescription, ScenarioOutcome, TaskSnapshot, TaskStatus,
+    },
     polling::{AttemptOutcome, PollDetails, PollOutcome},
     snmp::{
         BusinessValue, GroupStateDefinition, GroupStatePotokUg405, SnmpGetSample, SnmpValueType,
@@ -77,9 +79,9 @@ fn format_task(out: &mut String, task: &TaskSnapshot, now: DateTime<Local>, widt
     if let Some(error) = &task.last_failure {
         push_line(out, &format!("Error: {error}"), width);
     }
-    let runs = match description.limit {
-        0 => task.metrics.executions.to_string(),
-        limit => format!("{}/{limit}", task.metrics.executions),
+    let runs = match task.run_limit {
+        Some(RunLimit::Runs(limit)) => format!("{}/{limit}", task.completed_runs),
+        Some(RunLimit::Unlimited) | None => task.completed_runs.to_string(),
     };
     push_line(
         out,

@@ -55,6 +55,8 @@ The individual request and SNMP mechanisms are also available through
 |---|---|---|
 | `AppConfig` | Global settings: event-history output and restart policy | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `TaskConfig` | The validated description of one task | [task/config.rs](crates/tools-core/src/monitor/task/config.rs) |
+| `InitialTask` | Task configuration and the limit for its automatic start | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
+| `RunLimit` | Unlimited execution or a positive number of runs per start | [task/limit.rs](crates/tools-core/src/monitor/task/limit.rs) |
 | `Application` | A prepared monitor before it is started | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `RunningApplication` | Owns the background execution and its termination | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `ApplicationHandle` | Cloneable access to commands, snapshots, and subscriptions | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
@@ -99,12 +101,11 @@ TaskConfig
       request: SnmpGetSpec / SnmpSetSpec
       schedule: PollSchedule
       attempt: AttemptConfig
-  limit
   deep_history
 ```
 
-`TaskConfig` holds the task properties: name, scenario, limit of complete executions,
-and the depth of local history. The constructor rejects an empty name.
+`TaskConfig` holds the task name, scenario, and the depth of local history. The constructor
+rejects an empty name. A start separately takes a `RunLimit`.
 There is no universal interval on `TaskConfig`: the schedule belongs to the scenario.
 
 Core constructors validate the configuration as it is assembled.
@@ -118,17 +119,16 @@ requested operation. Such outcomes appear only at execution time.
 
 ## Build, start, and shutdown
 
-`Application::new(config, tasks)` creates channels and internal state, assigns ids to the
-initial tasks, and leaves them `Idle`. This stage does not touch the network, does not
-start background tasks, and may run outside a Tokio context. An empty set of tasks is valid.
+`Application::new(config, tasks)` takes a `Vec<InitialTask>`, creates channels and internal
+state, assigns ids to the initial tasks, and leaves them `Idle`. This synchronous stage can
+run outside a Tokio context. An empty set of tasks is valid.
 
 Before start, `id`, `task_ids`, `subscribe`, and `subscribe_with_snapshot` are available.
 Initial events are not yet published, so an observer can be attached in advance.
 
 `Application::spawn(self)` consumes the prepared monitor and starts the orchestrator in
 the current Tokio runtime. The orchestrator publishes the addition of the initial tasks
-and initiates their start. Returning `RunningApplication` does not mean the network
-clients are already prepared. Each task's readiness is confirmed separately via
+and initiates each start with `InitialTask.limit`. Each task's readiness is confirmed separately via
 `TaskStateChanged` to `Active` with `ScenarioReady` as its cause. The initial transition
 to `Preparing` uses `InitialStart`; an explicit start command uses `Command(Start)`.
 
@@ -140,11 +140,11 @@ Example sequence for obtaining an initial snapshot:
 
 ```rust
 use tools_core::monitor::{
-    AppConfig, Application, ApplicationError, MonitorSnapshot, TaskConfig,
+    AppConfig, Application, ApplicationError, InitialTask, MonitorSnapshot,
 };
 
 pub async fn initial_snapshot(
-    tasks: Vec<TaskConfig>,
+    tasks: Vec<InitialTask>,
 ) -> Result<MonitorSnapshot, ApplicationError> {
     let application = Application::new(AppConfig::default(), tasks);
     let _subscription = application.subscribe_with_snapshot();
@@ -181,9 +181,9 @@ Through an internal `OrchestratorHandle`, the public handle passes commands and 
 for replies over separate channels.
 
 `Task` holds the `TaskConfig`, revision, timestamps, the last result, local history,
-and metrics. The current `TaskStatus`, latest text progress, last transition, last typed
-scenario failure, execution generation, restart counter, and scenario handle live in the
-orchestrator's record. There is no second internal status enum.
+execution metrics, and the completed-run count. The orchestrator's record holds the current
+`TaskStatus`, latest text progress, last transition, last typed scenario failure, execution
+generation, restart counter, and scenario handle. There is no second internal status enum.
 `TaskSnapshot.status` and `TaskSnapshot.last_transition` expose the status
 and the last actual change. The transition contains its UTC change time, previous/current
 states, typed cause, and optional restart plan. Publication time remains in event metadata.
@@ -205,23 +205,26 @@ Main `ApplicationHandle` commands:
 | Command | Behavior |
 |---|---|
 | `add_task` | Registers a task as `Idle` and returns a `TaskId`; no execution yet |
-| `start_task` | Starts execution from `Idle`, `Stopped`, or `Completed` |
+| `start_task(task_id, limit)` | Starts a fresh execution from `Idle`, `Stopped`, or `Completed` with the supplied `RunLimit` |
 | `pause_task` | Passes a pause to a live scenario; while waiting for a restart it moves to paused without starting |
 | `resume_task` | Resumes a live scenario or creates a new one if the previous one already finished |
-| `stop_task` | Requests cancellation of the scenario and moves the running task to `Stopped` |
+| `stop_task` | Requests cancellation for an ongoing execution and moves it to `Stopped`; `Completed` retains its terminal cause |
 | `update_task` | Replaces the configuration and increments the revision; behavior depends on the current status |
 | `remove_task` | Removes the task and cancels its execution if it was started |
 
 The start-command reply confirms that the start was initiated, not successful network
-preparation. For a live scenario, pause and resume are confirmed by its reports and the
+preparation. Repeating a start with the same limit is idempotent during an ongoing
+execution. A different limit during that execution returns `TaskAlreadyRunning`.
+For a live scenario, pause and resume are confirmed by its reports and the
 corresponding public events. A regular GET/SET pause waits for the current complete
 request with its retries to finish.
 
 When the configuration of an active task changes, the old execution is cancelled and a new
-one starts with a new generation. Metrics and accumulated results are preserved.
+one starts with a new generation. The completed-run count, metrics, and accumulated results
+are preserved.
 For a paused task, applying a new scenario is deferred until `resume`.
-An explicit new `start_task` resets metrics and clears the last scenario failure while
-keeping results and history.
+An explicit new `start_task` fixes the new run limit, resets execution metrics and the
+completed-run count, and clears the last scenario failure while keeping results and history.
 
 Timestamps have different meanings: `TaskSnapshot.created_at` is task creation,
 `configuration.accepted_at` is acceptance of the current configuration revision, and
@@ -359,10 +362,11 @@ from the list; successful data is stored only in the final operation outcome.
 The UTC clock is not used to calculate durations or offsets. Settings support serialization
 and validate a positive timeout when deserialized.
 
-Exhausting attempts is a normal negative operation result and does not recreate a scenario.
-A non-retryable error also retains its complete report, but the current GET/SET scenarios
-end and request the existing restart path. A panic or dropping the polling future does not
-return a report; cooperative cancellation and action-expiry reports are not yet implemented.
+Exhausting attempts or receiving an SNMP error response from the device produces a
+completed run with a negative result. Other non-retryable execution errors retain the
+complete operation report and trigger recovery. A panic or dropping the polling future
+does not return a report; cooperative cancellation and action-expiry reports are not yet
+implemented.
 
 `AttemptConfig::budget()` estimates the time from timeouts and delays;
 the schedule is not constrained by the condition `interval >= budget`.
@@ -395,17 +399,23 @@ CLI format, not a required configuration format of the library.
 
 ## Limit, results, and task history
 
-`limit` counts complete scenario executions. For the current GET/SET, one complete request
-with any number of internal retries consumes one unit. Success and `RetryLimitReached`
-count equally. `limit = 0` means no limit.
+`RunLimit` counts complete scenario runs. The initial or explicit start fixes this limit for
+its lifetime. Pause, resume, and recovery use that same limit. The CLI maps `limit: 0` in
+YAML to `RunLimit::Unlimited` and positive values to `RunLimit::Runs`.
 
-When the limit is reached, the scenario is cancelled and `OperationFinished` is published
-before `TaskStateChanged` to `Completed` with cause `LimitReached`. Preparation errors and
-panics do not create a `ScenarioExecution`.
-Non-retryable operation failures now create and retain a `ScenarioExecution`, but preserve
-the existing accounting: they do not increment execution metrics or consume `limit`.
-Their result replaces the last result and moves the previous one into local history.
-The task's diagnostic error and restart behavior remain unchanged.
+The orchestrator supplies each runner with the remaining budget calculated from the task's
+completed-run count. Preparation leaves the budget intact. The scenario determines when a
+run reaches its intended outcome and sends an internal `RunFinished` report with the final
+operation. For GET/SET, one request with all its retries consumes one unit when it succeeds,
+exhausts its retries, or receives an SNMP error response. Fatal execution errors retain
+their operation report and trigger recovery without consuming a unit. Preparation failures
+and panics also leave the count unchanged.
+
+The runner marks the last `RunFinished` when its budget is exhausted and exits before
+scheduling another run. The orchestrator counts that report independently of
+`ExecutionMetrics` and publishes `OperationFinished` before `TaskStateChanged` to `Completed`
+with cause `LimitReached`. During an active configuration update, the current replacement
+path can still discard an old generation's report that was queued before the replacement.
 
 `ScenarioExecution` holds the original `OperationContext` and an `OperationReport`.
 Its `finished_at()` and `elapsed()` methods read timing from the enclosed operation report;
@@ -424,10 +434,10 @@ Success after retries is still successful; the attempts preserve evidence of ear
 The `Degraded` variant exists in the contract but is not currently produced by these
 outcomes.
 
-`ExecutionMetrics` counts complete executions and outcomes, including consecutive failures,
-and stores the last, minimum, and maximum durations. Successful or degraded accounted
-executions reset the failure streak; non-retryable failures, preparation errors, and panics
-do not change metrics or the streak.
+`ExecutionMetrics` describes operation results, including consecutive failures and the
+last, minimum, and maximum durations. Successful or degraded results reset the failure
+streak. Device rejections and exhausted retries count as failures. Fatal execution errors,
+preparation errors, and panics leave these metrics unchanged.
 
 `TaskEntry` retains the latest typed `ScenarioFailure`, exposed as `TaskSnapshot.last_failure`.
 It survives automatic restart preparation, configuration replacement, pause, and stop,
@@ -458,11 +468,12 @@ not change the task in the monitor.
 
 `TaskSnapshot.configuration` is a `TaskConfigurationSnapshot` with the accepted revision,
 its UTC acceptance time, and a `TaskDescription`. The description captures the task name,
-scenario parameters, operation limit, and configured history depth without transport
+scenario parameters, and configured history depth without transport
 credentials or parser callbacks. Snapshots and configuration events use the same description
 types. The snapshot contains no executable `ScenarioSpec`; consumers format the typed target
 address and other presentation values from `ScenarioDescription`. Accepted configuration
 does not establish execution readiness, and retained results keep their original context.
+`TaskSnapshot.run_limit` and `completed_runs` describe the latest start and its progress.
 
 `MonitorEvent` holds `EventMeta` metadata and `EventData` data.
 The `event` module owns the publication envelope and operation notification payloads
@@ -475,19 +486,20 @@ timestamp, independently of lifecycle transitions. It is forwarded to the same h
 sink as all other public events; readiness and failures remain typed.
 `OperationStarted` announces one complete GET/SET algorithm before its first attempt.
 `OperationFinished` carries its complete operation report, including preceding timeouts and
-adapter errors on a non-retryable failure. A separate `TaskStateChanged` then describes
-recovery, with its typed failure and restart plan. The former `ExecutionFinished` and
+adapter errors on a non-retryable failure. For a fatal error, a separate `TaskStateChanged`
+describes recovery, with its typed failure and restart plan. The former `ExecutionFinished` and
 `ExecutionFailed` public variants have been removed. Public lifecycle notifications
 (`TaskStarting`, `TaskStarted`, pause/resume/stop/completion events) and separate build/panic
 notifications have been replaced by transitions with typed causes. Internal scenario reports
 remain independent of this public event contract.
 `TaskRegistered` and `TaskConfigurationChanged` carry a captured `TaskDescription` for
-the accepted revision. It includes the task name, limit, history depth, and a typed
+the accepted revision. It includes the task name, history depth, and a typed
 `ScenarioDescription` with target, profile, configured OID definitions, encoded SET values,
 schedule, and attempt settings. Both read and write communities are excluded by the
 description types. Descriptions are observation records, not executable configurations:
 input aliases are normalized, final OID instances are resolved later, and parser callbacks
 are not serialized. Capturing an accepted revision does not mean its replacement run is ready.
+The state transition of an explicit or automatic start records the chosen `run_limit`.
 
 The public contract includes the following transition and operation payloads:
 
@@ -654,7 +666,8 @@ Errors belong to their modules; the root `tools_core::Error` aggregates them.
 `ApplicationError::Runtime` reports a background-execution error.
 The root `tools_core::Error::MonitorCommand` aggregates `MonitorCommandError`.
 
-An unsuccessful operation result `RetryLimitReached` does not require recreating the scenario.
+Exhausted retries and SNMP error responses are completed runs and allow the scenario to
+continue.
 A preparation error, a fatal execution error, or a caught panic leads to `Restarting` and
 scheduling a new start. `PanicStage` distinguishes preparation, request execution, and the
 rest of the scenario logic.

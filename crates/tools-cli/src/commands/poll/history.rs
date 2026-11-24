@@ -160,7 +160,7 @@ mod tests {
             "tasks:\n  - name: idle\n    interval: 1s\n    limit: 0\n    attempt_config:\n      timeout: 1s\n      retries: 0\n      retry_delay: 0s\n    query:\n      query_type: snmpget\n      host: 127.0.0.1\n      port: 161\n      community: public\n      oids: []\n",
         )
         .unwrap();
-        let id = app.add_task(config.tasks.remove(0)).await.unwrap();
+        let id = app.add_task(config.tasks.remove(0).config).await.unwrap();
         app.remove_task(id).await.unwrap();
         tokio::time::timeout(Duration::from_secs(1), async {
             running.shutdown().await.unwrap();

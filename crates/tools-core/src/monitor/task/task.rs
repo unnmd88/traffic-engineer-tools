@@ -7,7 +7,7 @@ use derive_more::{Constructor, Display};
 
 use crate::monitor::{
     scenario::ScenarioExecution,
-    task::{ExecutionMetrics, TaskConfig},
+    task::{ExecutionMetrics, RunLimit, TaskConfig},
 };
 
 /// The task lifecycle, independent of operation results and scenario progress messages.
@@ -63,6 +63,8 @@ pub(in crate::monitor) struct Task {
     last_result: Option<ScenarioExecution>,
     history: VecDeque<ScenarioExecution>,
     metrics: ExecutionMetrics,
+    run_limit: Option<RunLimit>,
+    completed_runs: u64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -78,6 +80,8 @@ impl Task {
             config_updated_at: dt,
             last_result: None,
             metrics: ExecutionMetrics::default(),
+            run_limit: None,
+            completed_runs: 0,
             history: VecDeque::with_capacity(usize::from(deep_history)),
             created_at: dt,
             updated_at: dt,
@@ -108,6 +112,18 @@ impl Task {
         self.metrics
     }
 
+    pub const fn completed_runs(&self) -> u64 {
+        self.completed_runs
+    }
+
+    pub const fn run_limit(&self) -> Option<RunLimit> {
+        self.run_limit
+    }
+
+    pub fn record_completed_run(&mut self) {
+        self.completed_runs += 1;
+    }
+
     pub fn created_at(&self) -> &DateTime<Utc> {
         &self.created_at
     }
@@ -127,7 +143,7 @@ impl Task {
         self.store_execution(result);
     }
 
-    /// Stores a result without changing execution metrics or limit accounting.
+    /// Stores a result for observation without updating counters.
     pub fn store_execution(&mut self, result: ScenarioExecution) {
         self.updated_at = result.finished_at();
         let depth = usize::from(self.config.deep_history());
@@ -151,9 +167,11 @@ impl Task {
         self.updated_at = now;
     }
 
-    /// Resets execution metrics for an explicit new start, retaining results and history.
-    pub fn reset_run(&mut self) {
+    /// Starts accounting for a new execution with its own limit.
+    pub fn begin_run(&mut self, limit: RunLimit) {
+        self.run_limit = Some(limit);
         self.metrics = ExecutionMetrics::default();
+        self.completed_runs = 0;
         self.updated_at = Utc::now();
     }
 }
@@ -189,7 +207,7 @@ mod tests {
             )
             .unwrap(),
         );
-        TaskConfig::try_new(name.to_string(), scenario, 10, deep_history).unwrap()
+        TaskConfig::try_new(name.to_string(), scenario, deep_history).unwrap()
     }
 
     fn failed_execution(finished_at: DateTime<Utc>) -> ScenarioExecution {
@@ -237,11 +255,32 @@ mod tests {
         assert_eq!(task.metrics().executions, 1);
         assert_eq!(task.metrics().failed, 1);
 
-        task.reset_run();
+        task.begin_run(RunLimit::Unlimited);
         assert_eq!(task.config_updated_at(), &config_updated_at);
         assert_eq!(task.revision(), SpecRevision::new(1));
         assert_eq!(task.metrics(), ExecutionMetrics::default());
         assert_eq!(task.last_result().unwrap().finished_at(), finished_at);
+    }
+
+    #[test]
+    fn run_count_is_independent_of_operation_metrics() {
+        let mut task = Task::new(TaskId(1), config("first"));
+        let started_at = *task.created_at();
+        for seconds in 1..=3 {
+            task.apply_execution(failed_execution(started_at + chrono::Duration::seconds(seconds)));
+        }
+        assert_eq!(task.metrics().executions, 3);
+        assert_eq!(task.completed_runs(), 0);
+
+        task.record_completed_run();
+        assert_eq!(task.completed_runs(), 1);
+        assert_eq!(task.metrics().executions, 3);
+
+        task.update_config(config("second"));
+        assert_eq!(task.completed_runs(), 1);
+
+        task.begin_run(RunLimit::Unlimited);
+        assert_eq!(task.completed_runs(), 0);
     }
 
     #[test]

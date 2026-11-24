@@ -1,16 +1,18 @@
-use std::time::Duration;
+use std::{num::NonZeroU64, time::Duration};
 
 use chrono::Local;
 use tools_core::{
-    monitor::{AppConfig, Application, PollSchedule, ScenarioSpec, TaskConfig},
+    monitor::{
+        AppConfig, Application, InitialTask, PollSchedule, RunLimit, ScenarioSpec, TaskConfig,
+    },
     polling::AttemptConfig,
     snmp::{SnmpGetItem, SnmpGetSpec, SnmpOid, SnmpProfile, SnmpSetItem, SnmpSetSpec, SnmpValue},
 };
 
 use super::{compact, render};
 
-#[test]
-fn both_renderers_display_configuration_from_task_descriptions() {
+#[tokio::test]
+async fn both_renderers_display_task_configuration_and_run_limits() {
     let attempt =
         AttemptConfig::try_new(Duration::from_millis(750), 2, Duration::from_millis(100)).unwrap();
     let schedule = PollSchedule::fixed_delay(Duration::from_secs(2)).unwrap();
@@ -37,23 +39,27 @@ fn both_renderers_display_configuration_from_task_descriptions() {
     )
     .unwrap();
     let configs = vec![
-        TaskConfig::try_new(
-            "read phase".to_string(),
-            ScenarioSpec::snmp_get(get, schedule, attempt).unwrap(),
-            10,
-            4,
-        )
-        .unwrap(),
-        TaskConfig::try_new(
-            "write phase".to_string(),
-            ScenarioSpec::snmp_set(set, schedule, attempt).unwrap(),
-            20,
-            5,
-        )
-        .unwrap(),
+        InitialTask {
+            config: TaskConfig::try_new(
+                "read phase".to_string(),
+                ScenarioSpec::snmp_get(get, schedule, attempt).unwrap(),
+                4,
+            )
+            .unwrap(),
+            limit: RunLimit::Runs(NonZeroU64::new(10).unwrap()),
+        },
+        InitialTask {
+            config: TaskConfig::try_new(
+                "write phase".to_string(),
+                ScenarioSpec::snmp_set(set, schedule, attempt).unwrap(),
+                5,
+            )
+            .unwrap(),
+            limit: RunLimit::Runs(NonZeroU64::new(20).unwrap()),
+        },
     ];
-    let application = Application::new(AppConfig::default(), configs);
-    let snapshot = application.subscribe_with_snapshot().snapshot;
+    let running = Application::new(AppConfig::default(), configs).spawn();
+    let snapshot = running.handle().get_snapshot().await.unwrap();
     let classic = render::format_snapshot(&snapshot.tasks);
     let now = Local::now();
     let compact = compact::format_snapshot(&snapshot.tasks, now, now, 160);
@@ -92,4 +98,5 @@ fn both_renderers_display_configuration_from_task_descriptions() {
     ] {
         assert!(compact.contains(expected), "missing {expected} in {compact}");
     }
+    running.shutdown().await.unwrap();
 }

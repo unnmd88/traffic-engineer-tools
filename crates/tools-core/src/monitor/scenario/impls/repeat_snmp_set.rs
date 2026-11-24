@@ -18,10 +18,10 @@ use crate::{
 
 use crate::monitor::OperationReport;
 use crate::monitor::scenario::{
-    ScenarioBuildError, ScenarioExecution, ScenarioExecutionError, ScenarioOutcome,
-    SnmpSetScenarioSpec, prepare,
+    ScenarioBuildError, ScenarioExecution, ScenarioOutcome, SnmpSetScenarioSpec, prepare,
     runtime::{
-        Operations, ScenarioCommand, ScenarioContext, ScenarioReport, classify_error, panic_message,
+        Operations, RunBudget, ScenarioCommand, ScenarioContext, ScenarioReport, classify_error,
+        fatal_request_error, panic_message,
     },
     schedule::PollTimer,
 };
@@ -30,6 +30,7 @@ use crate::monitor::scenario::{
 pub(in crate::monitor::scenario) async fn run(
     spec: SnmpSetScenarioSpec,
     context: ScenarioContext,
+    mut budget: RunBudget,
     report_tx: mpsc::Sender<ScenarioReport>,
     mut cmd_rx: mpsc::Receiver<ScenarioCommand>,
 ) {
@@ -132,23 +133,25 @@ pub(in crate::monitor::scenario) async fn run(
                 match executed {
                     Ok(None) => return,
                     Ok(Some((context, report))) => {
-                        let error = report.non_retryable_error().cloned();
+                        let error = fatal_request_error(&report);
                         let execution = ScenarioExecution::new(context, OperationReport::from_poll(report, ScenarioOutcome::SnmpSet));
                         if let Some(error) = error {
                             let _ = report_tx.send(ScenarioReport::ExecutionFailed {
                                 task_id,
                                 generation,
-                                error: ScenarioExecutionError::from(error),
+                                error,
                                 execution,
                             }).await;
                             return;
                         }
                         timer.execution_finished(Instant::now());
-                        if report_tx.send(ScenarioReport::Executed {
+                        let limit_reached = budget.record_finished_run();
+                        if report_tx.send(ScenarioReport::RunFinished {
                             task_id,
                             generation,
                             execution,
-                        }).await.is_err() {
+                            limit_reached,
+                        }).await.is_err() || limit_reached {
                             return;
                         }
                     }

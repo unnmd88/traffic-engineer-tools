@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::monitor::scenario::ScenarioExecution;
 
 use super::{
-    ExecutionMetrics, ScenarioFailure, SpecRevision, TaskDescription, TaskId, TaskProgress,
-    TaskStatus, TaskTransition,
+    ExecutionMetrics, RunLimit, ScenarioFailure, SpecRevision, TaskDescription, TaskId,
+    TaskProgress, TaskStatus, TaskTransition,
 };
 
 /// An accepted configuration revision captured for observation.
@@ -45,6 +45,10 @@ pub struct TaskSnapshot {
     pub last_transition: Option<TaskTransition>,
     /// Execution accounting, reset by an explicit new task start.
     pub metrics: ExecutionMetrics,
+    /// The limit fixed at the latest start, absent before the first start.
+    pub run_limit: Option<RunLimit>,
+    /// Accounted runs since the latest start, including earlier runner instances.
+    pub completed_runs: u64,
     /// The latest retained operation result with its original execution context.
     pub result: Option<ScenarioExecution>,
     /// Previous results ordered from newest to oldest, excluding the latest result.

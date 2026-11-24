@@ -14,7 +14,7 @@ pub use operation::{
     OperationCompletion, OperationContext, OperationId, OperationReport, OperationStatus,
 };
 pub use runtime::{
-    AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId,
+    AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId, InitialTask,
     MonitorCommandError, MonitorSubscription, RestartPolicy, RunningApplication,
 };
 pub use scenario::{
@@ -24,7 +24,7 @@ pub use scenario::{
 };
 pub use snapshot::MonitorSnapshot;
 pub use task::{
-    ExecutionMetrics, RestartPlan, ScenarioFailure, SpecRevision, TaskCommandKind, TaskConfig,
-    TaskConfigurationSnapshot, TaskDescription, TaskError, TaskId, TaskProgress, TaskSnapshot,
-    TaskStatus, TaskTransition, TaskTransitionCause,
+    ExecutionMetrics, RestartPlan, RunLimit, ScenarioFailure, SpecRevision, TaskCommandKind,
+    TaskConfig, TaskConfigurationSnapshot, TaskDescription, TaskError, TaskId, TaskProgress,
+    TaskSnapshot, TaskStatus, TaskTransition, TaskTransitionCause,
 };

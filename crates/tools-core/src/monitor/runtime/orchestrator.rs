@@ -13,17 +13,17 @@ use crate::monitor::{
     TaskProgress, TaskTransition, TaskTransitionCause,
     event::{EventData, EventMeta, MonitorEvent},
     runtime::{
-        ApplicationId, MonitorSubscription, error::MonitorCommandError,
+        ApplicationId, InitialTask, MonitorSubscription, error::MonitorCommandError,
         restart_policy::RestartPolicy,
     },
     scenario::{
-        Generation, PanicStage, ScenarioCommand, ScenarioContext, ScenarioReport, ScenarioSpec,
-        run_scenario,
+        Generation, PanicStage, RunBudget, ScenarioCommand, ScenarioContext, ScenarioReport,
+        ScenarioSpec, run_scenario,
     },
     snapshot::MonitorSnapshot,
     task::{
-        SpecRevision, Task, TaskConfig, TaskConfigurationSnapshot, TaskDescription, TaskId,
-        TaskSnapshot, TaskStatus,
+        RunLimit, SpecRevision, Task, TaskConfig, TaskConfigurationSnapshot, TaskDescription,
+        TaskId, TaskSnapshot, TaskStatus,
     },
 };
 
@@ -49,11 +49,17 @@ impl TaskEntry {
         if self.state == current {
             return None;
         }
+        let run_limit = match cause {
+            TaskTransitionCause::InitialStart
+            | TaskTransitionCause::Command(TaskCommandKind::Start) => self.task.run_limit(),
+            _ => None,
+        };
         let transition = TaskTransition {
             at: Utc::now(),
             previous: self.state,
             current,
             cause,
+            run_limit,
             restart,
         };
         self.state = current;
@@ -82,6 +88,7 @@ enum Command {
     },
     StartTask {
         task_id: TaskId,
+        limit: RunLimit,
         reply: oneshot::Sender<Result<(), MonitorCommandError>>,
     },
     PauseTask {
@@ -118,7 +125,7 @@ enum Command {
 
 pub(super) struct Orchestrator {
     next_id: u64,
-    initial_tasks: Vec<TaskId>,
+    initial_tasks: Vec<(TaskId, RunLimit)>,
     entries: HashMap<TaskId, TaskEntry>,
     cmd_rx: mpsc::Receiver<Command>,
     cmd_tx: mpsc::Sender<Command>,
@@ -172,12 +179,13 @@ impl Orchestrator {
         )
     }
 
-    pub(super) fn prepare_tasks(&mut self, tasks: Vec<TaskConfig>) -> Vec<TaskId> {
-        let ids: Vec<_> = tasks
-            .into_iter()
-            .map(|spec| self.register_task(spec))
-            .collect();
-        self.initial_tasks.clone_from(&ids);
+    pub(super) fn prepare_tasks(&mut self, tasks: Vec<InitialTask>) -> Vec<TaskId> {
+        let mut ids = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let id = self.register_task(task.config);
+            self.initial_tasks.push((id, task.limit));
+            ids.push(id);
+        }
         ids
     }
 
@@ -250,11 +258,11 @@ impl Orchestrator {
 
     async fn start_initial_tasks(&mut self) {
         let initial_tasks = std::mem::take(&mut self.initial_tasks);
-        for &id in &initial_tasks {
+        for &(id, _) in &initial_tasks {
             self.emit_task_registered(id).await;
         }
-        for id in initial_tasks {
-            self.start_with_cause(id, TaskTransitionCause::InitialStart)
+        for (id, limit) in initial_tasks {
+            self.start_with_cause(id, limit, TaskTransitionCause::InitialStart)
                 .await
                 .expect("initial task is registered");
         }
@@ -282,8 +290,12 @@ impl Orchestrator {
                 let _ = reply.send(res);
                 true
             }
-            Command::StartTask { task_id, reply } => {
-                let res = self.start(task_id).await;
+            Command::StartTask {
+                task_id,
+                limit,
+                reply,
+            } => {
+                let res = self.start(task_id, limit).await;
                 let _ = reply.send(res);
                 true
             }
@@ -356,35 +368,32 @@ impl Orchestrator {
         }
     }
 
-    async fn start(&mut self, id: TaskId) -> Result<(), MonitorCommandError> {
-        self.start_with_cause(id, TaskTransitionCause::Command(TaskCommandKind::Start))
+    async fn start(&mut self, id: TaskId, limit: RunLimit) -> Result<(), MonitorCommandError> {
+        self.start_with_cause(id, limit, TaskTransitionCause::Command(TaskCommandKind::Start))
             .await
     }
 
     async fn start_with_cause(
         &mut self,
         id: TaskId,
+        limit: RunLimit,
         cause: TaskTransitionCause,
     ) -> Result<(), MonitorCommandError> {
-        let should_start = match self.entries.get(&id) {
-            Some(e) => {
-                matches!(e.state, TaskStatus::Idle | TaskStatus::Stopped | TaskStatus::Completed)
-            }
-            None => return Err(MonitorCommandError::TaskNotFound(id)),
-        };
-        if !should_start {
-            return Ok(());
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or(MonitorCommandError::TaskNotFound(id))?;
+        if !matches!(entry.state, TaskStatus::Idle | TaskStatus::Stopped | TaskStatus::Completed) {
+            return if entry.task.run_limit() == Some(limit) {
+                Ok(())
+            } else {
+                Err(MonitorCommandError::TaskAlreadyRunning(id))
+            };
         }
-
-        {
-            let entry = self.entries.get_mut(&id).expect("checked above");
-            entry.task.reset_run();
-            entry.last_failure = None;
-            entry.attempts = 0;
-        }
-        self.spawn_scenario(id);
-        self.transition(id, TaskStatus::Preparing, cause, None)
-            .await;
+        entry.task.begin_run(limit);
+        entry.last_failure = None;
+        entry.attempts = 0;
+        self.spawn_scenario(id, cause).await;
         Ok(())
     }
 
@@ -450,14 +459,8 @@ impl Orchestrator {
                 let entry = self.entries.get_mut(&id).expect("checked above");
                 entry.attempts = 0;
             }
-            self.spawn_scenario(id);
-            self.transition(
-                id,
-                TaskStatus::Preparing,
-                TaskTransitionCause::Command(TaskCommandKind::Resume),
-                None,
-            )
-            .await;
+            self.spawn_scenario(id, TaskTransitionCause::Command(TaskCommandKind::Resume))
+                .await;
         }
         Ok(())
     }
@@ -478,7 +481,7 @@ impl Orchestrator {
                 .get_mut(&id)
                 .ok_or(MonitorCommandError::TaskNotFound(id))?;
             match entry.state {
-                TaskStatus::Idle | TaskStatus::Stopped => false,
+                TaskStatus::Idle | TaskStatus::Stopped | TaskStatus::Completed => false,
                 _ => {
                     if let Some(scenario) = entry.scenario.take() {
                         scenario.abort.abort();
@@ -522,14 +525,8 @@ impl Orchestrator {
                     scenario.abort.abort();
                 }
             }
-            self.spawn_scenario(id);
-            self.transition(
-                id,
-                TaskStatus::Preparing,
-                TaskTransitionCause::ConfigurationChanged,
-                None,
-            )
-            .await;
+            self.spawn_scenario(id, TaskTransitionCause::ConfigurationChanged)
+                .await;
         } else if paused
             && let Some(entry) = self.entries.get_mut(&id)
             && let Some(scenario) = entry.scenario.take()
@@ -628,15 +625,15 @@ impl Orchestrator {
                 )
                 .await;
             }
-            ScenarioReport::Executed { execution, .. } => {
+            ScenarioReport::RunFinished {
+                execution,
+                limit_reached,
+                ..
+            } => {
                 let entry = self.entries.get_mut(&task_id).expect("validated task");
                 entry.task.apply_execution(execution.clone());
+                entry.task.record_completed_run();
                 entry.last_failure = None;
-                let completed = limit_reached(entry);
-                let limit = entry.task.config().limit();
-                if completed && let Some(scenario) = entry.scenario.take() {
-                    scenario.abort.abort();
-                }
                 self.emit(
                     task_id,
                     EventData::OperationFinished(OperationFinished {
@@ -645,14 +642,8 @@ impl Orchestrator {
                     }),
                 )
                 .await;
-                if completed {
-                    self.transition(
-                        task_id,
-                        TaskStatus::Completed,
-                        TaskTransitionCause::LimitReached { limit },
-                        None,
-                    )
-                    .await;
+                if limit_reached {
+                    self.complete_at_limit(task_id).await;
                 }
             }
             ScenarioReport::ExecutionFailed {
@@ -758,10 +749,29 @@ impl Orchestrator {
         }
     }
 
-    fn spawn_scenario(&mut self, task_id: TaskId) {
-        let Some(entry) = self.entries.get_mut(&task_id) else {
-            return;
+    async fn complete_at_limit(&mut self, task_id: TaskId) {
+        let entry = self.entries.get_mut(&task_id).expect("task is registered");
+        let Some(RunLimit::Runs(limit)) = entry.task.run_limit() else {
+            unreachable!("only a finite limit can be reached");
         };
+        entry.scenario = None;
+        self.transition(
+            task_id,
+            TaskStatus::Completed,
+            TaskTransitionCause::LimitReached { limit: limit.get() },
+            None,
+        )
+        .await;
+    }
+
+    async fn spawn_scenario(&mut self, task_id: TaskId, cause: TaskTransitionCause) {
+        let entry = self.entries.get_mut(&task_id).expect("task is registered");
+        let limit = entry.task.run_limit().expect("task execution has started");
+        let budget = RunBudget::new(limit, entry.task.completed_runs());
+        if budget.is_exhausted() {
+            self.complete_at_limit(task_id).await;
+            return;
+        }
         let generation = entry.next_generation;
         entry.next_generation = generation.next();
         entry.generation = generation;
@@ -791,6 +801,7 @@ impl Orchestrator {
                     generation,
                     revision,
                 },
+                budget,
                 report_tx,
                 cmd_rx,
             )
@@ -801,6 +812,8 @@ impl Orchestrator {
             abort,
             cmd: cmd_tx,
         });
+        self.transition(task_id, TaskStatus::Preparing, cause, None)
+            .await;
     }
 
     fn schedule_respawn(&mut self, task_id: TaskId, generation: Generation, deadline: Instant) {
@@ -829,14 +842,8 @@ impl Orchestrator {
         );
         if should {
             let attempt = self.entries.get(&task_id).map_or(0, |e| e.attempts);
-            self.spawn_scenario(task_id);
-            self.transition(
-                task_id,
-                TaskStatus::Preparing,
-                TaskTransitionCause::RestartDue { attempt },
-                None,
-            )
-            .await;
+            self.spawn_scenario(task_id, TaskTransitionCause::RestartDue { attempt })
+                .await;
         } else {
             tracing::trace!(%task_id, ?generation, "restart ignored for inactive generation or state");
         }
@@ -981,6 +988,8 @@ impl Orchestrator {
             progress: entry.progress.clone(),
             last_transition: entry.last_transition.clone(),
             metrics: t.metrics(),
+            run_limit: t.run_limit(),
+            completed_runs: t.completed_runs(),
             result: t.last_result().cloned(),
             history: t.history().iter().cloned().collect(),
             last_failure: entry.last_failure.clone(),
@@ -1000,11 +1009,6 @@ impl Orchestrator {
             tasks,
         }
     }
-}
-
-fn limit_reached(entry: &TaskEntry) -> bool {
-    let limit = entry.task.config().limit();
-    limit > 0 && entry.task.metrics().executions >= limit
 }
 
 fn log_background_result(
@@ -1063,10 +1067,18 @@ impl OrchestratorHandle {
         rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
     }
 
-    pub async fn start_task(&self, task_id: TaskId) -> Result<(), MonitorCommandError> {
+    pub async fn start_task(
+        &self,
+        task_id: TaskId,
+        limit: RunLimit,
+    ) -> Result<(), MonitorCommandError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(Command::StartTask { task_id, reply: tx })
+            .send(Command::StartTask {
+                task_id,
+                limit,
+                reply: tx,
+            })
             .await
             .map_err(|_| MonitorCommandError::ChannelClosed)?;
         rx.await.map_err(|_| MonitorCommandError::ChannelClosed)?
@@ -1176,6 +1188,7 @@ mod tests {
     };
 
     fn active_task(limit: u64) -> (Orchestrator, broadcast::Receiver<MonitorEvent>, TaskId) {
+        let limit = std::num::NonZeroU64::new(limit).map_or(RunLimit::Unlimited, RunLimit::Runs);
         let (mut orchestrator, handle) =
             Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
         let events = handle.subscribe();
@@ -1195,10 +1208,9 @@ mod tests {
             )
             .unwrap(),
         );
-        let task = Task::new(
-            task_id,
-            TaskConfig::try_new("test".to_string(), scenario, limit, 3).unwrap(),
-        );
+        let mut task =
+            Task::new(task_id, TaskConfig::try_new("test".to_string(), scenario, 3).unwrap());
+        task.begin_run(limit);
         let (cmd, _cmd_rx) = mpsc::channel(8);
         let join = tokio::spawn(std::future::pending::<()>());
         orchestrator.entries.insert(
@@ -1279,7 +1291,7 @@ mod tests {
             )
             .unwrap(),
         );
-        TaskConfig::try_new(name.to_string(), scenario, 0, 3).unwrap()
+        TaskConfig::try_new(name.to_string(), scenario, 3).unwrap()
     }
 
     fn control_scenario(orchestrator: &mut Orchestrator, task_id: TaskId) {
@@ -1324,11 +1336,15 @@ mod tests {
         task_id: TaskId,
         execution: ScenarioExecution,
     ) {
+        let task = &orchestrator.entries[&task_id].task;
+        let limit_reached = matches!(task.run_limit(), Some(RunLimit::Runs(limit))
+            if task.completed_runs() + 1 == limit.get());
         orchestrator
-            .on_report(ScenarioReport::Executed {
+            .on_report(ScenarioReport::RunFinished {
                 task_id,
                 generation: Generation::first(),
                 execution,
+                limit_reached,
             })
             .await;
     }
@@ -1660,10 +1676,11 @@ mod tests {
             ),
         );
         orchestrator
-            .on_report(ScenarioReport::Executed {
+            .on_report(ScenarioReport::RunFinished {
                 task_id,
                 generation,
                 execution: second.clone(),
+                limit_reached: false,
             })
             .await;
         let snapshot = orchestrator.snapshot();
@@ -1681,7 +1698,10 @@ mod tests {
             matches!(last.data, EventData::OperationFinished(OperationFinished { context, .. }) if context == second.context)
         );
         orchestrator.stop(task_id).await.unwrap();
-        orchestrator.start(task_id).await.unwrap();
+        orchestrator
+            .start(task_id, RunLimit::Unlimited)
+            .await
+            .unwrap();
         control_scenario(&mut orchestrator, task_id);
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].metrics, ExecutionMetrics::default());
@@ -1773,7 +1793,8 @@ mod tests {
         assert_eq!(completed.metadata.seq, executed.metadata.seq + 1);
         let snapshot = orchestrator.snapshot();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
-        assert_eq!(snapshot.tasks[0].configuration.description.limit, 1);
+        assert_eq!(snapshot.tasks[0].run_limit, Some(RunLimit::Runs(std::num::NonZeroU64::MIN)));
+        assert_eq!(snapshot.tasks[0].completed_runs, 1);
         assert_eq!(snapshot.tasks[0].metrics.executions, 1);
         assert!(snapshot.tasks[0].result.is_some());
         assert!(orchestrator.entries[&task_id].scenario.is_none());
@@ -1808,10 +1829,11 @@ mod tests {
     async fn execution_from_another_generation_is_ignored() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
         orchestrator
-            .on_report(ScenarioReport::Executed {
+            .on_report(ScenarioReport::RunFinished {
                 task_id,
                 generation: Generation::first().next(),
                 execution: execution(100, true),
+                limit_reached: false,
             })
             .await;
 
@@ -1878,6 +1900,7 @@ mod tests {
         );
         assert_eq!(task.metrics.executions, 1);
         assert_eq!(task.metrics, metrics);
+        assert_eq!(orchestrator.entries[&task_id].task.completed_runs(), 1);
         assert_eq!(task.metrics.consecutive_failures, 1);
         assert!(matches!(&task.last_failure,
             Some(ScenarioFailure::Execution(ScenarioExecutionError::Snmp(
@@ -2150,7 +2173,10 @@ mod tests {
             .update(task_id, set_config("fresh"))
             .await
             .unwrap();
-        orchestrator.start(task_id).await.unwrap();
+        orchestrator
+            .start(task_id, RunLimit::Unlimited)
+            .await
+            .unwrap();
         control_scenario(&mut orchestrator, task_id);
         assert!(matches!(events.try_recv().unwrap().data, EventData::OperationFinished(_)));
         assert!(
@@ -2167,7 +2193,7 @@ mod tests {
         let snapshot = orchestrator.snapshot();
         let task = &snapshot.tasks[0];
         assert_eq!(task.configuration.description.name, "fresh");
-        assert_eq!(task.configuration.description.limit, 0);
+        assert_eq!(task.run_limit, Some(RunLimit::Unlimited));
         assert_eq!(task.status, TaskStatus::Preparing);
         assert_eq!(task.metrics, ExecutionMetrics::default());
         assert!(matches!(&task.configuration.description.scenario,
@@ -2244,10 +2270,11 @@ mod tests {
             matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged(ref transition) if transition.current == TaskStatus::Stopped)
         );
         orchestrator
-            .on_report(ScenarioReport::Executed {
+            .on_report(ScenarioReport::RunFinished {
                 task_id,
                 generation,
                 execution: execution(100, true),
+                limit_reached: false,
             })
             .await;
         orchestrator
@@ -2308,10 +2335,11 @@ mod tests {
                 generation: previous_generation,
                 error: ScenarioBuildError::Other("obsolete".to_string()),
             },
-            ScenarioReport::Executed {
+            ScenarioReport::RunFinished {
                 task_id,
                 generation: previous_generation,
                 execution: execution(200, false),
+                limit_reached: false,
             },
             ScenarioReport::Paused {
                 task_id,
@@ -2501,8 +2529,12 @@ mod tests {
     #[tokio::test]
     async fn pausing_backoff_blocks_respawn_and_resume_resets_retry_attempts() {
         let (mut orchestrator, mut events, task_id) = active_task(0);
-        orchestrator.entries.get_mut(&task_id).unwrap().task =
-            Task::new(task_id, set_config("resumed"));
+        orchestrator
+            .entries
+            .get_mut(&task_id)
+            .unwrap()
+            .task
+            .update_config(set_config("resumed"));
         let generation = orchestrator.entries[&task_id].generation;
         orchestrator.entries[&task_id]
             .scenario
@@ -2782,7 +2814,10 @@ mod tests {
         assert!(events.try_recv().is_err());
         assert!(matches!(&orchestrator.snapshot().tasks[0].last_failure,
             Some(ScenarioFailure::Preparation(reported)) if reported == &error));
-        orchestrator.start(task_id).await.unwrap();
+        orchestrator
+            .start(task_id, RunLimit::Unlimited)
+            .await
+            .unwrap();
         control_scenario(&mut orchestrator, task_id);
         assert!(orchestrator.snapshot().tasks[0].last_failure.is_none());
     }

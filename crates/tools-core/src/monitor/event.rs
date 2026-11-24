@@ -201,7 +201,6 @@ mod tests {
                 AttemptConfig::try_new(elapsed, 1, Duration::ZERO).unwrap(),
             )
             .unwrap(),
-            1,
             3,
         )
         .unwrap();
@@ -218,6 +217,7 @@ mod tests {
                 previous: TaskStatus::Preparing,
                 current: TaskStatus::Active,
                 cause: TaskTransitionCause::ScenarioReady,
+                run_limit: None,
                 restart: None,
             })),
             EventData::TaskRemoved,
@@ -264,6 +264,7 @@ mod tests {
                 previous: TaskStatus::Preparing,
                 current: TaskStatus::Restarting,
                 cause: TaskTransitionCause::Failure(Box::new(ScenarioFailure::Preparation(error))),
+                run_limit: None,
                 restart: Some(RestartPlan {
                     attempt: 1,
                     scheduled_at: at + elapsed,
@@ -283,6 +284,7 @@ mod tests {
                     stage,
                     reason: "panic".to_string(),
                 })),
+                run_limit: None,
                 restart: Some(RestartPlan {
                     attempt: 1,
                     scheduled_at: at + elapsed,

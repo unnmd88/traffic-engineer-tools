@@ -2,7 +2,8 @@ use tabled::{Table, Tabled, settings::Style};
 use tools_core::{
     DT_FMT_WITH_MICROSECONDS,
     monitor::{
-        PollSchedule, ScenarioDescription, ScenarioExecution, ScenarioOutcome, TaskSnapshot,
+        PollSchedule, RunLimit, ScenarioDescription, ScenarioExecution, ScenarioOutcome,
+        TaskSnapshot,
     },
     polling::{AttemptOutcome, PollDetails, PollOutcome},
     snmp::SnmpGetSample,
@@ -260,9 +261,12 @@ fn bordered(lines: &[String]) -> String {
 }
 
 fn format_limit(view: &TaskSnapshot) -> String {
-    match view.configuration.description.limit {
-        0 => "no limit".to_string(),
-        n => format!("{n} ({} left)", n.saturating_sub(view.metrics.executions)),
+    match view.run_limit {
+        Some(RunLimit::Runs(limit)) => {
+            format!("{limit} ({} left)", limit.get().saturating_sub(view.completed_runs))
+        }
+        Some(RunLimit::Unlimited) => "no limit".to_string(),
+        None => "n/a".to_string(),
     }
 }
 

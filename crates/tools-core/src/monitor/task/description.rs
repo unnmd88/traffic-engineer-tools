@@ -15,8 +15,6 @@ pub struct TaskDescription {
     pub name: String,
     /// The scenario's request parameters and behavior.
     pub scenario: ScenarioDescription,
-    /// The configured complete-operation limit; zero means no limit.
-    pub limit: u64,
     /// The configured number of previous results to retain.
     pub deep_history: u8,
 }
@@ -26,7 +24,6 @@ impl From<&TaskConfig> for TaskDescription {
         Self {
             name: config.name().to_string(),
             scenario: ScenarioDescription::from(config.scenario()),
-            limit: config.limit(),
             deep_history: config.deep_history(),
         }
     }

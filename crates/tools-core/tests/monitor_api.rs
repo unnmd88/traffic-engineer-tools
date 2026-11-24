@@ -1,13 +1,13 @@
-use std::time::Duration;
+use std::{num::NonZeroU64, time::Duration};
 
 use tools_core::{
     monitor::{
         AppConfig, Application, ApplicationError, ApplicationHandle, ApplicationId, EventData,
-        EventMeta, ExecutionMetrics, Generation, MonitorCommandError, MonitorEvent,
-        MonitorSnapshot, MonitorSubscription, PollSchedule, RestartPolicy, RunningApplication,
-        ScenarioDescription, ScenarioExecution, ScenarioSpec, SnmpGetScenarioSpec, SnmpGetSpec,
-        SnmpSetScenarioSpec, SnmpSetSpec, SpecRevision, TaskConfig, TaskConfigurationSnapshot,
-        TaskId, TaskSnapshot, TaskStatus,
+        EventMeta, ExecutionMetrics, Generation, InitialTask, MonitorCommandError, MonitorEvent,
+        MonitorSnapshot, MonitorSubscription, PollSchedule, RestartPolicy, RunLimit,
+        RunningApplication, ScenarioDescription, ScenarioExecution, ScenarioSpec,
+        SnmpGetScenarioSpec, SnmpGetSpec, SnmpSetScenarioSpec, SnmpSetSpec, SpecRevision,
+        TaskConfig, TaskConfigurationSnapshot, TaskId, TaskSnapshot, TaskStatus,
     },
     polling::AttemptConfig,
 };
@@ -26,7 +26,7 @@ fn task(name: &str, set: bool) -> TaskConfig {
         let request = SnmpGetSpec::new(target, community, None, vec![]);
         ScenarioSpec::SnmpGet(SnmpGetScenarioSpec::try_new(request, schedule, attempt).unwrap())
     };
-    TaskConfig::try_new(name.to_string(), scenario, 0, 3).unwrap()
+    TaskConfig::try_new(name.to_string(), scenario, 3).unwrap()
 }
 
 #[test]
@@ -36,7 +36,16 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
             restart: RestartPolicy::default(),
             history_sink: None,
         },
-        vec![task("get", false), task("set", true)],
+        vec![
+            InitialTask {
+                config: task("get", false),
+                limit: RunLimit::Unlimited,
+            },
+            InitialTask {
+                config: task("set", true),
+                limit: RunLimit::Runs(NonZeroU64::MIN),
+            },
+        ],
     );
     let id: &ApplicationId = application.id();
     let subscription: MonitorSubscription = application.subscribe_with_snapshot();
@@ -54,6 +63,8 @@ fn prepared_application_exposes_configuration_and_snapshot_types() {
         assert_eq!(task_id, application.task_ids()[index]);
         assert_eq!(revision, SpecRevision::new(1));
         assert_eq!(view.status, TaskStatus::Idle);
+        assert_eq!(view.run_limit, None);
+        assert_eq!(view.completed_runs, 0);
         assert!(view.progress.is_none());
         assert_eq!(view.created_at, configuration.accepted_at);
         assert_eq!(view.created_at, view.updated_at);
@@ -112,6 +123,90 @@ async fn handle_updates_configuration_and_publishes_public_events() {
     assert!(matches!(handle.get_snapshot().await, Err(MonitorCommandError::ChannelClosed)));
 }
 
+#[tokio::test(start_paused = true)]
+async fn one_registered_task_can_start_again_with_a_different_limit() {
+    use async_snmp::{Value, message::CommunityMessage};
+    use tokio::{net::UdpSocket, time::timeout};
+    use tools_core::{monitor::TaskTransitionCause, snmp::RawSnmpOidItem};
+
+    let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let request = SnmpGetSpec::from_raw(
+        "127.0.0.1".to_string(),
+        peer.local_addr().unwrap().port(),
+        "public".to_string(),
+        None,
+        vec![RawSnmpOidItem {
+            name: None,
+            oid: "1.3.6.1.2.1.1.1.0".to_string(),
+        }],
+    )
+    .unwrap();
+    let scenario = ScenarioSpec::snmp_get(
+        request,
+        PollSchedule::fixed_delay(Duration::from_secs(1)).unwrap(),
+        AttemptConfig::try_new(Duration::from_secs(1), 0, Duration::ZERO).unwrap(),
+    )
+    .unwrap();
+    let running = Application::new(AppConfig::default(), vec![]).spawn();
+    let handle = running.handle();
+    let id = handle
+        .add_task(TaskConfig::try_new("get".to_string(), scenario, 3).unwrap())
+        .await
+        .unwrap();
+    let mut events = handle.subscribe();
+
+    for count in [1, 2] {
+        let limit = RunLimit::Runs(NonZeroU64::new(count).unwrap());
+        handle.start_task(id, limit).await.unwrap();
+        assert!(matches!(
+            handle.start_task(id, RunLimit::Unlimited).await,
+            Err(MonitorCommandError::TaskAlreadyRunning(running_id)) if running_id == id
+        ));
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event.data, EventData::TaskStateChanged(transition)
+            if transition.current == TaskStatus::Preparing && transition.run_limit == Some(limit)));
+        let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
+        assert_eq!(view.run_limit, Some(limit));
+        assert_eq!(view.completed_runs, 0);
+
+        for _ in 0..count {
+            let mut bytes = [0; 2048];
+            let (len, source) = timeout(Duration::from_secs(10), peer.recv_from(&mut bytes))
+                .await
+                .unwrap()
+                .unwrap();
+            let request = CommunityMessage::decode(bytes[..len].to_vec().into()).unwrap();
+            let mut response = request.pdu.standard().unwrap().to_response();
+            response.varbinds[0].value = Value::OctetString(b"test device".to_vec().into());
+            let message =
+                CommunityMessage::new(request.version, request.community, response).encode();
+            peer.send_to(&message, source).await.unwrap();
+        }
+
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if let EventData::TaskStateChanged(transition) = event.data
+                    && transition.current == TaskStatus::Completed
+                {
+                    assert_eq!(event.metadata.task_id, id);
+                    assert!(matches!(transition.cause, TaskTransitionCause::LimitReached { limit, .. } if limit == count));
+                    break;
+                }
+            }
+        }).await.unwrap();
+        let completed = handle.get_snapshot().await.unwrap();
+        assert_eq!(completed.tasks[0].completed_runs, count);
+        assert_eq!(completed.tasks[0].configuration.revision, SpecRevision::new(1));
+        handle.stop_task(id).await.unwrap();
+        let after_stop = handle.get_snapshot().await.unwrap();
+        assert_eq!(after_stop.tasks[0].status, TaskStatus::Completed);
+        assert_eq!(after_stop.next_seq, completed.next_seq);
+    }
+
+    running.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn preparation_is_observable_before_scn_returns_and_survives_in_history() {
     use async_snmp::{Value, message::CommunityMessage};
@@ -142,14 +237,17 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
         attempt,
     )
     .unwrap();
-    let config = TaskConfig::try_new("prepare".to_string(), scenario, 1, 3).unwrap();
+    let config = TaskConfig::try_new("prepare".to_string(), scenario, 3).unwrap();
     let (history, mut recorded) = tokio::sync::mpsc::channel(64);
     let application = Application::new(
         AppConfig {
             history_sink: Some(history),
             ..AppConfig::default()
         },
-        vec![config],
+        vec![InitialTask {
+            config,
+            limit: RunLimit::Runs(NonZeroU64::MIN),
+        }],
     );
     let mut events = application.subscribe();
     let running = application.spawn();
@@ -169,6 +267,8 @@ async fn preparation_is_observable_before_scn_returns_and_survives_in_history() 
     }
     let view = handle.get_snapshot().await.unwrap().tasks.remove(0);
     assert_eq!(view.status, TaskStatus::Preparing);
+    assert_eq!(view.run_limit, Some(RunLimit::Runs(NonZeroU64::MIN)));
+    assert_eq!(view.completed_runs, 0);
     let progress = view.progress.as_ref().unwrap();
     assert_eq!(progress.message, "Reading SCN: selected OIDs require a site identifier");
     assert_eq!(

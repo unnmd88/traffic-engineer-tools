@@ -13,7 +13,9 @@ pub use execution::{Generation, OutcomeStatus, PanicStage, ScenarioExecution, Sc
 pub use schedule::PollSchedule;
 pub use spec::{ScenarioSpec, SnmpGetScenarioSpec, SnmpSetScenarioSpec};
 
-pub(super) use runtime::{ScenarioCommand, ScenarioContext, ScenarioReport, run as run_scenario};
+pub(super) use runtime::{
+    RunBudget, ScenarioCommand, ScenarioContext, ScenarioReport, run as run_scenario,
+};
 
 #[cfg(test)]
 mod tests;

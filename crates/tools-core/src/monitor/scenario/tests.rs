@@ -55,7 +55,7 @@ impl Session {
                     self.operations.push((context, started_at));
                 }
                 report => {
-                    if let ScenarioReport::Executed { execution, .. }
+                    if let ScenarioReport::RunFinished { execution, .. }
                     | ScenarioReport::ExecutionFailed { execution, .. } = &report
                     {
                         let (context, started_at) = self.operations.last().unwrap();
@@ -160,6 +160,10 @@ fn set_scenario(request: SnmpSetSpec, retries: u8) -> ScenarioSpec {
 }
 
 fn spawn(scenario: ScenarioSpec) -> Session {
+    spawn_with_budget(scenario, RunBudget::Unlimited)
+}
+
+fn spawn_with_budget(scenario: ScenarioSpec, budget: RunBudget) -> Session {
     let (report_tx, reports) = mpsc::channel(64);
     let (commands, cmd_rx) = mpsc::channel(8);
     let join = tokio::spawn(run_scenario(
@@ -169,6 +173,7 @@ fn spawn(scenario: ScenarioSpec) -> Session {
             generation: Generation::first().next(),
             revision: crate::monitor::SpecRevision::new(3),
         },
+        budget,
         report_tx,
         cmd_rx,
     ));
@@ -182,12 +187,20 @@ fn spawn(scenario: ScenarioSpec) -> Session {
 }
 
 async fn start(operation: Operation, retries: u8) -> (Session, UdpSocket) {
+    start_with_budget(operation, retries, RunBudget::Unlimited).await
+}
+
+async fn start_with_budget(
+    operation: Operation,
+    retries: u8,
+    budget: RunBudget,
+) -> (Session, UdpSocket) {
     let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let scenario = match operation {
         Operation::Get => get_scenario(request(&peer, None, "1.3.6.1.2.1.1.1.0"), retries),
         Operation::Set => set_scenario(set_request(&peer, None, None), retries),
     };
-    let mut session = spawn(scenario);
+    let mut session = spawn_with_budget(scenario, budget);
     let report = session.next_report().await.unwrap();
     assert!(matches!(report, ScenarioReport::Built { .. }));
     assert_eq!(report.key(), (TaskId(7), Generation::first().next()));
@@ -215,6 +228,32 @@ async fn stop(session: Session) {
 }
 
 #[tokio::test(start_paused = true)]
+async fn exhausted_budget_prevents_another_request_without_a_report_consumer() {
+    for operation in [Operation::Get, Operation::Set] {
+        let (mut session, peer) = start_with_budget(operation, 0, RunBudget::Remaining(1)).await;
+        let (message, source) = receive(&peer).await;
+        let response = message.pdu.standard().unwrap().to_response();
+        reply(&peer, message, source, response).await;
+
+        let mut packet = [0; 2048];
+        assert!(
+            timeout(Duration::from_secs(30), peer.recv_from(&mut packet))
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            session.next_report().await,
+            Some(ScenarioReport::RunFinished {
+                limit_reached: true,
+                ..
+            })
+        ));
+        assert!(session.next_report().await.is_none());
+        session.join.await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn waits_for_interval_before_first_request_and_after_execution() {
     for operation in [Operation::Get, Operation::Set] {
         let (mut session, peer) = start(operation, 0).await;
@@ -234,7 +273,7 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
 
         let report = session.next_report().await.unwrap();
         assert_eq!(report.key(), (TaskId(7), Generation::first().next()));
-        let ScenarioReport::Executed { execution, .. } = report else {
+        let ScenarioReport::RunFinished { execution, .. } = report else {
             panic!("expected execution report");
         };
         match (operation, execution.report.detail().unwrap()) {
@@ -266,7 +305,7 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
         let finished_at = Instant::now();
         receive(&peer).await;
         assert_eq!(finished_at.elapsed(), Duration::from_secs(10));
-        assert!(matches!(session.next_report().await, Some(ScenarioReport::Executed { .. })));
+        assert!(matches!(session.next_report().await, Some(ScenarioReport::RunFinished { .. })));
         stop(session).await;
     }
 }
@@ -274,11 +313,15 @@ async fn waits_for_interval_before_first_request_and_after_execution() {
 #[tokio::test(start_paused = true)]
 async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
     for operation in [Operation::Get, Operation::Set] {
-        let (mut session, peer) = start(operation, 1).await;
+        let (mut session, peer) = start_with_budget(operation, 1, RunBudget::Remaining(2)).await;
         receive(&peer).await;
         session.commands.send(ScenarioCommand::Pause).await.unwrap();
         receive(&peer).await;
-        let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap()
+        let ScenarioReport::RunFinished {
+            execution,
+            limit_reached: false,
+            ..
+        } = session.next_report().await.unwrap()
         else {
             panic!("expected execution before pause");
         };
@@ -312,7 +355,13 @@ async fn pause_waits_for_all_attempts_and_resume_starts_a_new_interval() {
         assert_eq!(resumed_at.elapsed(), Duration::from_secs(10));
         let response = message.pdu.standard().unwrap().to_response();
         reply(&peer, message, source, response).await;
-        assert!(matches!(session.next_report().await, Some(ScenarioReport::Executed { .. })));
+        assert!(matches!(
+            session.next_report().await,
+            Some(ScenarioReport::RunFinished {
+                limit_reached: true,
+                ..
+            })
+        ));
         stop(session).await;
     }
 }
@@ -399,7 +448,7 @@ async fn resolves_scn_before_reporting_built() {
     );
     response.varbinds[0].value = Value::OctetString(vec![4].into());
     reply(&peer, message, source, response).await;
-    let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap() else {
+    let ScenarioReport::RunFinished { execution, .. } = session.next_report().await.unwrap() else {
         panic!("expected execution report");
     };
     let ScenarioOutcome::SnmpGet(PollDetails {
@@ -444,7 +493,7 @@ async fn failed_scn_resolution_ends_scenario_without_built() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn fatal_protocol_error_preserves_the_complete_report_before_ending_scenario() {
+async fn device_rejection_finishes_one_run_and_preserves_all_attempts() {
     for operation in [Operation::Get, Operation::Set] {
         let (mut session, peer) = start(operation, 1).await;
         receive(&peer).await;
@@ -455,16 +504,11 @@ async fn fatal_protocol_error_preserves_the_complete_report_before_ending_scenar
             .unwrap()
             .to_error_response(ErrorStatus::GenErr, 1);
         reply(&peer, message, source, response).await;
-        let Some(ScenarioReport::ExecutionFailed {
-            execution, error, ..
-        }) = session.next_report().await
+        let Some(ScenarioReport::RunFinished { execution, .. }) = session.next_report().await
         else {
-            panic!("expected a failure with the operation report");
+            panic!("expected a completed run with the rejected operation");
         };
-        assert!(matches!(
-            error,
-            ScenarioExecutionError::Snmp(crate::snmp::SnmpError::Protocol { index: 1, .. })
-        ));
+        assert_eq!(execution.report.status(), crate::monitor::OperationStatus::Failed);
         let (attempts, finished_at, elapsed) = match execution.report.detail().unwrap() {
             ScenarioOutcome::SnmpGet(report) => {
                 (&report.attempts, execution.report.finished_at, execution.report.elapsed)
@@ -492,8 +536,13 @@ async fn fatal_protocol_error_preserves_the_complete_report_before_ending_scenar
             }
         ));
         assert!(attempts[1].started_after >= attempts[0].elapsed + Duration::from_secs(1));
-        assert!(session.next_report().await.is_none());
-        session.join.await.unwrap();
+        let finished_at = Instant::now();
+        let (message, source) = receive(&peer).await;
+        assert_eq!(finished_at.elapsed(), Duration::from_secs(10));
+        let response = message.pdu.standard().unwrap().to_response();
+        reply(&peer, message, source, response).await;
+        assert!(matches!(session.next_report().await, Some(ScenarioReport::RunFinished { .. })));
+        stop(session).await;
     }
 }
 
@@ -563,7 +612,7 @@ async fn set_resolves_scn_with_read_community_and_sends_with_write_community() {
         assert_eq!(pdu.varbinds[0].value, Value::OctetString(vec![4].into()));
         let response = pdu.to_response();
         reply(&peer, message, source, response).await;
-        let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap()
+        let ScenarioReport::RunFinished { execution, .. } = session.next_report().await.unwrap()
         else {
             panic!("expected execution report");
         };
@@ -590,7 +639,7 @@ async fn scenario_clone_resolves_scn_independently_for_each_run() {
             (scenario.clone(), "CO1", "1.3.67.79.49"),
             (scenario, "CO2", "1.3.67.79.50"),
         ] {
-            let mut session = spawn(scenario);
+            let mut session = spawn_with_budget(scenario, RunBudget::Remaining(1));
             let (message, source) = receive(&peer).await;
             let mut response = message.pdu.standard().unwrap().to_response();
             response.varbinds[0].value = Value::OctetString(scn.as_bytes().to_vec().into());
@@ -608,7 +657,13 @@ async fn scenario_clone_resolves_scn_independently_for_each_run() {
             let mut response = pdu.to_response();
             response.varbinds[0].value = Value::OctetString(vec![4].into());
             reply(&peer, message, source, response).await;
-            assert!(matches!(session.next_report().await, Some(ScenarioReport::Executed { .. })));
+            assert!(matches!(
+                session.next_report().await,
+                Some(ScenarioReport::RunFinished {
+                    limit_reached: true,
+                    ..
+                })
+            ));
             stop(session).await;
         }
     }
@@ -621,7 +676,7 @@ async fn set_retries_after_timeout_and_stops_on_success() {
     let (message, source) = receive(&peer).await;
     let response = message.pdu.standard().unwrap().to_response();
     reply(&peer, message, source, response).await;
-    let ScenarioReport::Executed { execution, .. } = session.next_report().await.unwrap() else {
+    let ScenarioReport::RunFinished { execution, .. } = session.next_report().await.unwrap() else {
         panic!("expected execution report");
     };
     let ScenarioOutcome::SnmpSet(PollDetails {

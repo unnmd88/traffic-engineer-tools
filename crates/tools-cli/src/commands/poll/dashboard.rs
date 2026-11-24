@@ -137,7 +137,7 @@ mod tests {
             )
             .unwrap(),
         );
-        TaskConfig::try_new(name.to_string(), scenario, 0, 0).unwrap()
+        TaskConfig::try_new(name.to_string(), scenario, 0).unwrap()
     }
 
     #[tokio::test]

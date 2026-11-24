@@ -1,12 +1,12 @@
-use std::{path::PathBuf, time::Duration};
+use std::{num::NonZeroU64, path::PathBuf, time::Duration};
 
 use serde::Deserialize;
 
 use tools_core::{
     error::Error,
     monitor::{
-        PollSchedule, RawSnmpOidItem, RawSnmpSetItem, ScenarioSpec, SnmpGetScenarioSpec,
-        SnmpGetSpec, SnmpSetScenarioSpec, SnmpSetSpec, TaskConfig,
+        InitialTask, PollSchedule, RawSnmpOidItem, RawSnmpSetItem, RunLimit, ScenarioSpec,
+        SnmpGetScenarioSpec, SnmpGetSpec, SnmpSetScenarioSpec, SnmpSetSpec, TaskConfig,
     },
     polling::AttemptConfig,
 };
@@ -22,7 +22,7 @@ struct AppConfigDto {
 #[derive(Debug)]
 pub struct PollConfig {
     pub history_sink: Option<PathBuf>,
-    pub tasks: Vec<TaskConfig>,
+    pub tasks: Vec<InitialTask>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +96,7 @@ pub fn load_from_yaml(content: &str) -> anyhow::Result<PollConfig> {
     let specs = app_dto
         .tasks
         .into_iter()
-        .map(TaskConfig::try_from)
+        .map(InitialTask::try_from)
         .collect::<Result<Vec<_>, Error>>()?;
     Ok(PollConfig {
         history_sink: app_dto.history_sink,
@@ -104,7 +104,7 @@ pub fn load_from_yaml(content: &str) -> anyhow::Result<PollConfig> {
     })
 }
 
-impl TryFrom<TaskConfigDto> for TaskConfig {
+impl TryFrom<TaskConfigDto> for InitialTask {
     type Error = Error;
 
     fn try_from(dto: TaskConfigDto) -> Result<Self, Self::Error> {
@@ -121,7 +121,7 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
                 delay: dto.interval,
             },
         };
-        let limit = dto.limit;
+        let limit = NonZeroU64::new(dto.limit).map_or(RunLimit::Unlimited, RunLimit::Runs);
 
         let scenario = match dto.query {
             QueryDto::SnmpGet(q) => {
@@ -142,12 +142,10 @@ impl TryFrom<TaskConfigDto> for TaskConfig {
             }
         };
 
-        Ok(TaskConfig::try_new(
-            dto.name,
-            scenario,
+        Ok(Self {
+            config: TaskConfig::try_new(dto.name, scenario, dto.deep_history.unwrap_or_default())?,
             limit,
-            dto.deep_history.unwrap_or_default(),
-        )?)
+        })
     }
 }
 
@@ -207,9 +205,9 @@ tasks:
         let specs = config.tasks;
 
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].name(), "T-1");
-        assert_eq!(specs[0].limit(), 100);
-        let ScenarioSpec::SnmpGet(spec) = specs[0].scenario() else {
+        assert_eq!(specs[0].config.name(), "T-1");
+        assert_eq!(specs[0].limit, RunLimit::Runs(NonZeroU64::new(100).unwrap()));
+        let ScenarioSpec::SnmpGet(spec) = specs[0].config.scenario() else {
             panic!("expected SNMP GET scenario");
         };
         assert_eq!(
@@ -218,9 +216,9 @@ tasks:
                 delay: Duration::from_secs(5)
             }
         );
-        assert_eq!(specs[1].name(), "T-2");
-        assert_eq!(specs[1].limit(), 0);
-        let ScenarioSpec::SnmpSet(spec) = specs[1].scenario() else {
+        assert_eq!(specs[1].config.name(), "T-2");
+        assert_eq!(specs[1].limit, RunLimit::Unlimited);
+        let ScenarioSpec::SnmpSet(spec) = specs[1].config.scenario() else {
             panic!("expected SNMP SET scenario");
         };
         let request = spec.request();
@@ -262,7 +260,7 @@ tasks:
             ),
         ] {
             let tasks = load_from_yaml(&task_yaml(mode, "100ms")).unwrap().tasks;
-            let ScenarioSpec::SnmpGet(spec) = tasks[0].scenario() else {
+            let ScenarioSpec::SnmpGet(spec) = tasks[0].config.scenario() else {
                 panic!("expected SNMP GET scenario");
             };
             assert_eq!(spec.schedule(), expected);

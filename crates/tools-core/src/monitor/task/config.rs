@@ -6,7 +6,6 @@ use super::error::TaskError;
 pub struct TaskConfig {
     name: String,
     scenario: ScenarioSpec,
-    limit: u64,
     deep_history: u8,
 }
 
@@ -14,7 +13,6 @@ impl TaskConfig {
     pub fn try_new(
         name: String,
         scenario: ScenarioSpec,
-        limit: u64,
         deep_history: u8,
     ) -> Result<Self, TaskError> {
         if name.trim().is_empty() {
@@ -24,7 +22,6 @@ impl TaskConfig {
         Ok(Self {
             name,
             scenario,
-            limit,
             deep_history,
         })
     }
@@ -35,10 +32,6 @@ impl TaskConfig {
 
     pub const fn scenario(&self) -> &ScenarioSpec {
         &self.scenario
-    }
-
-    pub const fn limit(&self) -> u64 {
-        self.limit
     }
 
     pub fn deep_history(&self) -> u8 {
@@ -77,15 +70,14 @@ mod tests {
 
     #[test]
     fn rejects_empty_name() {
-        let err = TaskConfig::try_new("   ".to_string(), valid_scenario(), 0, 3).unwrap_err();
+        let err = TaskConfig::try_new("   ".to_string(), valid_scenario(), 3).unwrap_err();
         assert!(matches!(err, TaskError::EmptyName));
     }
 
     #[test]
     fn accepts_valid_spec() {
-        let spec = TaskConfig::try_new("T-1".to_string(), valid_scenario(), 100, 3).unwrap();
+        let spec = TaskConfig::try_new("T-1".to_string(), valid_scenario(), 3).unwrap();
         assert_eq!(spec.name(), "T-1");
-        assert_eq!(spec.limit(), 100);
         assert_eq!(spec.deep_history(), 3);
     }
 }
