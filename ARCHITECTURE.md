@@ -54,7 +54,7 @@ The individual request and SNMP mechanisms are also available through
 
 | Component | Responsibility | Source |
 |---|---|---|
-| `AppConfig` | Global settings: event-history output and restart policy | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
+| `AppConfig` | Global restart policy | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `TaskConfig` | The validated description of one task | [task/config.rs](crates/tools-core/src/monitor/task/config.rs) |
 | `InitialTask` | Task configuration and the limit for its automatic start | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `RunLimit` | Unlimited execution or a positive number of runs per start | [task/limit.rs](crates/tools-core/src/monitor/task/limit.rs) |
@@ -87,7 +87,7 @@ flowchart LR
     Scenario -->|internal reports| Orchestrator
     Orchestrator --> State[Task and execution state]
     Orchestrator -->|snapshots and events| Consumer
-    Orchestrator -->|optional| History[Consumer history handler]
+    Consumer -->|optional| History[Event journal]
 ```
 
 ## Task description and configuration validation
@@ -162,8 +162,8 @@ In a long-running session the consumer reads the subscription and issues command
 `shutdown`. The example above only shows assembly, obtaining a snapshot, and shutdown;
 it does not wait for the first network result.
 
-`RunningApplication::shutdown(self).await` requests a stop and waits for the orchestrator,
-the scenario completions and timers, and the history-forwarding handler.
+`RunningApplication::shutdown(self).await` requests a stop and waits for the orchestrator
+and its scenario and timer tasks.
 It is not a command to put the device itself into any safe state.
 Tasks in `Preparing`, `Active`, `Paused`, or `Restarting` publish a transition to `Stopped`
 with cause `Shutdown` before the registry is cleared. Idle and already-terminal tasks do
@@ -171,8 +171,8 @@ not receive an artificial state change. Interruption reports remain a subsequent
 
 Dropping the owner without `shutdown`, including when a completion future is cancelled,
 requests an emergency cancellation of the orchestrator. Its `JoinSet` cancels the inner
-tasks. `Drop` cannot asynchronously wait for them to finish or guarantee delivery of
-accumulated history. For an orderly shutdown, use `shutdown().await`.
+tasks. For an orderly shutdown that lets the orchestrator process final reports, use
+`shutdown().await`.
 
 ## Orchestrator and internal state
 
@@ -244,8 +244,8 @@ status change.
 `Application::new_ordered(config, tasks)` selects the implementation in
 [runtime/ordered](crates/tools-core/src/monitor/runtime/ordered/mod.rs).
 Both constructors return the same prepared `Application` and expose the same
-`ApplicationHandle`, snapshots, subscriptions, event schema and history sink.
-The CLI uses `Application::new`. The public API tests run registration, configuration
+`ApplicationHandle`, snapshots, subscriptions, and event schema.
+The CLI uses `Application::new_ordered`. The public API tests run registration, configuration
 replacement, repeated finite starts and observation of preparation failures through both
 constructors. [Shared API tests](crates/tools-core/tests/monitor_api.rs)
 
@@ -267,6 +267,10 @@ The actor can therefore account for both intermediate and final results before r
 The default runtime adapts these same scenario updates and outcomes to its existing
 report channel.
 
+The ordered actor handles each message synchronously and publishes events through
+`broadcast`. Waiting for channel capacity, timers, and network requests happens in the
+scenario and timer tasks. Event consumers manage their own processing.
+
 A task owns the requested mode across generations. A preparation or execution failure
 while pause is requested retains the failure and leaves the task paused until resume.
 Failure in running mode schedules a restart tagged with the failed generation. Pause,
@@ -281,13 +285,10 @@ Removal publishes `TaskRemoved` after exit and after any returned operation. Sna
 during cancellation show the last confirmed public status. Cancelling a pending network
 operation can still leave an `OperationStarted` event without a terminal report.
 
-During orderly shutdown the actor cancels live runs, processes exits and drains the
-history writer. Pending stop and removal commands receive their replies after local exit.
-After the last local exit the command receiver drops queued callers before waiting for
-the history writer. Those callers receive `ChannelClosed` even while the external history
-channel is full. The shutdown caller waits for history forwarding to finish.
-Both implementations apply the bounded history backpressure described in
-[Event history output](#event-history-output).
+During orderly shutdown the actor cancels live runs and processes their exits. Pending
+stop and removal commands receive their replies after local exit. After the last exit,
+any commands still in the queue receive `ChannelClosed`. Event subscribers can drain
+buffered events after the actor exits.
 
 ## Scenarios
 
@@ -331,8 +332,8 @@ Both CLI views display the latest message as `Activity`.
 Only messages from the live generation while the task is `Preparing` are accepted. A new
 generation clears the previous activity. Leaving `Preparing` clears it on readiness,
 failure, stop, or shutdown. Messages retain normal application/task/generation/revision
-metadata and global ordering, and remain available through the event stream and configured
-history sink. They do not change lifecycle state, execution metrics, or limit accounting.
+metadata and global ordering, and are available through the event stream. They do not
+change lifecycle state, execution metrics, or limit accounting.
 There is no separate stage event stream or structured preparation report in task snapshots.
 
 GET/SET preparation reports "Creating SNMP read client" or "Creating SNMP write client",
@@ -513,7 +514,7 @@ results to fill the new depth, and zero clears the ring and disables retention o
 results. Increasing the depth does not restore discarded entries. Changing the depth
 preserves the last result and follows the same scenario-replacement behavior as any other
 configuration update.
-This results history differs from the `history_sink` event output.
+Event journaling is handled by subscribers as described in [Event history output](#event-history-output).
 
 ## Events, snapshots, and subscriptions
 
@@ -537,8 +538,8 @@ progress, which are shared by events and task snapshots. Operation context and r
 to `operation`; the monitor-wide `MonitorSnapshot` belongs to `snapshot`.
 Events report lifecycle changes, results, errors, and panics.
 `Preparation` carries a scenario's human-readable preparation message and its source
-timestamp, independently of lifecycle transitions. It is forwarded to the same history
-sink as all other public events; readiness and failures remain typed.
+timestamp, independently of lifecycle transitions. It goes through the same event stream
+as the other public events. Readiness and failures remain typed.
 `OperationStarted` announces one complete GET/SET algorithm before its first attempt.
 `OperationFinished` carries its complete operation report, including preceding timeouts and
 adapter errors on a non-retryable failure. For a fatal error, a separate `TaskStateChanged`
@@ -648,9 +649,8 @@ and may miss a change between them.
 
 ## Event history output
 
-`AppConfig.history_sink` is an optional `mpsc::Sender<MonitorEvent>`.
-The consumer creates an external channel and organizes reading: writing to a file, a DB,
-or other processing. Specifying it is optional for a regular subscription.
+The monitor publishes `MonitorEvent` through a bounded broadcast channel. Clients that
+write an event journal subscribe before spawning the monitor and read events alongside it.
 
 The CLI accepts a history-file path at the root of the YAML configuration:
 
@@ -676,34 +676,24 @@ values use the standard Serde representation with variant names. When reading, a
 validated by the regular parser. For example, a task-removal event:
 
 ```json
-{"metadata":{"seq":1,"at":"2026-11-07T00:00:00Z","application_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","task_id":1,"generation":0,"revision":1},"data":"TaskRemoved"}
+{"metadata":{"seq":1,"at":"2026-11-07T00:00:00Z","application_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","task_id":1,"generation":0,"revision":1},"data":{"type":"task_removed"}}
 ```
 
 `TaskRegistered` and `TaskConfigurationChanged` preserve descriptions of each accepted
 revision in the file, including when a task changes repeatedly or is subsequently removed.
-The file stores exactly the event stream. The format directly reflects the core types.
+The file stores events received by the CLI subscriber. The format directly reflects the core types.
 Different runs in one file are distinguished by `application_id`.
 The staged contract is still under development and does not promise compatibility with
 intermediate payloads across the remaining migration increments.
 
-A separate CLI task reads the bounded channel and flushes the buffer after each event.
-A write error or writer failure ends the monitor and is returned from the CLI.
+A separate CLI task reads the subscription and flushes the file after each event.
+If a slow writer gets `Lagged`, it logs the number of missed events and continues recording.
+The missing events leave gaps in `metadata.seq`. After draining the channel, the CLI
+reports an incomplete journal with the total number of missed events. A file I/O error
+or writer task failure still ends the CLI session and is returned to the caller.
 On Ctrl+C the CLI stops the monitor with the writer still running, then waits for the
-remaining events to be written and a final `flush`.
-
-The orchestrator forwards events into an internal bounded queue, and a separate task
-forwards them to the external channel. Filling the queues creates backpressure and may
-delay the orchestrator's handling of commands and reports.
-
-On an orderly stop, the internal queue is closed and the history handler is awaited until
-forwarding completes or a disconnected receiver is detected. If a live receiver does not
-read a full external channel, shutdown may wait on it indefinitely. On receiver
-disconnect, the handler logs a warning and stops forwarding; there is currently no
-guarantee of write or redelivery.
-
-Forwarding into the channel does not confirm saving to disk or a DB.
-The current implementation is not a durable log and does not guarantee persistence after
-an emergency cancellation or a process crash.
+remaining events to be written and flushed. A slow subscriber does not delay event
+publication or command processing. Event delivery is bounded and can lose events.
 
 ## Errors and restarts
 
@@ -728,9 +718,8 @@ scheduling a new start. `PanicStage` distinguishes preparation, request executio
 rest of the scenario logic.
 
 Entering `Restarting` captures `RestartPlan { attempt, scheduled_at }` in both the transition
-and snapshot. The timer uses the monotonic deadline chosen together with that UTC time;
-event-history backpressure does not restart the delay after publication. On a valid timer
-command, `Restarting` transitions to `Preparing` with `RestartDue { attempt }`. Pause, stop,
+and snapshot. The timer uses the monotonic deadline chosen together with that UTC time.
+On a valid timer command, `Restarting` transitions to `Preparing` with `RestartDue { attempt }`. Pause, stop,
 configuration replacement, and readiness transitions clear the waiting plan. Inactive
 generation/state checks still prevent stale timers and reports from restarting a task.
 
@@ -780,8 +769,7 @@ component's purpose and a link here.
 
 ## Open questions and checks
 
-Open decisions remain about counting fatal errors and about history-output behavior with
-a slow receiver.
+An open decision remains about counting fatal errors.
 A separate contract for plugging in external scenarios is not yet implemented.
 
 Primary checks: `mise run check`, `mise run test`, and `mise run clippy`.

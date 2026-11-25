@@ -1,10 +1,10 @@
 use std::{future::pending, path::Path};
 
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use tokio::{
     fs::{File, OpenOptions},
     io::{AsyncWrite, AsyncWriteExt, BufWriter},
-    sync::mpsc,
+    sync::broadcast::{self, error::RecvError},
     task::JoinHandle,
 };
 use tools_core::monitor::MonitorEvent;
@@ -18,12 +18,28 @@ pub async fn open(path: &Path) -> anyhow::Result<File> {
         .with_context(|| format!("cannot open history file {}", path.display()))
 }
 
-pub async fn write<W>(writer: W, mut events: mpsc::Receiver<MonitorEvent>) -> anyhow::Result<()>
+pub async fn write<W>(
+    writer: W,
+    mut events: broadcast::Receiver<MonitorEvent>,
+) -> anyhow::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
     let mut writer = BufWriter::new(writer);
-    while let Some(event) = events.recv().await {
+    let mut skipped = 0_u64;
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(RecvError::Closed) => break,
+            Err(RecvError::Lagged(count)) => {
+                skipped = skipped.saturating_add(count);
+                tracing::warn!(
+                    skipped = count,
+                    "history writer lagged; event journal is incomplete"
+                );
+                continue;
+            }
+        };
         let mut line = serde_json::to_vec(&event).context("cannot serialize history event")?;
         line.push(b'\n');
         writer
@@ -32,7 +48,9 @@ where
             .context("cannot write history event")?;
         writer.flush().await.context("cannot flush history file")?;
     }
-    writer.flush().await.context("cannot flush history file")
+    writer.flush().await.context("cannot flush history file")?;
+    ensure!(skipped == 0, "event journal is incomplete ({skipped} skipped)");
+    Ok(())
 }
 
 pub async fn wait(writer: &mut Option<JoinHandle<anyhow::Result<()>>>) -> anyhow::Result<()> {
@@ -109,10 +127,10 @@ mod tests {
     #[tokio::test]
     async fn events_are_flushed_as_single_json_lines_before_the_channel_closes() {
         let (writer, reader) = duplex(4096);
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = broadcast::channel(1);
         let task = tokio::spawn(write(writer, receiver));
         let expected = event();
-        sender.send(expected.clone()).await.unwrap();
+        sender.send(expected.clone()).unwrap();
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
         tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line))
@@ -130,30 +148,47 @@ mod tests {
     async fn writer_errors_close_the_receiver_and_reach_the_caller() {
         let (writer, reader) = duplex(4096);
         drop(reader);
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = broadcast::channel(1);
         let mut task = Some(tokio::spawn(write(writer, receiver)));
-        sender.send(event()).await.unwrap();
+        sender.send(event()).unwrap();
         let error = wait(&mut task).await.unwrap_err();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::BrokenPipe
         );
-        assert!(sender.is_closed());
+        assert_eq!(sender.receiver_count(), 0);
         assert!(task.is_none());
+    }
+
+    #[tokio::test]
+    async fn lag_leaves_a_sequence_gap_and_is_reported_after_draining() {
+        let (writer, reader) = duplex(4096);
+        let (sender, events) = broadcast::channel(1);
+        let mut last = event();
+        sender.send(last.clone()).unwrap();
+        last.metadata.seq = 1;
+        sender.send(last).unwrap();
+        drop(sender);
+
+        let error = write(writer, events).await.unwrap_err();
+        assert_eq!(error.to_string(), "event journal is incomplete (1 skipped)");
+        let mut lines = BufReader::new(reader).lines();
+        let line = lines.next_line().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<MonitorEvent>(&line)
+                .unwrap()
+                .metadata
+                .seq,
+            1
+        );
+        assert!(lines.next_line().await.unwrap().is_none());
     }
 
     async fn record_session(path: &Path) -> ApplicationId {
         let file = open(path).await.unwrap();
-        let (sender, receiver) = mpsc::channel(1);
-        let mut writer = Some(tokio::spawn(write(file, receiver)));
-        let running = Application::new(
-            AppConfig {
-                history_sink: Some(sender),
-                ..AppConfig::default()
-            },
-            vec![],
-        )
-        .spawn();
+        let application = Application::new_ordered(AppConfig::default(), vec![]);
+        let mut writer = Some(tokio::spawn(write(file, application.subscribe())));
+        let running = application.spawn();
         let app = running.handle();
         let application_id = *app.id();
         let mut config = config::load_from_yaml(

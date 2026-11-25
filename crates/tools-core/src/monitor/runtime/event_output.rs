@@ -1,7 +1,6 @@
 use crate::monitor::{
     EventData, MonitorEvent, OperationFinished, ScenarioFailure, TaskTransitionCause,
 };
-use tokio::sync::mpsc;
 
 pub(super) fn log_event(event: &MonitorEvent) {
     let metadata = &event.metadata;
@@ -83,25 +82,5 @@ pub(super) fn log_event(event: &MonitorEvent) {
             task_name = description.name,
             "task configuration updated"
         ),
-    }
-}
-
-pub(super) async fn log_writer(
-    mut rx: mpsc::Receiver<MonitorEvent>,
-    hist_tx: mpsc::Sender<MonitorEvent>,
-) {
-    while let Some(ev) = rx.recv().await {
-        if let Err(error) = hist_tx.send(ev).await {
-            let metadata = &error.0.metadata;
-            tracing::warn!(
-                application_id = %metadata.application_id,
-                task_id = metadata.task_id.0,
-                generation = ?metadata.generation,
-                revision = metadata.revision.0,
-                seq = metadata.seq,
-                "history sink closed; event forwarding stopped"
-            );
-            break;
-        }
     }
 }

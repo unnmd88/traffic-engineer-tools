@@ -9,7 +9,6 @@ mod tests;
 
 use std::path::PathBuf;
 
-use tokio::sync::mpsc;
 use tools_core::monitor::{AppConfig, Application};
 
 use crate::cli::PollView;
@@ -18,21 +17,14 @@ pub async fn run(config: PathBuf, view: PollView) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(&config)?;
     let config_dir = config.parent().unwrap_or_else(|| std::path::Path::new("."));
     let config = config::load_from_yaml(&content)?;
-    let (history_sink, mut history_writer) = match config.history_sink {
+    let application = Application::new_ordered(AppConfig::default(), config.tasks);
+    let mut history_writer = match config.history_sink {
         Some(path) => {
             let file = history::open(&config_dir.join(path)).await?;
-            let (sender, receiver) = mpsc::channel(1024);
-            (Some(sender), Some(tokio::spawn(history::write(file, receiver))))
+            Some(tokio::spawn(history::write(file, application.subscribe())))
         }
-        None => (None, None),
+        None => None,
     };
-    let application = Application::new(
-        AppConfig {
-            history_sink,
-            ..AppConfig::default()
-        },
-        config.tasks,
-    );
     let subscription = application.subscribe_with_snapshot();
     let running = application.spawn();
     let app = running.handle();

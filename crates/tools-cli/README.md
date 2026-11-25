@@ -29,7 +29,9 @@ tctl poll --config examples/poll.yaml --view compact
 `--view` selects the dashboard: `classic` (default) or `compact`.
 
 Each task is a repeating query (e.g. an SNMP GET) with an interval, attempt policy, and
-target. A `history_sink` path records the poll history as JSONL. See
+target. A `history_sink` path lets the CLI record monitor events as JSONL. If its writer
+lags behind the event stream, polling continues and the CLI reports an incomplete journal
+when it exits. See
 [`examples/poll.yaml`](examples/poll.yaml) for a minimal configuration.
 
 ### `to-scn` / `from-scn` — SCN conversion

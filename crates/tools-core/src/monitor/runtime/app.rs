@@ -3,10 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use derive_more::Display;
-use tokio::{
-    sync::{broadcast, mpsc},
-    task::JoinHandle,
-};
+use tokio::{sync::broadcast, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::monitor::{
@@ -34,7 +31,6 @@ impl ApplicationId {
 
 #[derive(Default)]
 pub struct AppConfig {
-    pub history_sink: Option<mpsc::Sender<MonitorEvent>>,
     pub restart: RestartPolicy,
 }
 
@@ -50,8 +46,8 @@ pub struct InitialTask {
 /// A prepared monitor, before it is started.
 ///
 /// `Application::new` is synchronous, assigns ids to the initial tasks, and does
-/// not touch the network. Subscribe before [`Application::spawn`] to observe
-/// every event from the start without missing any.
+/// not touch the network. Subscribe before [`Application::spawn`] to receive startup
+/// events through the bounded event stream.
 ///
 /// # Example
 ///
@@ -89,8 +85,7 @@ pub struct RunningApplication {
 impl Application {
     pub fn new(config: AppConfig, tasks: Vec<InitialTask>) -> Self {
         let uid = ApplicationId::generate();
-        let (mut orchestrator, orchestrator_handle) =
-            Orchestrator::new(config.history_sink, config.restart, uid);
+        let (mut orchestrator, orchestrator_handle) = Orchestrator::new(config.restart, uid);
         let task_ids = orchestrator.prepare_tasks(tasks);
 
         Self {
@@ -260,7 +255,7 @@ impl ApplicationHandle {
 #[cfg(test)]
 mod tests {
     use tokio::{
-        sync::{broadcast, mpsc},
+        sync::broadcast,
         time::{Duration, timeout},
     };
 
@@ -296,13 +291,9 @@ mod tests {
     }
 
     #[test]
-    fn construction_prepares_tasks_and_history_without_a_tokio_runtime() {
-        let (sender, mut history) = mpsc::channel(1);
+    fn construction_prepares_tasks_without_a_tokio_runtime() {
         let application = Application::new(
-            AppConfig {
-                history_sink: Some(sender),
-                ..AppConfig::default()
-            },
+            AppConfig::default(),
             ["first", "second"]
                 .into_iter()
                 .map(|name| InitialTask {
@@ -348,14 +339,12 @@ mod tests {
             subscription.events.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)
         ));
-        assert!(matches!(history.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
 
         drop(application);
         assert!(matches!(
             subscription.events.try_recv(),
             Err(broadcast::error::TryRecvError::Closed)
         ));
-        assert!(matches!(history.try_recv(), Err(mpsc::error::TryRecvError::Disconnected)));
     }
 
     #[tokio::test]
@@ -387,16 +376,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_running_application_closes_events_and_history_with_handles_alive() {
+    async fn dropping_running_application_closes_events_with_handles_alive() {
         for prepare in [Application::new, Application::new_ordered] {
-            let (sender, mut history) = mpsc::channel(1);
-            let application = prepare(
-                AppConfig {
-                    history_sink: Some(sender),
-                    ..AppConfig::default()
-                },
-                vec![],
-            );
+            let application = prepare(AppConfig::default(), vec![]);
             let mut events = application.subscribe();
             let running = application.spawn();
             let app = running.handle();
@@ -405,87 +387,6 @@ mod tests {
             drop(running);
             timeout(Duration::from_secs(1), async {
                 assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
-                assert!(history.recv().await.is_none());
-                assert!(matches!(
-                    app.get_snapshot().await,
-                    Err(MonitorCommandError::ChannelClosed)
-                ));
-            })
-            .await
-            .unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn shutdown_waits_for_buffered_history_to_reach_the_external_channel() {
-        for prepare in [Application::new, Application::new_ordered] {
-            let (sender, mut history) = mpsc::channel(1);
-            let running = prepare(
-                AppConfig {
-                    history_sink: Some(sender),
-                    ..AppConfig::default()
-                },
-                vec![],
-            )
-            .spawn();
-            let app = running.handle();
-            let mut ids = Vec::new();
-            for name in ["first", "second", "third"] {
-                ids.push(app.add_task(spec(name)).await.unwrap());
-            }
-
-            let mut shutdown = Box::pin(running.shutdown());
-            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
-            tokio::task::yield_now().await;
-            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
-
-            let recorded = timeout(Duration::from_secs(1), async {
-                let (result, recorded) = tokio::join!(shutdown, async {
-                    let mut recorded = Vec::new();
-                    while let Some(event) = history.recv().await {
-                        recorded.push(event);
-                    }
-                    recorded
-                });
-                result.unwrap();
-                recorded
-            })
-            .await
-            .unwrap();
-            assert_eq!(recorded.len(), ids.len());
-            for ((seq, id), event) in ids.into_iter().enumerate().zip(recorded) {
-                assert_eq!(event.metadata.seq, seq as u64);
-                assert_eq!(event.metadata.task_id, id);
-                assert!(matches!(event.data, EventData::TaskRegistered(_)));
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn cancelling_shutdown_aborts_the_runtime_and_history_writer() {
-        for prepare in [Application::new, Application::new_ordered] {
-            let (sender, mut history) = mpsc::channel(1);
-            let running = prepare(
-                AppConfig {
-                    history_sink: Some(sender),
-                    ..AppConfig::default()
-                },
-                vec![],
-            )
-            .spawn();
-            let app = running.handle();
-            app.add_task(spec("first")).await.unwrap();
-            app.add_task(spec("second")).await.unwrap();
-            let mut events = app.subscribe();
-            let mut shutdown = Box::pin(running.shutdown());
-            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
-            tokio::task::yield_now().await;
-            assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
-
-            drop(shutdown);
-            timeout(Duration::from_secs(1), async {
-                assert!(matches!(events.recv().await, Err(broadcast::error::RecvError::Closed)));
-                while history.recv().await.is_some() {}
                 assert!(matches!(
                     app.get_snapshot().await,
                     Err(MonitorCommandError::ChannelClosed)

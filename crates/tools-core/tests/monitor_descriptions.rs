@@ -137,15 +137,9 @@ fn set_description_retains_binary_values_and_excludes_both_communities() {
 
 #[tokio::test]
 async fn queued_descriptions_keep_each_revision_after_consecutive_updates_and_removal() {
-    let (history, mut recorded) = tokio::sync::mpsc::channel(16);
-    let running = Application::new(
-        AppConfig {
-            history_sink: Some(history),
-            ..AppConfig::default()
-        },
-        vec![],
-    )
-    .spawn();
+    let application = Application::new(AppConfig::default(), vec![]);
+    let mut recorded = application.subscribe();
+    let running = application.spawn();
     let handle = running.handle();
     let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
     let configs = [get_task("initial"), set_task("updated"), get_task("final")];
@@ -198,7 +192,7 @@ async fn queued_descriptions_keep_each_revision_after_consecutive_updates_and_re
 
     running.shutdown().await.unwrap();
     let mut saved = Vec::new();
-    while let Some(event) = recorded.recv().await {
+    while let Ok(event) = recorded.try_recv() {
         saved.push(serde_json::to_value(event).unwrap());
     }
     assert_eq!(saved, observed);

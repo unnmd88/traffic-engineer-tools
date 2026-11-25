@@ -31,7 +31,7 @@ struct ControlledRun {
     dropped: oneshot::Receiver<()>,
 }
 
-async fn controlled(limit: RunLimit) -> ControlledRun {
+fn controlled(limit: RunLimit) -> ControlledRun {
     let (mut actor, handle, _) =
         OrderedOrchestrator::new(ApplicationId::generate(), AppConfig::default(), vec![]);
     let id = actor.register(config());
@@ -61,9 +61,7 @@ async fn controlled(limit: RunLimit) -> ControlledRun {
             }
         },
     )));
-    actor
-        .transition(id, TaskStatus::Preparing, TaskTransitionCause::InitialStart, None)
-        .await;
+    actor.transition(id, TaskStatus::Preparing, TaskTransitionCause::InitialStart, None);
     ControlledRun {
         actor,
         handle,
@@ -90,7 +88,7 @@ async fn next(actor: &mut OrderedOrchestrator) {
         .await
         .unwrap()
         .unwrap();
-    actor.handle_message(message).await;
+    actor.handle_message(message);
 }
 
 #[tokio::test(start_paused = true)]
@@ -101,7 +99,7 @@ async fn pause_before_failure_survives_backoff_until_explicit_resume() {
         context,
         finish,
         ..
-    } = controlled(RunLimit::Unlimited).await;
+    } = controlled(RunLimit::Unlimited);
     let id = context.task_id;
     let mut request = Box::pin(handle.pause_task(id));
     assert!(poll!(&mut request).is_pending());
@@ -136,7 +134,7 @@ async fn final_result_already_in_mailbox_survives_stop() {
         context,
         finish,
         ..
-    } = controlled(RunLimit::Runs(NonZeroU64::MIN)).await;
+    } = controlled(RunLimit::Runs(NonZeroU64::MIN));
     let mut events = handle.subscribe();
     assert!(
         finish
@@ -167,7 +165,7 @@ async fn removal_waits_for_local_exit_while_another_task_accepts_commands() {
         context,
         mut dropped,
         finish: _finish,
-    } = controlled(RunLimit::Unlimited).await;
+    } = controlled(RunLimit::Unlimited);
     let mut remove = Box::pin(handle.remove_task(context.task_id));
     let mut add = Box::pin(handle.add_task(config()));
     assert!(poll!(&mut remove).is_pending());
@@ -191,7 +189,7 @@ async fn final_result_waiting_for_mailbox_capacity_survives_concurrent_stop() {
         context,
         finish,
         dropped,
-    } = controlled(RunLimit::Runs(NonZeroU64::MIN)).await;
+    } = controlled(RunLimit::Runs(NonZeroU64::MIN));
     let mut stop = Box::pin(handle.stop_task(context.task_id));
     assert!(poll!(&mut stop).is_pending());
     let remaining = actor.tx.capacity();
@@ -221,7 +219,7 @@ async fn queued_restart_from_before_pause_cannot_replace_a_resumed_run() {
         context,
         finish,
         ..
-    } = controlled(RunLimit::Unlimited).await;
+    } = controlled(RunLimit::Unlimited);
     let id = context.task_id;
     assert!(
         finish
@@ -243,7 +241,7 @@ async fn queued_restart_from_before_pause_cannot_replace_a_resumed_run() {
     pause.await.unwrap();
     resume.await.unwrap();
     assert!(actor.entries[&id].is_live(context.generation.next()));
-    actor.handle_message(timer).await;
+    actor.handle_message(timer);
     assert!(actor.entries[&id].is_live(context.generation.next()));
 }
 
@@ -255,7 +253,7 @@ async fn shutdown_finishes_pending_stop_and_closes_deferred_start() {
         context,
         dropped,
         finish: _finish,
-    } = controlled(RunLimit::Unlimited).await;
+    } = controlled(RunLimit::Unlimited);
     let id = context.task_id;
     let mut events = handle.subscribe();
     let mut stop = Box::pin(handle.stop_task(id));
@@ -283,7 +281,7 @@ async fn independent_scenario_completion_releases_an_unlimited_task() {
         context,
         finish,
         ..
-    } = controlled(RunLimit::Unlimited).await;
+    } = controlled(RunLimit::Unlimited);
     assert!(finish.send(ScenarioExit::Completed(None)).is_ok());
     next(&mut actor).await;
     let view = actor.snapshot().tasks.remove(0);
@@ -297,16 +295,10 @@ async fn independent_scenario_completion_releases_an_unlimited_task() {
 }
 
 #[tokio::test]
-async fn shutdown_rejects_queued_commands_while_history_is_draining() {
-    let (sink, mut recorded) = mpsc::channel(1);
-    let (actor, handle, _) = OrderedOrchestrator::new(
-        ApplicationId::generate(),
-        AppConfig {
-            history_sink: Some(sink),
-            ..AppConfig::default()
-        },
-        vec![],
-    );
+async fn shutdown_rejects_queued_commands_and_leaves_pending_events_for_subscribers() {
+    let (actor, handle, _) =
+        OrderedOrchestrator::new(ApplicationId::generate(), AppConfig::default(), vec![]);
+    let mut events = handle.subscribe();
     let mut first = Box::pin(handle.add_task(config()));
     let mut second = Box::pin(handle.add_task(config()));
     let mut shutdown = Box::pin(handle.shutdown());
@@ -323,10 +315,10 @@ async fn shutdown_rejects_queued_commands_while_history_is_draining() {
             .unwrap(),
         Err(MonitorCommandError::ChannelClosed)
     ));
-    assert!(poll!(&mut shutdown).is_pending());
-    for id in [first.await.unwrap(), second.await.unwrap()] {
-        assert_eq!(recorded.recv().await.unwrap().metadata.task_id, id);
-    }
     shutdown.await.unwrap();
     runtime.await.unwrap();
+    for id in [first.await.unwrap(), second.await.unwrap()] {
+        assert_eq!(events.try_recv().unwrap().metadata.task_id, id);
+    }
+    assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Closed)));
 }

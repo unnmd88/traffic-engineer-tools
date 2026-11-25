@@ -14,7 +14,7 @@ use tracing::Instrument;
 
 use super::{
     command::{Command, OrchestratorHandle},
-    event_output::{log_event, log_writer},
+    event_output::log_event,
 };
 use crate::monitor::{
     AppConfig, ApplicationId, EventData, EventMeta, Generation, InitialTask, MonitorCommandError,
@@ -55,7 +55,6 @@ pub(super) struct OrderedOrchestrator {
     tx: mpsc::Sender<Message>,
     rx: mpsc::Receiver<Message>,
     events: broadcast::Sender<MonitorEvent>,
-    history: Option<mpsc::Sender<MonitorEvent>>,
     workers: JoinSet<()>,
     restart: RestartPolicy,
     shutdown: Option<oneshot::Sender<()>>,
@@ -79,7 +78,6 @@ impl OrderedOrchestrator {
             tx,
             rx,
             events,
-            history: config.history_sink,
             workers: JoinSet::new(),
             restart: config.restart,
             shutdown: None,
@@ -109,24 +107,17 @@ impl OrderedOrchestrator {
 
     #[tracing::instrument(name = "monitor", skip_all, fields(application_id = %self.id))]
     pub(super) async fn run(mut self) {
-        let mut writer = JoinSet::new();
-        if let Some(sink) = self.history.take() {
-            let (tx, rx) = mpsc::channel(1024);
-            self.history = Some(tx);
-            writer.spawn(log_writer(rx, sink).in_current_span());
-        }
         let initial = std::mem::take(&mut self.initial);
         for &(id, _) in &initial {
-            self.registered(id).await;
+            self.registered(id);
         }
         for (id, limit) in initial {
             self.start(id, limit, TaskTransitionCause::InitialStart)
-                .await
                 .expect("registered initial task");
         }
         loop {
             tokio::select! {
-                Some(message) = self.rx.recv() => self.handle_message(message).await,
+                Some(message) = self.rx.recv() => self.handle_message(message),
                 Some(joined) = self.workers.join_next() => {
                     if let Err(error) = joined && error.is_panic() {
                         std::panic::resume_unwind(error.into_panic());
@@ -144,23 +135,21 @@ impl OrderedOrchestrator {
         }
         drop(self.rx);
         self.workers.shutdown().await;
-        self.history.take();
-        writer.join_all().await;
         if let Some(reply) = self.shutdown {
             let _ = reply.send(());
         }
     }
 
-    async fn handle_message(&mut self, message: Message) {
+    fn handle_message(&mut self, message: Message) {
         match message {
-            Message::Command(command) if self.shutdown.is_none() => self.command(*command).await,
+            Message::Command(command) if self.shutdown.is_none() => self.command(*command),
             Message::Command(_) => {}
-            Message::Update(update) => self.update_from_scenario(update).await,
-            Message::Exited(context, exit) => self.exited(context, exit).await,
+            Message::Update(update) => self.update_from_scenario(update),
+            Message::Exited(context, exit) => self.exited(context, exit),
         }
     }
 
-    async fn publish(&mut self, id: TaskId, data: EventData) {
+    fn publish(&mut self, id: TaskId, data: EventData) {
         let entry = &self.entries[&id];
         let metadata = EventMeta {
             application_id: self.id,
@@ -173,23 +162,15 @@ impl OrderedOrchestrator {
         self.seq += 1;
         let event = MonitorEvent { metadata, data };
         log_event(&event);
-        if self.events.receiver_count() > 0 {
-            let _ = self.events.send(event.clone());
-        }
-        if let Some(tx) = &self.history
-            && tx.send(event).await.is_err()
-        {
-            self.history = None;
-        }
+        let _ = self.events.send(event);
     }
 
-    async fn registered(&mut self, id: TaskId) {
+    fn registered(&mut self, id: TaskId) {
         let description = TaskDescription::from(self.entries[&id].task.config());
-        self.publish(id, EventData::TaskRegistered(Box::new(description)))
-            .await;
+        self.publish(id, EventData::TaskRegistered(Box::new(description)));
     }
 
-    async fn transition(
+    fn transition(
         &mut self,
         id: TaskId,
         status: TaskStatus,
@@ -202,7 +183,7 @@ impl OrderedOrchestrator {
             .expect("registered task")
             .transition(status, cause, plan)
         {
-            self.publish(id, event).await;
+            self.publish(id, event);
         }
     }
 
@@ -212,7 +193,7 @@ impl OrderedOrchestrator {
             .ok_or(MonitorCommandError::TaskNotFound(id))
     }
 
-    async fn command(&mut self, command: Command) {
+    fn command(&mut self, command: Command) {
         if let Some(id) = task_id(&command)
             && let Some(entry) = self.entries.get_mut(&id)
             && let Execution::Live(run) = &mut entry.execution
@@ -226,7 +207,7 @@ impl OrderedOrchestrator {
         match command {
             Command::AddTask { spec, reply } => {
                 let id = self.register(spec);
-                self.registered(id).await;
+                self.registered(id);
                 let _ = reply.send(Ok(id));
             }
             Command::StartTask {
@@ -234,30 +215,25 @@ impl OrderedOrchestrator {
                 limit,
                 reply,
             } => {
-                let _ = reply.send(
-                    self.start(
-                        task_id,
-                        limit,
-                        TaskTransitionCause::Command(TaskCommandKind::Start),
-                    )
-                    .await,
-                );
+                let _ = reply.send(self.start(
+                    task_id,
+                    limit,
+                    TaskTransitionCause::Command(TaskCommandKind::Start),
+                ));
             }
             Command::PauseTask { task_id, reply } => {
-                let _ = reply.send(self.mode(task_id, RunMode::Paused).await);
+                let _ = reply.send(self.mode(task_id, RunMode::Paused));
             }
             Command::ResumeTask { task_id, reply } => {
-                let _ = reply.send(self.mode(task_id, RunMode::Running).await);
+                let _ = reply.send(self.mode(task_id, RunMode::Running));
             }
             Command::StopTask { task_id, reply } => {
-                let _ = reply.send(
-                    self.stop(task_id, TaskTransitionCause::Command(TaskCommandKind::Stop))
-                        .await,
-                );
+                let _ = reply
+                    .send(self.stop(task_id, TaskTransitionCause::Command(TaskCommandKind::Stop)));
             }
             Command::RemoveTask { task_id, reply } => {
                 let result = if self.entries.contains_key(&task_id) {
-                    self.publish(task_id, EventData::TaskRemoved).await;
+                    self.publish(task_id, EventData::TaskRemoved);
                     self.entries
                         .remove(&task_id)
                         .expect("registered task")
@@ -273,7 +249,7 @@ impl OrderedOrchestrator {
                 spec,
                 reply,
             } => {
-                let result = self.update_config(task_id, spec).await;
+                let result = self.update_config(task_id, spec);
                 let _ = reply.send(result);
             }
             Command::GetSnapshot { reply } => {
@@ -294,36 +270,30 @@ impl OrderedOrchestrator {
                         && matches!(entry.execution, Execution::Backoff(_))
                 }) {
                     let attempt = self.entries[&task_id].attempts;
-                    self.launch(task_id, TaskTransitionCause::RestartDue { attempt })
-                        .await;
+                    self.launch(task_id, TaskTransitionCause::RestartDue { attempt });
                 }
             }
             Command::Shutdown { reply } => {
                 self.shutdown = Some(reply);
                 for id in self.entries.keys().copied().collect::<Vec<_>>() {
-                    self.stop_for_shutdown(id).await;
+                    self.stop_for_shutdown(id);
                 }
             }
         }
     }
 
-    async fn stop_for_shutdown(&mut self, id: TaskId) {
+    fn stop_for_shutdown(&mut self, id: TaskId) {
         if let Some(entry) = self.entries.get_mut(&id) {
             if let Execution::Live(run) = &mut entry.execution {
                 run.cancel();
             } else {
                 self.stop(id, TaskTransitionCause::Shutdown)
-                    .await
                     .expect("registered task");
             }
         }
     }
 
-    async fn update_config(
-        &mut self,
-        id: TaskId,
-        spec: TaskConfig,
-    ) -> Result<(), MonitorCommandError> {
+    fn update_config(&mut self, id: TaskId, spec: TaskConfig) -> Result<(), MonitorCommandError> {
         let entry = self.entry(id)?;
         if !entry.can_start() {
             return Err(MonitorCommandError::TaskUpdateWhileRunning {
@@ -333,12 +303,11 @@ impl OrderedOrchestrator {
         }
         entry.task.update_config(spec);
         let description = TaskDescription::from(entry.task.config());
-        self.publish(id, EventData::TaskConfigurationChanged(Box::new(description)))
-            .await;
+        self.publish(id, EventData::TaskConfigurationChanged(Box::new(description)));
         Ok(())
     }
 
-    async fn start(
+    fn start(
         &mut self,
         id: TaskId,
         limit: RunLimit,
@@ -356,11 +325,11 @@ impl OrderedOrchestrator {
         entry.desired = RunMode::Running;
         entry.last_failure = None;
         entry.attempts = 0;
-        self.launch(id, cause).await;
+        self.launch(id, cause);
         Ok(())
     }
 
-    async fn launch(&mut self, id: TaskId, cause: TaskTransitionCause) {
+    fn launch(&mut self, id: TaskId, cause: TaskTransitionCause) {
         let entry = self.entries.get_mut(&id).expect("registered task");
         let generation = entry
             .generation
@@ -392,11 +361,10 @@ impl OrderedOrchestrator {
                 })
             },
         )));
-        self.transition(id, TaskStatus::Preparing, cause, None)
-            .await;
+        self.transition(id, TaskStatus::Preparing, cause, None);
     }
 
-    async fn mode(&mut self, id: TaskId, mode: RunMode) -> Result<(), MonitorCommandError> {
+    fn mode(&mut self, id: TaskId, mode: RunMode) -> Result<(), MonitorCommandError> {
         let entry = self.entry(id)?;
         if entry.can_start() {
             return Ok(());
@@ -415,31 +383,25 @@ impl OrderedOrchestrator {
                 TaskStatus::Paused,
                 TaskTransitionCause::Command(TaskCommandKind::Pause),
                 None,
-            )
-            .await;
+            );
         } else if entry.status() == TaskStatus::Paused {
             entry.attempts = 0;
-            self.launch(id, TaskTransitionCause::Command(TaskCommandKind::Resume))
-                .await;
+            self.launch(id, TaskTransitionCause::Command(TaskCommandKind::Resume));
         }
         Ok(())
     }
 
-    async fn stop(
-        &mut self,
-        id: TaskId,
-        cause: TaskTransitionCause,
-    ) -> Result<(), MonitorCommandError> {
+    fn stop(&mut self, id: TaskId, cause: TaskTransitionCause) -> Result<(), MonitorCommandError> {
         let entry = self.entry(id)?;
         if !entry.can_start() {
             entry.cancel_timer();
             entry.attempts = 0;
-            self.transition(id, TaskStatus::Stopped, cause, None).await;
+            self.transition(id, TaskStatus::Stopped, cause, None);
         }
         Ok(())
     }
 
-    async fn update_from_scenario(&mut self, update: ScenarioUpdate) {
+    fn update_from_scenario(&mut self, update: ScenarioUpdate) {
         let id = update.task_id;
         let Some(entry) = self.entries.get_mut(&id) else {
             return;
@@ -451,41 +413,33 @@ impl OrderedOrchestrator {
             UpdateData::Built => {
                 entry.attempts = 0;
                 entry.last_failure = None;
-                self.transition(id, TaskStatus::Active, TaskTransitionCause::ScenarioReady, None)
-                    .await;
+                self.transition(id, TaskStatus::Active, TaskTransitionCause::ScenarioReady, None);
             }
             UpdateData::Progress(progress) if entry.status() == TaskStatus::Preparing => {
                 entry.progress = Some(progress.clone());
-                self.publish(id, EventData::Preparation(progress)).await;
+                self.publish(id, EventData::Preparation(progress));
             }
             UpdateData::Progress(_) => {}
             UpdateData::OperationStarted(operation) => {
                 self.publish(id, EventData::OperationStarted(Box::new(operation)))
-                    .await
             }
-            UpdateData::RunFinished(execution) => self.record(id, execution, true).await,
-            UpdateData::Paused => {
-                self.transition(
-                    id,
-                    TaskStatus::Paused,
-                    TaskTransitionCause::Command(TaskCommandKind::Pause),
-                    None,
-                )
-                .await
-            }
-            UpdateData::Resumed => {
-                self.transition(
-                    id,
-                    TaskStatus::Active,
-                    TaskTransitionCause::Command(TaskCommandKind::Resume),
-                    None,
-                )
-                .await
-            }
+            UpdateData::RunFinished(execution) => self.record(id, execution, true),
+            UpdateData::Paused => self.transition(
+                id,
+                TaskStatus::Paused,
+                TaskTransitionCause::Command(TaskCommandKind::Pause),
+                None,
+            ),
+            UpdateData::Resumed => self.transition(
+                id,
+                TaskStatus::Active,
+                TaskTransitionCause::Command(TaskCommandKind::Resume),
+                None,
+            ),
         }
     }
 
-    async fn record(&mut self, id: TaskId, execution: ScenarioExecution, counted: bool) {
+    fn record(&mut self, id: TaskId, execution: ScenarioExecution, counted: bool) {
         let entry = self.entries.get_mut(&id).expect("registered task");
         if counted {
             entry.task.apply_execution(execution.clone());
@@ -500,11 +454,10 @@ impl OrderedOrchestrator {
                 context: execution.context,
                 report: Box::new(execution.report),
             }),
-        )
-        .await;
+        );
     }
 
-    async fn exited(&mut self, context: ScenarioContext, exit: ScenarioExit) {
+    fn exited(&mut self, context: ScenarioContext, exit: ScenarioExit) {
         let id = context.task_id;
         let Some(entry) = self.entries.get_mut(&id) else {
             return;
@@ -519,7 +472,7 @@ impl OrderedOrchestrator {
         match exit {
             ScenarioExit::Completed(last_run) => {
                 if let Some(execution) = last_run {
-                    self.record(id, execution, true).await;
+                    self.record(id, execution, true);
                 }
                 let task = &self.entries[&id].task;
                 let cause = match task.run_limit() {
@@ -528,21 +481,17 @@ impl OrderedOrchestrator {
                     }
                     _ => TaskTransitionCause::ScenarioCompleted,
                 };
-                self.transition(id, TaskStatus::Completed, cause, None)
-                    .await;
+                self.transition(id, TaskStatus::Completed, cause, None);
             }
             ScenarioExit::PreparationFailed(error) => {
                 self.failure(id, ScenarioFailure::Preparation(error), closing)
-                    .await
             }
             ScenarioExit::ExecutionFailed(error, execution) => {
-                self.record(id, *execution, false).await;
-                self.failure(id, ScenarioFailure::Execution(error), closing)
-                    .await;
+                self.record(id, *execution, false);
+                self.failure(id, ScenarioFailure::Execution(error), closing);
             }
             ScenarioExit::Panicked { stage, reason } => {
                 self.failure(id, ScenarioFailure::Panicked { stage, reason }, closing)
-                    .await
             }
             ScenarioExit::Cancelled => {}
         }
@@ -552,14 +501,14 @@ impl OrderedOrchestrator {
             {
                 continue;
             }
-            self.command(command).await;
+            self.command(command);
         }
         if self.shutdown.is_some() {
-            self.stop_for_shutdown(id).await;
+            self.stop_for_shutdown(id);
         }
     }
 
-    async fn failure(&mut self, id: TaskId, failure: ScenarioFailure, closing: bool) {
+    fn failure(&mut self, id: TaskId, failure: ScenarioFailure, closing: bool) {
         let entry = self.entries.get_mut(&id).expect("registered task");
         entry.last_failure = Some(failure.clone());
         if closing {
@@ -567,7 +516,7 @@ impl OrderedOrchestrator {
         }
         let cause = TaskTransitionCause::Failure(Box::new(failure));
         if entry.desired == RunMode::Paused {
-            self.transition(id, TaskStatus::Paused, cause, None).await;
+            self.transition(id, TaskStatus::Paused, cause, None);
             return;
         }
         entry.attempts = entry.attempts.saturating_add(1);
@@ -596,8 +545,7 @@ impl OrderedOrchestrator {
                 .in_current_span(),
             ),
         );
-        self.transition(id, TaskStatus::Restarting, cause, Some(plan))
-            .await;
+        self.transition(id, TaskStatus::Restarting, cause, Some(plan));
     }
 }
 

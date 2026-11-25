@@ -10,7 +10,7 @@ use tracing::Instrument;
 
 use super::{
     command::{Command, OrchestratorHandle},
-    event_output::{log_event, log_writer},
+    event_output::log_event,
 };
 
 use crate::monitor::{
@@ -103,11 +103,8 @@ pub(super) struct Orchestrator {
     report_rx: mpsc::Receiver<ScenarioReport>,
     report_tx: mpsc::Sender<ScenarioReport>,
     live_tx: broadcast::Sender<MonitorEvent>,
-    record_tx: Option<mpsc::Sender<MonitorEvent>>,
-    history_sink: Option<mpsc::Sender<MonitorEvent>>,
     scenarios: JoinSet<()>,
     restarts: JoinSet<()>,
-    history_writer: JoinSet<()>,
     policy: RestartPolicy,
     seq: u64,
     application_id: ApplicationId,
@@ -115,7 +112,6 @@ pub(super) struct Orchestrator {
 
 impl Orchestrator {
     pub fn new(
-        history_sink: Option<mpsc::Sender<MonitorEvent>>,
         restart: RestartPolicy,
         application_id: ApplicationId,
     ) -> (Self, OrchestratorHandle) {
@@ -132,11 +128,8 @@ impl Orchestrator {
             report_rx,
             report_tx,
             live_tx: live_tx.clone(),
-            record_tx: None,
-            history_sink,
             scenarios: JoinSet::new(),
             restarts: JoinSet::new(),
-            history_writer: JoinSet::new(),
             policy: restart,
             seq: 0,
             application_id,
@@ -177,17 +170,7 @@ impl Orchestrator {
 
     #[tracing::instrument(name = "monitor", skip_all, fields(application_id = %self.application_id))]
     pub async fn run(mut self) {
-        tracing::info!(
-            task_count = self.entries.len(),
-            history_enabled = self.history_sink.is_some(),
-            "monitor started"
-        );
-        if let Some(sink) = self.history_sink.take() {
-            let (record_tx, record_rx) = mpsc::channel(1024);
-            self.history_writer
-                .spawn(log_writer(record_rx, sink).in_current_span());
-            self.record_tx = Some(record_tx);
-        }
+        tracing::info!(task_count = self.entries.len(), "monitor started");
         self.start_initial_tasks().await;
         loop {
             tokio::select! {
@@ -206,19 +189,11 @@ impl Orchestrator {
                 Some(result) = self.restarts.join_next() => {
                     log_background_result(result, "restart_timer", self.application_id);
                 },
-                Some(result) = self.history_writer.join_next() => {
-                    log_background_result(result, "history_writer", self.application_id);
-                    self.record_tx.take();
-                },
             }
         }
         tracing::info!("monitor stopping");
         self.restarts.shutdown().await;
         self.scenarios.shutdown().await;
-        self.record_tx.take();
-        while let Some(result) = self.history_writer.join_next().await {
-            log_background_result(result, "history_writer", self.application_id);
-        }
         tracing::info!("monitor stopped");
     }
 
@@ -240,7 +215,7 @@ impl Orchestrator {
             .get(&id)
             .expect("task was registered before publication");
         let description = Box::new(TaskDescription::from(entry.task.config()));
-        self.emit(id, EventData::TaskRegistered(description)).await;
+        self.emit(id, EventData::TaskRegistered(description));
     }
 
     async fn on_command(&mut self, cmd: Command) -> bool {
@@ -450,8 +425,7 @@ impl Orchestrator {
         }
         entry.task.update_config(spec);
         let description = Box::new(TaskDescription::from(entry.task.config()));
-        self.emit(id, EventData::TaskConfigurationChanged(description))
-            .await;
+        self.emit(id, EventData::TaskConfigurationChanged(description));
         Ok(())
     }
 
@@ -480,8 +454,7 @@ impl Orchestrator {
         self.emit_event(MonitorEvent {
             metadata,
             data: EventData::TaskRemoved,
-        })
-        .await;
+        });
         Ok(())
     }
 
@@ -519,7 +492,7 @@ impl Orchestrator {
                     return;
                 }
                 entry.progress = Some(progress.clone());
-                self.emit(task_id, EventData::Preparation(progress)).await;
+                self.emit(task_id, EventData::Preparation(progress));
             }
             ScenarioReport::OperationStarted {
                 context,
@@ -536,8 +509,7 @@ impl Orchestrator {
                         started_at,
                         config,
                     })),
-                )
-                .await;
+                );
             }
             ScenarioReport::Built { .. } => {
                 let entry = self.entries.get_mut(&task_id).expect("validated task");
@@ -581,8 +553,7 @@ impl Orchestrator {
                         context: execution.context,
                         report: Box::new(execution.report),
                     }),
-                )
-                .await;
+                );
                 if limit_reached {
                     self.complete_at_limit(task_id).await;
                 }
@@ -661,7 +632,7 @@ impl Orchestrator {
             })
         });
         if let Some(data) = data {
-            self.emit(task_id, data).await;
+            self.emit(task_id, data);
         }
         self.transition(
             task_id,
@@ -685,8 +656,7 @@ impl Orchestrator {
             .get_mut(&task_id)
             .and_then(|entry| entry.transition(current, cause, restart));
         if let Some(transition) = transition {
-            self.emit(task_id, EventData::TaskStateChanged(Box::new(transition)))
-                .await;
+            self.emit(task_id, EventData::TaskStateChanged(Box::new(transition)));
         }
     }
 
@@ -799,7 +769,7 @@ impl Orchestrator {
         }
     }
 
-    async fn emit(&mut self, task_id: TaskId, data: EventData) {
+    fn emit(&mut self, task_id: TaskId, data: EventData) {
         let Some((generation, revision)) = self
             .entries
             .get(&task_id)
@@ -808,7 +778,7 @@ impl Orchestrator {
             return;
         };
         let metadata = self.next_meta(task_id, generation, revision);
-        self.emit_event(MonitorEvent { metadata, data }).await;
+        self.emit_event(MonitorEvent { metadata, data });
     }
 
     fn next_meta(
@@ -829,14 +799,9 @@ impl Orchestrator {
         }
     }
 
-    async fn emit_event(&mut self, ev: MonitorEvent) {
+    fn emit_event(&self, ev: MonitorEvent) {
         log_event(&ev);
-        if self.live_tx.receiver_count() > 0 {
-            let _ = self.live_tx.send(ev.clone());
-        }
-        if let Some(record_tx) = &self.record_tx {
-            let _ = record_tx.send(ev).await;
-        }
+        let _ = self.live_tx.send(ev);
     }
 
     fn task_snapshot(&self, entry: &TaskEntry) -> TaskSnapshot {
@@ -900,7 +865,7 @@ mod tests {
     fn active_task(limit: u64) -> (Orchestrator, broadcast::Receiver<MonitorEvent>, TaskId) {
         let limit = std::num::NonZeroU64::new(limit).map_or(RunLimit::Unlimited, RunLimit::Runs);
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
+            Orchestrator::new(RestartPolicy::default(), ApplicationId::generate());
         let events = handle.subscribe();
         let task_id = TaskId(1);
         let request =
@@ -1063,7 +1028,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_waits_for_scenarios_and_restart_tasks() {
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
+            Orchestrator::new(RestartPolicy::default(), ApplicationId::generate());
         let scenario = orchestrator.scenarios.spawn(std::future::pending());
         let restart = orchestrator.restarts.spawn(std::future::pending());
         let runtime = tokio::spawn(orchestrator.run());
@@ -1077,7 +1042,7 @@ mod tests {
     #[tokio::test]
     async fn aborting_runtime_cancels_scenarios_and_restart_tasks() {
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
+            Orchestrator::new(RestartPolicy::default(), ApplicationId::generate());
         let scenario = orchestrator.scenarios.spawn(std::future::pending());
         let restart = orchestrator.restarts.spawn(std::future::pending());
         let runtime = tokio::spawn(orchestrator.run());
@@ -1092,8 +1057,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_snapshot_contains_existing_tasks_and_excludes_past_events() {
         let application_id = ApplicationId::generate();
-        let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), application_id);
+        let (orchestrator, handle) = Orchestrator::new(RestartPolicy::default(), application_id);
         let runtime = tokio::spawn(orchestrator.run());
         let first = handle.add_task(set_config("first")).await.unwrap();
         let second = handle.add_task(set_config("second")).await.unwrap();
@@ -1139,7 +1103,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_captures_changes_queued_while_it_is_opening() {
         let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
+            Orchestrator::new(RestartPolicy::default(), ApplicationId::generate());
         let runtime = tokio::spawn(orchestrator.run());
         let (subscription, task_id) = tokio::join!(
             handle.subscribe_with_snapshot(),
@@ -1172,7 +1136,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_closes_when_the_orchestrator_stops_with_handles_alive() {
         let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
+            Orchestrator::new(RestartPolicy::default(), ApplicationId::generate());
         let runtime = tokio::spawn(orchestrator.run());
         let clone = handle.clone();
         let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
@@ -1200,7 +1164,7 @@ mod tests {
     #[tokio::test]
     async fn subscription_snapshot_recovers_state_after_lagging() {
         let (orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), ApplicationId::generate());
+            Orchestrator::new(RestartPolicy::default(), ApplicationId::generate());
         let runtime = tokio::spawn(orchestrator.run());
         let task_id = handle.add_task(set_config("initial")).await.unwrap();
         let mut subscription = handle.subscribe_with_snapshot().await.unwrap();
@@ -1236,7 +1200,7 @@ mod tests {
     async fn events_share_application_id_and_sequence_across_tasks() {
         let application_id = ApplicationId::generate();
         let (mut orchestrator, handle) =
-            Orchestrator::new(None, RestartPolicy::default(), application_id);
+            Orchestrator::new(RestartPolicy::default(), application_id);
         let mut events = handle.subscribe();
         let mut task_ids = Vec::new();
         for name in ["first", "second"] {
@@ -2469,33 +2433,5 @@ mod tests {
         assert!(transition.restart.is_none());
         assert!(orchestrator.entries.is_empty());
         assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn transition_restart_deadline_is_not_shifted_by_history_backpressure() {
-        let (mut orchestrator, mut events, task_id) = active_task(0);
-        let (record_tx, mut record_rx) = mpsc::channel(1);
-        let filler = MonitorEvent {
-            metadata: orchestrator.next_meta(task_id, Generation::first(), SpecRevision::new(1)),
-            data: EventData::TaskRemoved,
-        };
-        record_tx.send(filler).await.unwrap();
-        orchestrator.record_tx = Some(record_tx);
-
-        let mut recovery = Box::pin(orchestrator.on_report(ScenarioReport::BuildFailed {
-            task_id,
-            generation: Generation::first(),
-            error: ScenarioBuildError::Timeout,
-        }));
-        assert!(futures_util::poll!(recovery.as_mut()).is_pending());
-        let event = events.try_recv().unwrap();
-        assert!(matches!(event.data, EventData::TaskStateChanged(_)));
-        tokio::time::advance(Duration::from_secs(5)).await;
-        record_rx.recv().await.unwrap();
-        recovery.await;
-        tokio::task::yield_now().await;
-        assert!(matches!(orchestrator.cmd_rx.try_recv().unwrap(),
-            Command::Respawn { task_id: actual, generation } if actual == task_id && generation == Generation::first()));
-        assert_eq!(record_rx.try_recv().unwrap().metadata.seq, event.metadata.seq);
     }
 }

@@ -45,7 +45,6 @@ fn check_prepared_application_exposes_configuration_and_snapshot_types(prepare: 
     let application = prepare(
         AppConfig {
             restart: RestartPolicy::default(),
-            history_sink: None,
         },
         vec![
             InitialTask {
@@ -262,20 +261,22 @@ async fn check_one_registered_task_can_start_again_with_a_different_limit(prepar
 }
 
 #[tokio::test]
-async fn preparation_is_observable_before_scn_returns_and_survives_in_history() {
-    check_preparation_is_observable_before_scn_returns_and_survives_in_history(Application::new)
-        .await;
+async fn preparation_is_observable_before_scn_returns_and_available_to_other_subscribers() {
+    check_preparation_is_observable_before_scn_returns_and_available_to_other_subscribers(
+        Application::new,
+    )
+    .await;
 }
 
 #[tokio::test]
-async fn ordered_preparation_is_observable_before_scn_returns_and_survives_in_history() {
-    check_preparation_is_observable_before_scn_returns_and_survives_in_history(
+async fn ordered_preparation_is_observable_before_scn_returns_and_available_to_other_subscribers() {
+    check_preparation_is_observable_before_scn_returns_and_available_to_other_subscribers(
         Application::new_ordered,
     )
     .await;
 }
 
-async fn check_preparation_is_observable_before_scn_returns_and_survives_in_history(
+async fn check_preparation_is_observable_before_scn_returns_and_available_to_other_subscribers(
     prepare: Prepare,
 ) {
     use async_snmp::{Value, message::CommunityMessage};
@@ -307,17 +308,14 @@ async fn check_preparation_is_observable_before_scn_returns_and_survives_in_hist
     )
     .unwrap();
     let config = TaskConfig::try_new("prepare".to_string(), scenario, 3).unwrap();
-    let (history, mut recorded) = tokio::sync::mpsc::channel(64);
     let application = prepare(
-        AppConfig {
-            history_sink: Some(history),
-            ..AppConfig::default()
-        },
+        AppConfig::default(),
         vec![InitialTask {
             config,
             limit: RunLimit::Runs(NonZeroU64::MIN),
         }],
     );
+    let mut recorded = application.subscribe();
     let mut events = application.subscribe();
     let running = application.spawn();
     let handle = running.handle();
@@ -391,7 +389,7 @@ async fn check_preparation_is_observable_before_scn_returns_and_survives_in_hist
         observed.push(serde_json::to_value(event).unwrap());
     }
     let mut history = Vec::new();
-    while let Some(event) = recorded.recv().await {
+    while let Ok(event) = recorded.try_recv() {
         let json = serde_json::to_value(event).unwrap();
         let restored: MonitorEvent = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(restored).unwrap(), json);
