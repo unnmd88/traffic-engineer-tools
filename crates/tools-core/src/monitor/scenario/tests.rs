@@ -747,7 +747,7 @@ async fn stop_during_publication_keeps_a_completed_nonfinal_operation() {
             context,
             RunBudget::Unlimited,
             ScenarioChannels {
-                reports: tx.clone(),
+                reports: tx.clone().into(),
                 mode,
             },
             async {

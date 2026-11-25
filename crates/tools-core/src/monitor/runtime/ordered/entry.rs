@@ -2,15 +2,16 @@ use std::future::Future;
 
 use chrono::Utc;
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{oneshot, watch},
     task::{AbortHandle, JoinSet},
 };
 use tracing::Instrument;
 
-use super::{Command, Message};
+use super::{Command, Message, QueuedMessage};
 use crate::monitor::{
     EventData, Generation, RestartPlan, ScenarioFailure, TaskCommandKind, TaskConfig, TaskId,
     TaskProgress, TaskSnapshot, TaskStatus, TaskTransition, TaskTransitionCause,
+    channel::ChannelSender,
     scenario::{RunMode, ScenarioContext, ScenarioExit},
     task::Task,
 };
@@ -117,7 +118,7 @@ impl LiveRun {
     /// Posts the exit only after dropping the scenario future, including on cancellation.
     pub fn spawn<F: Future<Output = ScenarioExit> + Send + 'static>(
         workers: &mut JoinSet<()>,
-        tx: mpsc::Sender<Message>,
+        tx: ChannelSender<QueuedMessage>,
         context: ScenarioContext,
         mode: watch::Sender<RunMode>,
         execute: impl FnOnce(oneshot::Receiver<()>) -> F,

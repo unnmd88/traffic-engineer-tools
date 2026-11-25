@@ -79,7 +79,7 @@ pub struct ApplicationHandle {
 #[must_use]
 pub struct RunningApplication {
     handle: ApplicationHandle,
-    join: JoinHandle<()>,
+    join: JoinHandle<Result<(), ApplicationError>>,
 }
 
 impl Application {
@@ -139,7 +139,10 @@ impl Application {
         RunningApplication {
             handle: self.handle,
             join: match self.orchestrator {
-                Prepared::Current(actor) => tokio::spawn(actor.run()),
+                Prepared::Current(actor) => tokio::spawn(async move {
+                    actor.run().await;
+                    Ok(())
+                }),
                 Prepared::Ordered(actor) => tokio::spawn(actor.run()),
             },
         }
@@ -151,11 +154,14 @@ impl RunningApplication {
         self.handle.clone()
     }
 
+    /// Requests shutdown and returns the monitor's outcome after its workers have exited.
+    ///
+    /// An ordered monitor that stopped on queue saturation returns [`ApplicationError::QueueFull`].
     pub async fn shutdown(mut self) -> Result<(), ApplicationError> {
         let result = self.handle.orchestrator.shutdown().await;
         (&mut self.join)
             .await
-            .map_err(|error| ApplicationError::Runtime(Arc::new(error)))?;
+            .map_err(|error| ApplicationError::Runtime(Arc::new(error)))??;
         result.map_err(ApplicationError::from)
     }
 }

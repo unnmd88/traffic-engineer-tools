@@ -6,7 +6,8 @@ use tokio::sync::oneshot::error::TryRecvError;
 use super::*;
 use crate::{
     monitor::{
-        OperationContext, OperationId, PollSchedule, ScenarioBuildError, ScenarioSpec, SnmpGetSpec,
+        Application, OperationContext, OperationId, PollSchedule, ScenarioBuildError, ScenarioSpec,
+        SnmpGetSpec,
     },
     polling::AttemptConfig,
 };
@@ -182,18 +183,20 @@ async fn removal_waits_for_local_exit_while_another_task_accepts_commands() {
 }
 
 #[tokio::test]
-async fn final_result_waiting_for_mailbox_capacity_survives_concurrent_stop() {
+async fn queue_saturation_stops_the_actor_and_preserves_a_completed_result() {
     let ControlledRun {
-        mut actor,
+        actor,
         handle,
         context,
         finish,
         dropped,
     } = controlled(RunLimit::Runs(NonZeroU64::MIN));
-    let mut stop = Box::pin(handle.stop_task(context.task_id));
-    assert!(poll!(&mut stop).is_pending());
-    let remaining = actor.tx.capacity();
-    let reserved = actor.tx.clone();
+    let mut events = handle.subscribe();
+    let mut add = Box::pin(handle.add_task(config()));
+    assert!(poll!(&mut add).is_pending());
+    let reserved = actor.tx.raw().clone();
+    assert_eq!(reserved.max_capacity(), QUEUE_CAPACITY);
+    let remaining = reserved.capacity();
     let permits = reserved.reserve_many(remaining).await.unwrap();
     assert!(
         finish
@@ -201,14 +204,44 @@ async fn final_result_waiting_for_mailbox_capacity_survives_concurrent_stop() {
             .is_ok()
     );
     assert!(dropped.await.is_err());
-    next(&mut actor).await;
-    assert!(poll!(&mut stop).is_pending());
+    assert!(*actor.saturated.borrow());
     drop(permits);
-    next(&mut actor).await;
-    stop.await.unwrap();
-    let view = actor.snapshot().tasks.remove(0);
-    assert_eq!(view.completed_runs, 1);
-    assert_eq!(view.status, TaskStatus::Completed);
+
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), actor.run())
+            .await
+            .unwrap(),
+        Err(ApplicationError::QueueFull {
+            capacity: QUEUE_CAPACITY
+        })
+    ));
+    assert!(matches!(add.await, Err(MonitorCommandError::ChannelClosed)));
+    assert!(matches!(events.try_recv().unwrap().data, EventData::OperationFinished(result)
+        if result.context.generation == context.generation));
+    assert!(matches!(events.try_recv().unwrap().data, EventData::TaskStateChanged(change)
+        if matches!(change.cause, TaskTransitionCause::LimitReached { limit: 1 })));
+    assert!(matches!(events.try_recv(), Err(broadcast::error::TryRecvError::Closed)));
+}
+
+#[tokio::test]
+async fn running_application_returns_the_queue_full_error() {
+    let running = Application::new_ordered(AppConfig::default(), vec![]).spawn();
+    let handle = running.handle();
+    for _ in 0..QUEUE_CAPACITY {
+        assert!(poll!(Box::pin(handle.get_snapshot())).is_pending());
+    }
+    assert!(matches!(
+        poll!(Box::pin(handle.get_snapshot())),
+        std::task::Poll::Ready(Err(MonitorCommandError::ChannelClosed))
+    ));
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), running.shutdown())
+            .await
+            .unwrap(),
+        Err(ApplicationError::QueueFull {
+            capacity: QUEUE_CAPACITY
+        })
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -230,7 +263,7 @@ async fn queued_restart_from_before_pause_cannot_replace_a_resumed_run() {
     assert_eq!(actor.entries[&id].status(), TaskStatus::Restarting);
     let timer = actor.rx.recv().await.unwrap();
     assert!(
-        matches!(&timer, Message::Command(command) if matches!(**command, Command::Respawn { .. }))
+        matches!(&timer.message, Message::Command(command) if matches!(**command, Command::Respawn { .. }))
     );
     let mut pause = Box::pin(handle.pause_task(id));
     let mut resume = Box::pin(handle.resume_task(id));
@@ -266,7 +299,7 @@ async fn shutdown_finishes_pending_stop_and_closes_deferred_start() {
     shutdown.await.unwrap();
     stop.await.unwrap();
     assert!(matches!(start.await, Err(MonitorCommandError::ChannelClosed)));
-    runtime.await.unwrap();
+    runtime.await.unwrap().unwrap();
     assert!(dropped.await.is_err());
     assert!(
         matches!(events.recv().await.unwrap().data, EventData::TaskStateChanged(change) if change.current == TaskStatus::Stopped)
@@ -316,7 +349,7 @@ async fn shutdown_rejects_queued_commands_and_leaves_pending_events_for_subscrib
         Err(MonitorCommandError::ChannelClosed)
     ));
     shutdown.await.unwrap();
-    runtime.await.unwrap();
+    runtime.await.unwrap().unwrap();
     for id in [first.await.unwrap(), second.await.unwrap()] {
         assert_eq!(events.try_recv().unwrap().metadata.task_id, id);
     }

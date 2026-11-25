@@ -1,6 +1,7 @@
 //! An alternative monitor runtime with one FIFO for commands, scenario updates and exits.
 
 mod entry;
+mod queue_pressure;
 
 use std::collections::BTreeMap;
 
@@ -17,32 +18,50 @@ use super::{
     event_output::log_event,
 };
 use crate::monitor::{
-    AppConfig, ApplicationId, EventData, EventMeta, Generation, InitialTask, MonitorCommandError,
-    MonitorEvent, MonitorSnapshot, MonitorSubscription, OperationFinished, RestartPlan,
-    RestartPolicy, RunLimit, ScenarioExecution, ScenarioFailure, TaskCommandKind, TaskConfig,
-    TaskDescription, TaskId, TaskStatus, TaskTransitionCause,
+    AppConfig, ApplicationError, ApplicationId, EventData, EventMeta, Generation, InitialTask,
+    MonitorCommandError, MonitorEvent, MonitorSnapshot, MonitorSubscription, OperationFinished,
+    RestartPlan, RestartPolicy, RunLimit, ScenarioExecution, ScenarioFailure, TaskCommandKind,
+    TaskConfig, TaskDescription, TaskId, TaskStatus, TaskTransitionCause,
+    channel::ChannelSender,
     scenario::{
         RunBudget, RunMode, ScenarioChannels, ScenarioContext, ScenarioExit, ScenarioUpdate,
         UpdateData, execute,
     },
 };
 use entry::{Entry, Execution, LiveRun};
+use queue_pressure::{QueuePressure, WARNING_DEPTH};
 
-pub(super) enum Message {
+const QUEUE_CAPACITY: usize = 4096;
+
+enum Message {
     Command(Box<Command>),
     Update(ScenarioUpdate),
     Exited(ScenarioContext, ScenarioExit),
 }
 
-impl From<Command> for Message {
-    fn from(command: Command) -> Self {
-        Self::Command(Box::new(command))
+pub(super) struct QueuedMessage {
+    message: Message,
+    enqueued_at: Instant,
+}
+
+impl From<Message> for QueuedMessage {
+    fn from(message: Message) -> Self {
+        Self {
+            message,
+            enqueued_at: Instant::now(),
+        }
     }
 }
 
-impl From<ScenarioUpdate> for Message {
+impl From<Command> for QueuedMessage {
+    fn from(command: Command) -> Self {
+        Message::Command(Box::new(command)).into()
+    }
+}
+
+impl From<ScenarioUpdate> for QueuedMessage {
     fn from(update: ScenarioUpdate) -> Self {
-        Self::Update(update)
+        Message::Update(update).into()
     }
 }
 
@@ -52,11 +71,14 @@ pub(super) struct OrderedOrchestrator {
     seq: u64,
     entries: BTreeMap<TaskId, Entry>,
     initial: Vec<(TaskId, RunLimit)>,
-    tx: mpsc::Sender<Message>,
-    rx: mpsc::Receiver<Message>,
+    tx: ChannelSender<QueuedMessage>,
+    rx: mpsc::Receiver<QueuedMessage>,
+    queue_pressure: QueuePressure,
+    saturated: watch::Receiver<bool>,
     events: broadcast::Sender<MonitorEvent>,
     workers: JoinSet<()>,
     restart: RestartPolicy,
+    stopping: bool,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -66,7 +88,9 @@ impl OrderedOrchestrator {
         config: AppConfig,
         tasks: Vec<InitialTask>,
     ) -> (Self, OrchestratorHandle, Vec<TaskId>) {
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
+        let (saturation, saturated) = watch::channel(false);
+        let tx = ChannelSender::monitored(tx, id, saturation);
         let (events, _) = broadcast::channel(1024);
         let handle = OrchestratorHandle::ordered(tx.clone(), events.downgrade());
         let mut actor = Self {
@@ -77,9 +101,12 @@ impl OrderedOrchestrator {
             initial: Vec::new(),
             tx,
             rx,
+            queue_pressure: QueuePressure::default(),
+            saturated,
             events,
             workers: JoinSet::new(),
             restart: config.restart,
+            stopping: false,
             shutdown: None,
         };
         for task in tasks {
@@ -106,25 +133,21 @@ impl OrderedOrchestrator {
     }
 
     #[tracing::instrument(name = "monitor", skip_all, fields(application_id = %self.id))]
-    pub(super) async fn run(mut self) {
+    pub(super) async fn run(mut self) -> Result<(), ApplicationError> {
         let initial = std::mem::take(&mut self.initial);
         for &(id, _) in &initial {
             self.registered(id);
         }
         for (id, limit) in initial {
+            self.stop_if_saturated();
+            if self.stopping {
+                break;
+            }
             self.start(id, limit, TaskTransitionCause::InitialStart)
                 .expect("registered initial task");
         }
         loop {
-            tokio::select! {
-                Some(message) = self.rx.recv() => self.handle_message(message),
-                Some(joined) = self.workers.join_next() => {
-                    if let Err(error) = joined && error.is_panic() {
-                        std::panic::resume_unwind(error.into_panic());
-                    }
-                }
-            }
-            if self.shutdown.is_some()
+            if self.stopping
                 && self
                     .entries
                     .values()
@@ -132,20 +155,59 @@ impl OrderedOrchestrator {
             {
                 break;
             }
+            tokio::select! {
+                _ = self.saturated.changed() => self.begin_shutdown(),
+                Some(message) = self.rx.recv() => self.handle_message(message),
+                Some(joined) = self.workers.join_next() => {
+                    if let Err(error) = joined && error.is_panic() {
+                        std::panic::resume_unwind(error.into_panic());
+                    }
+                }
+            }
         }
         drop(self.rx);
         self.workers.shutdown().await;
         if let Some(reply) = self.shutdown {
             let _ = reply.send(());
         }
+        if *self.saturated.borrow() {
+            return Err(ApplicationError::QueueFull {
+                capacity: QUEUE_CAPACITY,
+            });
+        }
+        Ok(())
     }
 
-    fn handle_message(&mut self, message: Message) {
-        match message {
-            Message::Command(command) if self.shutdown.is_none() => self.command(*command),
+    fn handle_message(&mut self, queued: QueuedMessage) {
+        self.stop_if_saturated();
+        self.report_queue_pressure(queued.enqueued_at);
+        match queued.message {
+            Message::Command(command) if !self.stopping => self.command(*command),
             Message::Command(_) => {}
             Message::Update(update) => self.update_from_scenario(update),
             Message::Exited(context, exit) => self.exited(context, exit),
+        }
+    }
+
+    fn report_queue_pressure(&mut self, enqueued_at: Instant) {
+        let depth = (self.rx.len() + 1).min(QUEUE_CAPACITY);
+        if let Some(peak_depth) = self.queue_pressure.sample(depth) {
+            let queue_wait_ms = enqueued_at.elapsed().as_secs_f64() * 1000.0;
+            if depth > WARNING_DEPTH {
+                tracing::warn!(
+                    queue_depth = depth,
+                    peak_depth,
+                    queue_wait_ms,
+                    "ordered monitor queue backlog"
+                );
+            } else {
+                tracing::info!(
+                    queue_depth = depth,
+                    peak_depth,
+                    queue_wait_ms,
+                    "ordered monitor queue backlog"
+                );
+            }
         }
     }
 
@@ -275,10 +337,24 @@ impl OrderedOrchestrator {
             }
             Command::Shutdown { reply } => {
                 self.shutdown = Some(reply);
-                for id in self.entries.keys().copied().collect::<Vec<_>>() {
-                    self.stop_for_shutdown(id);
-                }
+                self.begin_shutdown();
             }
+        }
+    }
+
+    fn stop_if_saturated(&mut self) {
+        if !self.stopping && *self.saturated.borrow_and_update() {
+            self.begin_shutdown();
+        }
+    }
+
+    fn begin_shutdown(&mut self) {
+        if self.stopping {
+            return;
+        }
+        self.stopping = true;
+        for id in self.entries.keys().copied().collect::<Vec<_>>() {
+            self.stop_for_shutdown(id);
         }
     }
 
@@ -349,6 +425,7 @@ impl OrderedOrchestrator {
             reports: self.tx.clone(),
             mode: rx,
         };
+        let mut saturated = self.saturated.clone();
         entry.generation = Some(generation);
         entry.execution = Execution::Live(Box::new(LiveRun::spawn(
             &mut self.workers,
@@ -357,7 +434,10 @@ impl OrderedOrchestrator {
             mode,
             move |cancel| {
                 execute(spec, context, budget, channels, async move {
-                    let _ = cancel.await;
+                    tokio::select! {
+                        _ = cancel => {}
+                        _ = saturated.wait_for(|&full| full) => {}
+                    }
                 })
             },
         )));
@@ -496,14 +576,15 @@ impl OrderedOrchestrator {
             ScenarioExit::Cancelled => {}
         }
         for command in run.pending {
-            if self.shutdown.is_some()
+            self.stop_if_saturated();
+            if self.stopping
                 && !matches!(command, Command::StopTask { .. } | Command::RemoveTask { .. })
             {
                 continue;
             }
             self.command(command);
         }
-        if self.shutdown.is_some() {
+        if self.stopping {
             self.stop_for_shutdown(id);
         }
     }
@@ -533,13 +614,10 @@ impl OrderedOrchestrator {
                 async move {
                     sleep_until(deadline).await;
                     let _ = tx
-                        .send(
-                            Command::Respawn {
-                                task_id: id,
-                                generation,
-                            }
-                            .into(),
-                        )
+                        .send_while_running(Command::Respawn {
+                            task_id: id,
+                            generation,
+                        })
                         .await;
                 }
                 .in_current_span(),

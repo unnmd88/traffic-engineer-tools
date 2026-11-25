@@ -1,3 +1,4 @@
+mod channel;
 mod coordination;
 mod event;
 mod operation;

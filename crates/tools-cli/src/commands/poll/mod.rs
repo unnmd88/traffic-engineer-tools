@@ -9,7 +9,7 @@ mod tests;
 
 use std::path::PathBuf;
 
-use tools_core::monitor::{AppConfig, Application};
+use tools_core::monitor::{AppConfig, Application, ApplicationError};
 
 use crate::cli::PollView;
 
@@ -42,8 +42,12 @@ pub async fn run(config: PathBuf, view: PollView) -> anyhow::Result<()> {
     } else {
         Ok(())
     };
-    result?;
-    history_result?;
-    shutdown_result?;
-    Ok(())
+    match shutdown_result {
+        Err(error @ ApplicationError::QueueFull { .. }) => Err(error.into()),
+        shutdown_result => {
+            result?;
+            history_result?;
+            shutdown_result.map_err(Into::into)
+        }
+    }
 }

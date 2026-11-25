@@ -257,9 +257,9 @@ and starts a new sequence of operation IDs. GET/SET tests exercise pause during 
 and recovery after a read parser panics. [Scenario tests](crates/tools-core/src/monitor/scenario/tests.rs)
 
 The ordered runtime processes commands, scenario updates and local exit notifications
-through one bounded Tokio channel. Its receive order defines the order of concurrent
-inputs. Each scenario sends progress, readiness, applied modes and operation reports
-directly to this channel. A returning scenario supplies a typed outcome and can include
+through one bounded Tokio channel with capacity for 4096 messages. Its receive order
+defines the order of concurrent inputs. Each scenario sends progress, readiness, applied
+modes and operation reports directly to this channel. A returning scenario supplies a typed outcome and can include
 its final operation. Each worker holds at most one completed intermediate operation
 while waiting for channel capacity. On stop, removal or shutdown it drops the scenario
 future, delivers any completed operation it holds, then sends the exit notification.
@@ -268,8 +268,19 @@ The default runtime adapts these same scenario updates and outcomes to its exist
 report channel.
 
 The ordered actor handles each message synchronously and publishes events through
-`broadcast`. Waiting for channel capacity, timers, and network requests happens in the
-scenario and timer tasks. Event consumers manage their own processing.
+`broadcast`. Senders wait for channel capacity. Scenario and timer tasks handle their
+own network requests and timers. Event consumers manage their own processing.
+
+The actor samples queue depth when it receives a message. It logs an informational event
+above 64 messages and a warning above 256, with the sampled depth, peak depth, and time
+the received message spent in the queue. It repeats the report every five seconds while
+processing a sustained backlog. Returning to a sampled depth of 64 or fewer ends the
+episode. The first failed reservation on a full channel logs an error and signals
+queue saturation outside that channel. The signal stops admission of new commands,
+operations, and restarts and cancels live scenarios. Workers can still wait for space to
+deliver finished reports and exit notifications, which the actor processes before exiting.
+`RunningApplication::shutdown()` returns `ApplicationError::QueueFull`, including when
+the monitor has already exited. The CLI drains its event journal and exits with an error.
 
 A task owns the requested mode across generations. A preparation or execution failure
 while pause is requested retains the failure and leaves the task paused until resume.
@@ -705,7 +716,7 @@ Errors belong to their modules; the root `tools_core::Error` aggregates them.
 | `ScenarioBuildError` | Preparation errors, preserving typed SNMP failures, timeouts, and caught panics |
 | `ScenarioExecutionError` | The original typed SNMP error that stopped attempts of a complete request |
 | `MonitorCommandError` | Command error: unknown task or closed channel |
-| `ApplicationError` | Application shutdown and background-orchestrator error |
+| `ApplicationError` | Application shutdown, queue saturation, and background-orchestrator errors |
 
 `ApplicationError::Command` wraps a shutdown-command error, and
 `ApplicationError::Runtime` reports a background-execution error.

@@ -2,7 +2,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::monitor::{
     Generation, MonitorCommandError, MonitorEvent, MonitorSnapshot, MonitorSubscription, RunLimit,
-    TaskConfig, TaskId,
+    TaskConfig, TaskId, channel::ChannelSender,
 };
 
 pub(super) enum Command {
@@ -54,7 +54,7 @@ pub(super) enum Command {
 #[derive(Clone)]
 enum CommandSender {
     Current(mpsc::Sender<Command>),
-    Ordered(mpsc::Sender<super::ordered::Message>),
+    Ordered(ChannelSender<super::ordered::QueuedMessage>),
 }
 
 impl CommandSender {
@@ -65,7 +65,7 @@ impl CommandSender {
                 .await
                 .map_err(|_| MonitorCommandError::ChannelClosed),
             Self::Ordered(sender) => sender
-                .send(command.into())
+                .send_while_running(command)
                 .await
                 .map_err(|_| MonitorCommandError::ChannelClosed),
         }
@@ -90,7 +90,7 @@ impl OrchestratorHandle {
     }
 
     pub(super) fn ordered(
-        sender: mpsc::Sender<super::ordered::Message>,
+        sender: ChannelSender<super::ordered::QueuedMessage>,
         live_tx: broadcast::WeakSender<MonitorEvent>,
     ) -> Self {
         Self {

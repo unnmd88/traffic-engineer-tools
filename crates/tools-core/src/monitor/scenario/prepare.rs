@@ -3,15 +3,12 @@ use std::{future::Future, net::SocketAddr, panic::AssertUnwindSafe};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::FutureExt;
-use tokio::{
-    sync::mpsc,
-    time::{Duration, Instant, timeout_at},
-};
+use tokio::time::{Duration, Instant, timeout_at};
 use tracing::Instrument;
 
 use crate::{
     Scn,
-    monitor::{TaskProgress, task::TaskId},
+    monitor::{TaskProgress, channel::ChannelSender, task::TaskId},
     polling::{
         AttemptConfig, AttemptError, AttemptOutcome, PollOutcome, PollProgress, PollReport,
         Pollable, poll_observed,
@@ -35,7 +32,7 @@ type ScnRequestReport = PollReport<SnmpVarbind, SnmpError>;
 struct Preparation<M> {
     task_id: TaskId,
     generation: Generation,
-    reports: mpsc::Sender<M>,
+    reports: ChannelSender<M>,
     deadline: Instant,
 }
 
@@ -43,7 +40,7 @@ impl<M: From<ScenarioUpdate>> Preparation<M> {
     fn new(
         task_id: TaskId,
         generation: Generation,
-        reports: mpsc::Sender<M>,
+        reports: ChannelSender<M>,
         attempt: AttemptConfig,
     ) -> Self {
         Self {
@@ -63,14 +60,11 @@ impl<M: From<ScenarioUpdate>> Preparation<M> {
             at = %progress.at, message = %progress.message, "scenario preparation progress");
         let _ = self
             .reports
-            .send(
-                ScenarioUpdate {
-                    task_id: self.task_id,
-                    generation: self.generation,
-                    data: UpdateData::Progress(progress),
-                }
-                .into(),
-            )
+            .send(ScenarioUpdate {
+                task_id: self.task_id,
+                generation: self.generation,
+                data: UpdateData::Progress(progress),
+            })
             .await;
     }
 
@@ -209,7 +203,7 @@ pub(super) async fn get<M: From<ScenarioUpdate>>(
     attempt: AttemptConfig,
     task_id: TaskId,
     generation: Generation,
-    reports: mpsc::Sender<M>,
+    reports: ChannelSender<M>,
 ) -> Result<(SnmpClient, Vec<SnmpGetItem>), ScenarioBuildError> {
     let preparation = Preparation::new(task_id, generation, reports, attempt);
     async {
@@ -237,7 +231,7 @@ pub(super) async fn set<M: From<ScenarioUpdate>>(
     attempt: AttemptConfig,
     task_id: TaskId,
     generation: Generation,
-    reports: mpsc::Sender<M>,
+    reports: ChannelSender<M>,
 ) -> Result<(SnmpClient, Vec<SnmpSetItem>), ScenarioBuildError> {
     let preparation = Preparation::new(task_id, generation, reports, attempt);
     async {
@@ -273,6 +267,8 @@ pub(super) async fn set<M: From<ScenarioUpdate>>(
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc;
+
     use super::super::ScenarioReport;
     use super::*;
 
@@ -283,7 +279,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn activity_is_reported_before_the_action_completes() {
         let (tx, mut rx) = mpsc::channel(16);
-        let preparation = Preparation::new(TaskId(7), Generation::first(), tx, settings());
+        let preparation = Preparation::new(TaskId(7), Generation::first(), tx.into(), settings());
         let (release, wait) = tokio::sync::oneshot::channel::<()>();
         let mut action = Box::pin(preparation.action("Waiting for configuration", async {
             wait.await.unwrap();
@@ -310,7 +306,8 @@ mod tests {
     async fn deadline_and_panic_preserve_typed_failures() {
         for panics in [false, true] {
             let (tx, mut rx) = mpsc::channel(16);
-            let preparation = Preparation::new(TaskId(7), Generation::first(), tx, settings());
+            let preparation =
+                Preparation::new(TaskId(7), Generation::first(), tx.into(), settings());
             let result = preparation
                 .action("Preparing resources", async {
                     assert!(!panics, "preparation test panic");

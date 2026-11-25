@@ -10,6 +10,12 @@ pub enum ApplicationError {
     Command(#[from] MonitorCommandError),
     #[error("application runtime failed: {0}")]
     Runtime(#[source] Arc<tokio::task::JoinError>),
+    /// The ordered monitor stopped after exhausting its command and report queue.
+    #[error("ordered monitor queue is full (capacity: {capacity} messages)")]
+    QueueFull {
+        /// The number of slots in the ordered monitor queue.
+        capacity: usize,
+    },
 }
 
 #[derive(Error, Debug, Clone)]

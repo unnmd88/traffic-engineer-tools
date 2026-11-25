@@ -8,7 +8,10 @@ use tokio::{
 };
 
 use crate::{
-    monitor::{OperationContext, OperationId, RunLimit, SpecRevision, TaskProgress, task::TaskId},
+    monitor::{
+        OperationContext, OperationId, RunLimit, SpecRevision, TaskProgress,
+        channel::ChannelSender, task::TaskId,
+    },
     polling::{AttemptConfig, AttemptError, PollProgress, PollReport, Pollable, poll_observed},
     snmp::{SnmpClient, SnmpClientConfig, SnmpError, community::Community},
 };
@@ -68,7 +71,7 @@ pub(in crate::monitor) async fn run(
     mode_rx: watch::Receiver<RunMode>,
 ) {
     let channels = ScenarioChannels {
-        reports: report_tx.clone(),
+        reports: report_tx.clone().into(),
         mode: mode_rx,
     };
     let outcome = execute(spec, context, budget, channels, std::future::pending()).await;
@@ -157,13 +160,13 @@ impl ScenarioExit {
 }
 
 pub(in crate::monitor) struct ScenarioChannels<M> {
-    pub reports: mpsc::Sender<M>,
+    pub reports: ChannelSender<M>,
     pub mode: watch::Receiver<RunMode>,
 }
 
 /// Keeps a finished operation until the channel has accepted it, including across cancellation.
 pub(super) struct RunReports<M> {
-    pub(super) sender: mpsc::Sender<M>,
+    pub(super) sender: ChannelSender<M>,
     pending: Option<ScenarioExecution>,
 }
 
@@ -248,7 +251,7 @@ pub(in crate::monitor) enum RunMode {
 pub(super) async fn wait_for_next_operation<M: From<ScenarioUpdate>>(
     timer: &mut PollTimer,
     mode_rx: &mut watch::Receiver<RunMode>,
-    report_tx: &mpsc::Sender<M>,
+    report_tx: &ChannelSender<M>,
     context: ScenarioContext,
 ) -> bool {
     let mut applied_mode = RunMode::Running;
@@ -263,7 +266,7 @@ pub(super) async fn wait_for_next_operation<M: From<ScenarioUpdate>>(
                 }
                 RunMode::Paused => UpdateData::Paused,
             };
-            if report_tx.send(context.update(data).into()).await.is_err() {
+            if report_tx.send(context.update(data)).await.is_err() {
                 return false;
             }
             continue;
@@ -470,7 +473,7 @@ pub(super) struct Operations<M> {
     generation: Generation,
     revision: SpecRevision,
     next_id: u64,
-    report_tx: mpsc::Sender<M>,
+    report_tx: ChannelSender<M>,
 }
 
 impl<M: From<ScenarioUpdate>> Operations<M> {
@@ -478,7 +481,7 @@ impl<M: From<ScenarioUpdate>> Operations<M> {
         task_id: TaskId,
         generation: Generation,
         revision: SpecRevision,
-        report_tx: mpsc::Sender<M>,
+        report_tx: ChannelSender<M>,
     ) -> Self {
         Self {
             task_id,
@@ -495,7 +498,7 @@ impl<M: From<ScenarioUpdate>> Operations<M> {
         adapter: &A,
         purpose: &str,
     ) -> Option<(OperationContext, PollReport<A::Output, A::Error>)> {
-        let permit = self.report_tx.reserve().await.ok()?;
+        let permit = self.report_tx.reserve_while_running().await.ok()?;
         let context =
             OperationContext::new(OperationId::new(self.next_id), self.generation, self.revision);
         self.next_id += 1;
@@ -619,7 +622,7 @@ mod tests {
             AttemptConfig::try_new(Duration::from_millis(100), 1, Duration::from_millis(10))
                 .unwrap();
         let (tx, mut rx) = mpsc::channel(8);
-        let mut operations = Operations::new(TaskId(5), generation, revision, tx);
+        let mut operations = Operations::new(TaskId(5), generation, revision, tx.into());
         let adapter = Scripted(Mutex::new(VecDeque::from([
             Step {
                 elapsed: Duration::from_secs(1),
@@ -692,7 +695,8 @@ mod tests {
         let config = AttemptConfig::try_new(Duration::from_millis(10), 1, Duration::ZERO).unwrap();
         for generation in [Generation::first(), Generation::first().next()] {
             let (tx, mut rx) = mpsc::channel(8);
-            let mut operations = Operations::new(TaskId(5), generation, SpecRevision::new(1), tx);
+            let mut operations =
+                Operations::new(TaskId(5), generation, SpecRevision::new(1), tx.into());
             let adapter = Scripted(Mutex::new(VecDeque::from([
                 Step {
                     elapsed: Duration::from_secs(1),
@@ -723,7 +727,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<ScenarioReport>(1);
         drop(rx);
         let mut operations =
-            Operations::new(TaskId(5), Generation::first(), SpecRevision::new(1), tx);
+            Operations::new(TaskId(5), Generation::first(), SpecRevision::new(1), tx.into());
         let adapter = Scripted(Mutex::new(VecDeque::new()));
         let config = AttemptConfig::try_new(Duration::from_secs(1), 0, Duration::ZERO).unwrap();
         assert!(

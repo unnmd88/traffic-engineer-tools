@@ -52,7 +52,7 @@ pub(in crate::monitor::scenario) async fn run<M: From<ScenarioUpdate>>(
     let mut timer = PollTimer::new(schedule, Instant::now());
     if reports
         .sender
-        .send(context.update(UpdateData::Built).into())
+        .send(context.update(UpdateData::Built))
         .await
         .is_err()
     {
