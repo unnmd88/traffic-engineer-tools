@@ -1,4 +1,7 @@
-use std::{num::NonZeroU64, time::Duration};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 
 use futures_util::poll;
 use tokio::sync::oneshot::error::TryRecvError;
@@ -195,7 +198,7 @@ async fn queue_saturation_stops_the_actor_and_preserves_a_completed_result() {
     let mut add = Box::pin(handle.add_task(config()));
     assert!(poll!(&mut add).is_pending());
     let reserved = actor.tx.raw().clone();
-    assert_eq!(reserved.max_capacity(), QUEUE_CAPACITY);
+    assert_eq!(reserved.max_capacity(), 4096);
     let remaining = reserved.capacity();
     let permits = reserved.reserve_many(remaining).await.unwrap();
     assert!(
@@ -211,9 +214,7 @@ async fn queue_saturation_stops_the_actor_and_preserves_a_completed_result() {
         tokio::time::timeout(Duration::from_secs(5), actor.run())
             .await
             .unwrap(),
-        Err(ApplicationError::QueueFull {
-            capacity: QUEUE_CAPACITY
-        })
+        Err(ApplicationError::QueueFull { capacity: 4096 })
     ));
     assert!(matches!(add.await, Err(MonitorCommandError::ChannelClosed)));
     assert!(matches!(events.try_recv().unwrap().data, EventData::OperationFinished(result)
@@ -224,10 +225,15 @@ async fn queue_saturation_stops_the_actor_and_preserves_a_completed_result() {
 }
 
 #[tokio::test]
-async fn running_application_returns_the_queue_full_error() {
-    let running = Application::new_ordered(AppConfig::default(), vec![]).spawn();
+async fn running_application_returns_the_configured_capacity_on_saturation() {
+    const CAPACITY: usize = 4;
+    let config = AppConfig {
+        ordered_queue_capacity: NonZeroUsize::new(CAPACITY).unwrap(),
+        ..AppConfig::default()
+    };
+    let running = Application::new_ordered(config, vec![]).spawn();
     let handle = running.handle();
-    for _ in 0..QUEUE_CAPACITY {
+    for _ in 0..CAPACITY {
         assert!(poll!(Box::pin(handle.get_snapshot())).is_pending());
     }
     assert!(matches!(
@@ -238,9 +244,7 @@ async fn running_application_returns_the_queue_full_error() {
         tokio::time::timeout(Duration::from_secs(5), running.shutdown())
             .await
             .unwrap(),
-        Err(ApplicationError::QueueFull {
-            capacity: QUEUE_CAPACITY
-        })
+        Err(ApplicationError::QueueFull { capacity: CAPACITY })
     ));
 }
 

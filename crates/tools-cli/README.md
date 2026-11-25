@@ -31,7 +31,8 @@ tctl poll --config examples/poll.yaml --view compact
 Each task is a repeating query (e.g. an SNMP GET) with an interval, attempt policy, and
 target. A `history_sink` path lets the CLI record monitor events as JSONL. If its writer
 lags behind the event stream, polling continues and the CLI reports an incomplete journal
-when it exits. See
+when it exits. The optional root setting `ordered_queue_capacity` sets the number
+of command and scenario report slots, with a default of 4096. See
 [`examples/poll.yaml`](examples/poll.yaml) for a minimal configuration.
 
 ### `to-scn` / `from-scn` — SCN conversion

@@ -1,4 +1,5 @@
 history_sink: history.jsonl
+ordered_queue_capacity: 4096
 tasks:
   - name: local-snmp
     interval: 1s

@@ -31,8 +31,6 @@ use crate::monitor::{
 use entry::{Entry, Execution, LiveRun};
 use queue_pressure::{QueuePressure, WARNING_DEPTH};
 
-const QUEUE_CAPACITY: usize = 4096;
-
 enum Message {
     Command(Box<Command>),
     Update(ScenarioUpdate),
@@ -88,7 +86,7 @@ impl OrderedOrchestrator {
         config: AppConfig,
         tasks: Vec<InitialTask>,
     ) -> (Self, OrchestratorHandle, Vec<TaskId>) {
-        let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
+        let (tx, rx) = mpsc::channel(config.ordered_queue_capacity.get());
         let (saturation, saturated) = watch::channel(false);
         let tx = ChannelSender::monitored(tx, id, saturation);
         let (events, _) = broadcast::channel(1024);
@@ -165,15 +163,14 @@ impl OrderedOrchestrator {
                 }
             }
         }
+        let capacity = self.rx.max_capacity();
         drop(self.rx);
         self.workers.shutdown().await;
         if let Some(reply) = self.shutdown {
             let _ = reply.send(());
         }
         if *self.saturated.borrow() {
-            return Err(ApplicationError::QueueFull {
-                capacity: QUEUE_CAPACITY,
-            });
+            return Err(ApplicationError::QueueFull { capacity });
         }
         Ok(())
     }
@@ -190,7 +187,7 @@ impl OrderedOrchestrator {
     }
 
     fn report_queue_pressure(&mut self, enqueued_at: Instant) {
-        let depth = (self.rx.len() + 1).min(QUEUE_CAPACITY);
+        let depth = (self.rx.len() + 1).min(self.rx.max_capacity());
         if let Some(peak_depth) = self.queue_pressure.sample(depth) {
             let queue_wait_ms = enqueued_at.elapsed().as_secs_f64() * 1000.0;
             if depth > WARNING_DEPTH {

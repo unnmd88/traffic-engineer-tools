@@ -17,7 +17,11 @@ pub async fn run(config: PathBuf, view: PollView) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(&config)?;
     let config_dir = config.parent().unwrap_or_else(|| std::path::Path::new("."));
     let config = config::load_from_yaml(&content)?;
-    let application = Application::new_ordered(AppConfig::default(), config.tasks);
+    let mut app_config = AppConfig::default();
+    if let Some(capacity) = config.ordered_queue_capacity {
+        app_config.ordered_queue_capacity = capacity;
+    }
+    let application = Application::new_ordered(app_config, config.tasks);
     let mut history_writer = match config.history_sink {
         Some(path) => {
             let file = history::open(&config_dir.join(path)).await?;

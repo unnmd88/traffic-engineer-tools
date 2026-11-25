@@ -1,6 +1,12 @@
-use std::{num::NonZeroU64, path::PathBuf, time::Duration};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    path::PathBuf,
+    time::Duration,
+};
 
+use anyhow::ensure;
 use serde::Deserialize;
+use tokio::sync::Semaphore;
 
 use tools_core::{
     error::Error,
@@ -16,12 +22,14 @@ use tools_core::{
 #[serde(deny_unknown_fields)]
 struct AppConfigDto {
     history_sink: Option<PathBuf>,
+    ordered_queue_capacity: Option<NonZeroUsize>,
     tasks: Vec<TaskConfigDto>,
 }
 
 #[derive(Debug)]
 pub struct PollConfig {
     pub history_sink: Option<PathBuf>,
+    pub ordered_queue_capacity: Option<NonZeroUsize>,
     pub tasks: Vec<InitialTask>,
 }
 
@@ -93,6 +101,13 @@ struct SnmpSetQueryDto {
 pub fn load_from_yaml(content: &str) -> anyhow::Result<PollConfig> {
     let de = serde_norway::Deserializer::from_str(content);
     let app_dto: AppConfigDto = serde_path_to_error::deserialize(de)?;
+    ensure!(
+        app_dto
+            .ordered_queue_capacity
+            .is_none_or(|capacity| capacity.get() <= Semaphore::MAX_PERMITS),
+        "ordered_queue_capacity must not exceed {}",
+        Semaphore::MAX_PERMITS
+    );
     let specs = app_dto
         .tasks
         .into_iter()
@@ -100,6 +115,7 @@ pub fn load_from_yaml(content: &str) -> anyhow::Result<PollConfig> {
         .collect::<Result<Vec<_>, Error>>()?;
     Ok(PollConfig {
         history_sink: app_dto.history_sink,
+        ordered_queue_capacity: app_dto.ordered_queue_capacity,
         tasks: specs,
     })
 }
@@ -160,6 +176,21 @@ mod tests {
         assert!(config.tasks.is_empty());
         assert!(load_from_yaml("history_sink: { file: history.jsonl }\ntasks: []\n").is_err());
         assert!(load_from_yaml("history_snik: history.jsonl\ntasks: []\n").is_err());
+    }
+
+    #[test]
+    fn ordered_queue_capacity_is_optional_and_must_fit_the_channel() {
+        let default = load_from_yaml("tasks: []\n").unwrap();
+        assert_eq!(default.ordered_queue_capacity, None);
+
+        let custom = load_from_yaml("ordered_queue_capacity: 8192\ntasks: []\n").unwrap();
+        assert_eq!(custom.ordered_queue_capacity, NonZeroUsize::new(8192));
+        assert!(load_from_yaml("ordered_queue_capacity: 0\ntasks: []\n").is_err());
+
+        let too_large = Semaphore::MAX_PERMITS + 1;
+        let error = load_from_yaml(&format!("ordered_queue_capacity: {too_large}\ntasks: []\n"))
+            .unwrap_err();
+        assert!(error.to_string().contains("ordered_queue_capacity"));
     }
 
     #[test]

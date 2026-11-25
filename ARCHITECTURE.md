@@ -54,7 +54,7 @@ The individual request and SNMP mechanisms are also available through
 
 | Component | Responsibility | Source |
 |---|---|---|
-| `AppConfig` | Global restart policy | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
+| `AppConfig` | Global restart policy and ordered inbox capacity | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `TaskConfig` | The validated description of one task | [task/config.rs](crates/tools-core/src/monitor/task/config.rs) |
 | `InitialTask` | Task configuration and the limit for its automatic start | [runtime/app.rs](crates/tools-core/src/monitor/runtime/app.rs) |
 | `RunLimit` | Unlimited execution or a positive number of runs per start | [task/limit.rs](crates/tools-core/src/monitor/task/limit.rs) |
@@ -257,8 +257,10 @@ and starts a new sequence of operation IDs. GET/SET tests exercise pause during 
 and recovery after a read parser panics. [Scenario tests](crates/tools-core/src/monitor/scenario/tests.rs)
 
 The ordered runtime processes commands, scenario updates and local exit notifications
-through one bounded Tokio channel with capacity for 4096 messages. Its receive order
-defines the order of concurrent inputs. Each scenario sends progress, readiness, applied
+through one bounded Tokio channel. `AppConfig.ordered_queue_capacity` defaults to
+4096 messages. The optional root YAML setting `ordered_queue_capacity` overrides it
+for `tctl poll`. The channel's receive order defines the order of concurrent inputs.
+Each scenario sends progress, readiness, applied
 modes and operation reports directly to this channel. A returning scenario supplies a typed outcome and can include
 its final operation. Each worker holds at most one completed intermediate operation
 while waiting for channel capacity. On stop, removal or shutdown it drops the scenario

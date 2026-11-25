@@ -45,6 +45,7 @@ fn check_prepared_application_exposes_configuration_and_snapshot_types(prepare: 
     let application = prepare(
         AppConfig {
             restart: RestartPolicy::default(),
+            ..AppConfig::default()
         },
         vec![
             InitialTask {

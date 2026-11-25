@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use derive_more::Display;
 use tokio::{sync::broadcast, task::JoinHandle};
@@ -29,9 +29,20 @@ impl ApplicationId {
     }
 }
 
-#[derive(Default)]
 pub struct AppConfig {
     pub restart: RestartPolicy,
+    /// Capacity of the command and report queue used by [`Application::new_ordered`].
+    /// Defaults to 4096 messages.
+    pub ordered_queue_capacity: NonZeroUsize,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            restart: RestartPolicy::default(),
+            ordered_queue_capacity: NonZeroUsize::new(4096).unwrap(),
+        }
+    }
 }
 
 /// A task to register and start automatically when the monitor is spawned.
@@ -100,6 +111,10 @@ impl Application {
 
     /// Prepares a monitor using the alternative orchestrator with an ordered command and report queue.
     /// Its stop and removal replies confirm local exit and published results from the retiring run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the queue capacity exceeds [`tokio::sync::Semaphore::MAX_PERMITS`].
     pub fn new_ordered(config: AppConfig, tasks: Vec<InitialTask>) -> Self {
         let uid = ApplicationId::generate();
         let (orchestrator, handle, task_ids) = OrderedOrchestrator::new(uid, config, tasks);
